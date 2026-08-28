@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+.fp/
+
+# Build output
+dist/
+dist-ssr/
+coverage/
+
+# Firebase
+.firebase/
+firebase-debug.log
+*.log
+
+# Environment variables (never commit real keys)
+.env
+.env.local
+.env.production
+.env.development
+
+# Vite / editor
+*.local
+.vite/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

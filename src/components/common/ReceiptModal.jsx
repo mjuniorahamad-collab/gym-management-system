@@ -1,0 +1,150 @@
+import { createPortal } from 'react-dom'
+import { Printer } from 'lucide-react'
+import { Modal } from '@/components/ui/Modal'
+import { Button } from '@/components/ui/Button'
+import { Badge } from '@/components/ui/Badge'
+import { formatCurrency, formatDate } from '@/utils/formatters'
+import { PAYMENT_STATUS_LABELS } from '@/utils/renewal'
+
+const STATUS_TONES = { paid: 'success', partial: 'warning', due: 'danger' }
+
+function ReceiptContent({ payment, member, plan, settings, summary, receiptNo }) {
+  return (
+    <div className="space-y-4">
+      <div className="border-b border-dashed border-slate-300 pb-3 text-center dark:border-slate-700">
+        {settings?.logoUrl && (
+          <img src={settings.logoUrl} alt="logo" className="mx-auto mb-2 h-12 w-12 rounded-full object-cover" />
+        )}
+        <h3 className="text-base font-bold text-slate-900 dark:text-slate-100">
+          {settings?.gymName || 'Himalye Wonders Gym'}
+        </h3>
+        {settings?.tagline && <p className="text-xs text-slate-400">{settings.tagline}</p>}
+      </div>
+
+      <div className="text-sm text-slate-600 dark:text-slate-300">
+        <div className="flex justify-between">
+          <span className="text-slate-400">Receipt No.</span>
+          <span className="font-semibold">{receiptNo}</span>
+        </div>
+        <div className="mt-1 flex justify-between">
+          <span className="text-slate-400">Date</span>
+          <span>{formatDate(payment.date)}</span>
+        </div>
+        <div className="mt-1 flex justify-between">
+          <span className="text-slate-400">Member</span>
+          <span className="font-semibold">{member?.name || payment.memberName || '—'}</span>
+        </div>
+        {plan && (
+          <div className="mt-1 flex justify-between">
+            <span className="text-slate-400">Plan</span>
+            <span>{plan.name}</span>
+          </div>
+        )}
+        {!plan && payment.planName && (
+          <div className="mt-1 flex justify-between">
+            <span className="text-slate-400">Plan</span>
+            <span>{payment.planName}</span>
+          </div>
+        )}
+        {payment.startDate && payment.expiryDate && (
+          <div className="mt-1 flex justify-between">
+            <span className="text-slate-400">Membership period</span>
+            <span>
+              {formatDate(payment.startDate)} – {formatDate(payment.expiryDate)}
+            </span>
+          </div>
+        )}
+        {payment.paymentStatus && (
+          <div className="mt-1 flex items-center justify-between">
+            <span className="text-slate-400">Payment status</span>
+            <Badge tone={STATUS_TONES[payment.paymentStatus] || 'neutral'}>
+              {PAYMENT_STATUS_LABELS[payment.paymentStatus] || payment.paymentStatus}
+            </Badge>
+          </div>
+        )}
+        <div className="mt-1 flex justify-between">
+          <span className="text-slate-400">Method</span>
+          <span>{payment.method}</span>
+        </div>
+        {payment.note && (
+          <div className="mt-1 flex justify-between">
+            <span className="text-slate-400">Note</span>
+            <span>{payment.note}</span>
+          </div>
+        )}
+      </div>
+
+      {summary && summary.planAmount > 0 ? (
+        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm dark:border-slate-700 dark:bg-slate-800/50">
+          <div className="flex items-center justify-between">
+            <span className="text-slate-400">Plan / Membership Amount</span>
+            <span className="font-semibold text-slate-800 dark:text-slate-100">
+              {formatCurrency(summary.planAmount, settings?.currency)}
+            </span>
+          </div>
+          <div className="mt-1 flex items-center justify-between">
+            <span className="text-slate-400">Amount Paid (this payment)</span>
+            <span className="font-semibold text-slate-800 dark:text-slate-100">
+              {formatCurrency(payment.amount, settings?.currency)}
+            </span>
+          </div>
+          <div className="mt-1 flex items-center justify-between">
+            <span className="text-slate-400">Total Paid</span>
+            <span className="font-semibold text-emerald-600">
+              {formatCurrency(summary.totalPaid, settings?.currency)}
+            </span>
+          </div>
+          <div className="mt-2 flex items-center justify-between border-t border-dashed border-slate-300 pt-2 dark:border-slate-700">
+            <span className="font-semibold text-slate-700 dark:text-slate-200">Amount Due / Remaining</span>
+            <span className="text-base font-bold text-amber-600">
+              {summary.dueAmount === 0 ? 'Paid in full' : formatCurrency(summary.dueAmount, settings?.currency)}
+            </span>
+          </div>
+        </div>
+      ) : (
+        <div className="flex items-center justify-between border-t border-dashed border-slate-300 pt-3 dark:border-slate-700">
+          <span className="text-sm font-semibold text-slate-700 dark:text-slate-200">Total Paid</span>
+          <span className="text-lg font-bold text-emerald-600">
+            {formatCurrency(payment.amount, settings?.currency)}
+          </span>
+        </div>
+      )}
+
+      <p className="text-center text-[11px] text-slate-400">
+        Thank you for training with {settings?.gymName || 'us'}!
+      </p>
+    </div>
+  )
+}
+
+export function ReceiptModal({ open, onClose, payment, member, plan, settings, summary }) {
+  if (!payment) return null
+
+  const receiptNo = payment.receiptNo || `${settings?.receiptPrefix || 'HWG'}-${payment.id?.slice(0, 6).toUpperCase()}`
+  const receiptProps = { payment, member, plan, settings, summary, receiptNo }
+
+  return (
+    <>
+      <Modal
+        open={open}
+        onClose={onClose}
+        size="sm"
+        title="Payment Receipt"
+        footer={
+          <Button variant="outline" size="sm" onClick={() => window.print()}>
+            <Printer size={14} /> Print
+          </Button>
+        }
+      >
+        <ReceiptContent {...receiptProps} />
+      </Modal>
+
+      {createPortal(
+        <div id="print-receipt" className="print-receipt" aria-hidden="true">
+          <ReceiptContent {...receiptProps} />
+        </div>,
+        document.body
+      )}
+    </>
+  )
+}

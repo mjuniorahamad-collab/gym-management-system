@@ -1,0 +1,265 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    @apply antialiased;
+  }
+  body {
+    @apply bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100;
+  }
+  ::selection {
+    @apply bg-indigo-500/20;
+  }
+}
+
+@layer components {
+  /* Cards */
+  .card {
+    @apply rounded-xl border border-slate-200 bg-white shadow-card dark:border-slate-800 dark:bg-slate-900;
+  }
+
+  /* Buttons */
+  .btn {
+    @apply inline-flex select-none items-center justify-center gap-2 whitespace-nowrap rounded-lg px-4 py-2 text-sm font-semibold transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white dark:focus-visible:ring-offset-slate-950 disabled:pointer-events-none disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply btn bg-indigo-600 text-white hover:bg-indigo-700;
+  }
+  .btn-secondary {
+    @apply btn bg-slate-100 text-slate-800 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700;
+  }
+  .btn-outline {
+    @apply btn border border-slate-300 bg-transparent text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800;
+  }
+  .btn-danger {
+    @apply btn bg-red-600 text-white hover:bg-red-700;
+  }
+  .btn-ghost {
+    @apply btn bg-transparent text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800;
+  }
+  .btn-success {
+    @apply btn bg-emerald-600 text-white hover:bg-emerald-700;
+  }
+  .btn-sm {
+    @apply px-3 py-1.5 text-xs;
+  }
+  .btn-icon {
+    @apply h-9 w-9 px-0;
+  }
+
+  /* Form controls */
+  .label {
+    @apply mb-1.5 block text-sm font-medium text-slate-700 dark:text-slate-300;
+  }
+  .input {
+    @apply block w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:placeholder:text-slate-500;
+  }
+  .input-error {
+    @apply border-red-500 focus:border-red-500 focus:ring-red-500;
+  }
+
+  /* Badges */
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-semibold;
+  }
+  .badge-success {
+    @apply badge bg-emerald-100 text-emerald-800 dark:bg-emerald-500/15 dark:text-emerald-400;
+  }
+  .badge-warning {
+    @apply badge bg-amber-100 text-amber-800 dark:bg-amber-500/15 dark:text-amber-400;
+  }
+  .badge-danger {
+    @apply badge bg-red-100 text-red-700 dark:bg-red-500/15 dark:text-red-400;
+  }
+  .badge-info {
+    @apply badge bg-sky-100 text-sky-800 dark:bg-sky-500/15 dark:text-sky-400;
+  }
+  .badge-neutral {
+    @apply badge bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300;
+  }
+  .badge-indigo {
+    @apply badge bg-indigo-100 text-indigo-800 dark:bg-indigo-500/15 dark:text-indigo-400;
+  }
+
+  /* Tables */
+  .th {
+    @apply px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400;
+  }
+  .td {
+    @apply px-4 py-3 text-sm text-slate-700 dark:text-slate-200;
+  }
+
+  /* Avatar */
+  .avatar {
+    @apply flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-xs font-bold;
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin {
+    scrollbar-width: thin;
+  }
+}
+
+@page {
+  size: A4 portrait;
+  margin: 12mm;
+}
+
+/* The print-only receipt (portaled into <body>) is hidden on screen. */
+#print-receipt {
+  display: none;
+}
+
+/* The print-only membership card (portaled into <body>) is hidden on screen. */
+#print-membership-card {
+  display: none;
+}
+
+/* Membership card shell (screen preview + print portal). */
+.membership-card {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 340px;
+  margin: 0 auto;
+  overflow: hidden;
+  border-radius: 14px;
+  border: 1px solid #e2e8f0;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.12);
+  text-align: left;
+  print-color-adjust: exact;
+  -webkit-print-color-adjust: exact;
+}
+
+.membership-card-header {
+  display: flex;
+  align-items: center;
+  padding: 14px 18px;
+  background: linear-gradient(135deg, #4f46e5 0%, #10b981 100%);
+}
+
+.membership-card-body {
+  padding: 16px 18px 18px;
+}
+
+.membership-card-main {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.membership-card-details {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 10px 16px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px dashed #e2e8f0;
+}
+
+.membership-card-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.membership-card-field span {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #94a3b8;
+}
+
+.membership-card-field strong {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: #1e293b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.membership-card-qr svg {
+  display: block;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  padding: 4px;
+}
+
+@media print {
+  html,
+  body {
+    background: #fff !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  body * {
+    visibility: hidden;
+  }
+
+  /* Payment receipt: hide the whole app shell and print only the receipt. */
+  body:has(#print-receipt) #root {
+    display: none !important;
+  }
+  #print-receipt,
+  #print-receipt * {
+    visibility: visible !important;
+  }
+  #print-receipt {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    max-width: 186mm;
+    box-sizing: border-box;
+    margin: 0 !important;
+    padding: 0 !important;
+    min-height: 0 !important;
+    height: auto !important;
+    background: #fff !important;
+    color: #111 !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+  #print-receipt * {
+    color: inherit !important;
+  }
+
+  /* Membership card: hide the whole app shell and print only the card. */
+  body:has(#print-membership-card) #root {
+    display: none !important;
+  }
+  #print-membership-card,
+  #print-membership-card * {
+    visibility: visible !important;
+  }
+  #print-membership-card {
+    display: block !important;
+    position: static !important;
+    width: 88mm;
+    max-width: 100%;
+    box-sizing: border-box;
+    margin: 0 auto !important;
+    padding: 0 !important;
+    min-height: 0 !important;
+    height: auto !important;
+    background: #fff !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+    page-break-inside: avoid;
+    break-inside: avoid;
+    page-break-before: avoid;
+    page-break-after: avoid;
+  }
+  #print-membership-card .membership-card {
+    max-width: none;
+    box-shadow: none;
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+}

@@ -1,0 +1,243 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- Helpers ---------------------------------------------------
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Reads the caller's profile doc. Admin/write access is derived from role.
+    function role() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+    }
+
+    function isRole(r) {
+      return isSignedIn() && role() == r;
+    }
+
+    // Any staff member can read operational data.
+    function isStaff() {
+      return isSignedIn() && role() in ['owner', 'admin', 'front-desk', 'trainer'];
+    }
+
+    // Only owner/admin touch financial records.
+    function isFinance() {
+      return isRole('owner') || isRole('admin');
+    }
+
+    function isOwner() {
+      return isRole('owner');
+    }
+
+    // ---------- Tenancy helpers ---------------------------------------------
+    // The caller's gym is derived from users/{uid}.gymId. It is the source of
+    // truth for data isolation and can only be set once (see the users block).
+    // gymId is deliberately NOT client-assignable after bootstrap.
+    function gymOf(uid) {
+      return get(/databases/$(database)/documents/users/$(uid)).data.gymId;
+    }
+
+    // True when the caller's profile exists and carries a bound gymId.
+    function hasGym() {
+      return isSignedIn() && gymOf(request.auth.uid) != null;
+    }
+
+    // True when a document is untagged (pre-tenancy legacy record). Legacy
+    // records stay readable and migratable so existing data is never lost
+    // during backfill; they cannot be newly created and cannot be moved to a
+    // different gym — only tagged to the caller's gym (see canWriteTenant).
+    function legacy(resource) {
+      return resource != null && !('gymId' in resource.data);
+    }
+
+    // True when a document belongs to the caller's own gym.
+    function sameGym(resource) {
+      return isSignedIn() && hasGym()
+        && resource != null
+        && resource.data.gymId == gymOf(request.auth.uid);
+    }
+
+    // Read guard: the record is in the caller's gym, or is a legacy record
+    // that has not yet been claimed by any gym (preserves existing data).
+    function canReadTenant(resource) {
+      return sameGym(resource) || legacy(resource);
+    }
+
+    // Write guard (create + update). For creates (resource == null) the new
+    // document MUST carry the caller's bound gymId — opaque legacy creates
+    // are not allowed. For updates, the document must already be in the
+    // caller's gym, or be a legacy record being tagged to the caller's gym;
+    // the resulting document must always carry the caller's gymId, so an
+    // existing gymId can never be changed.
+    function canWriteTenant(resource) {
+      return 'gymId' in request.resource.data
+        && request.resource.data.gymId == gymOf(request.auth.uid)
+        && hasGym()
+        && (resource == null || sameGym(resource) || legacy(resource));
+    }
+
+    // Delete guard: only scoped, own-gym records can be removed.
+    function canDeleteTenant(resource) {
+      return sameGym(resource);
+    }
+
+    // A user may only bind gymId once, only on their own profile, and only to
+    // a gym whose owner-of-record is themselves (pre-provisioned in the gyms
+    // collection — never client-created). After it is set it is frozen.
+    function canBindGymId(uid) {
+      return isSignedIn()
+        && request.auth.uid == uid
+        && (resource == null || !('gymId' in resource.data))
+        && 'gymId' in request.resource.data
+        && exists(/databases/$(database)/documents/gyms/$(request.resource.data.gymId))
+        && get(/databases/$(database)/documents/gyms/$(request.resource.data.gymId)).data.ownerUid == request.auth.uid;
+    }
+
+    // True when a pending (to-be-written) document carries the caller's gymId.
+    // Used to ensure admin/owner-managed user writes never move a user to
+    // another gym, so a bound gymId stays frozen.
+    function sameGymForRequest() {
+      return hasGym() && 'gymId' in request.resource.data
+        && request.resource.data.gymId == gymOf(request.auth.uid);
+    }
+
+    // Returns true when the caller belongs to the gym that owns a users/{uid}
+    // doc, so staff can only manage members of their own gym.
+    function inCallerGym(uid) {
+      return hasGym() && gymOf(uid) == gymOf(request.auth.uid);
+    }
+
+    // ---------- Gyms (owner-of-record) --------------------------------------
+    // gyms/{gymId} holds the owner-of-record for a gym. It is normally
+    // provisioned out-of-band (console/CLI/script), but an owner can ALSO
+    // self-provision their own brand-new gym once from the app.
+    //
+    // A user may read a gyms doc only if it is their own gym (either they
+    // already belong to it, or they ARE the owner-of-record, used to discover
+    // their gymId during a secure one-time bootstrap).
+    //
+    // Self-provisioning is create-only and gated so a gym cannot be claimed,
+    // squatted or stolen: the doc must be owned by the caller (ownerUid ==
+    // request.auth.uid) AND be created at a genuine random Firestore auto-id
+    // (isAutoId). Because auto-ids are random and unknowable in advance, and a
+    // user can only ever bind a gym they own, no one can pre-register a slug,
+    // claim another owner's record, or overwrite an existing provisioned gym.
+    function isAutoId(id) {
+      return id.size() == 20 && id.matches('[A-Za-z0-9_-]{20}');
+    }
+
+    match /gyms/{gymId} {
+      allow read: if isSignedIn()
+        && (resource.data.ownerUid == request.auth.uid || (hasGym() && gymOf(request.auth.uid) == gymId));
+      allow create: if isSignedIn()
+        && request.resource.data.ownerUid == request.auth.uid
+        && isAutoId(gymId);
+      allow update, delete: if false;
+    }
+
+    // ---------- Users (auth profiles + roles) -----------------------------
+    match /users/{uid} {
+      // A user can always read their own profile, plus profiles within their
+      // own gym. Cross-gym profiles are never readable (tenant isolation).
+      allow read: if isSignedIn()
+        && (request.auth.uid == uid || inCallerGym(uid));
+      // Self-registration on first login (one-time gymId bind allowed), or
+      // admin/owner managing staff within their own gym (which can never move
+      // a user's gymId — a bound gymId stays frozen).
+      allow create, update: if isSignedIn()
+        && (
+          canBindGymId(uid)
+          || (isRole('admin') && inCallerGym(uid) && sameGymForRequest())
+          || (isOwner() && inCallerGym(uid) && sameGymForRequest())
+        );
+      allow delete: if isOwner() && inCallerGym(uid);
+    }
+
+    // ---------- Members ---------------------------------------------------
+    match /members/{id} {
+      allow read: if isStaff() && canReadTenant(resource);
+      allow create, update: if isStaff() && canWriteTenant(resource);
+      allow delete: if (isRole('admin') || isOwner()) && canDeleteTenant(resource);
+    }
+
+    // ---------- Counters (sequence sources, e.g. member numbers) -----------
+    match /counters/{id} {
+      allow read: if isStaff() && canReadTenant(resource);
+      allow create, update: if isStaff() && canWriteTenant(resource);
+    }
+
+    // ---------- Trainers --------------------------------------------------
+    match /trainers/{id} {
+      allow read: if isStaff() && canReadTenant(resource);
+      allow create, update: if (isRole('admin') || isOwner()) && canWriteTenant(resource);
+      allow delete: if isOwner() && canDeleteTenant(resource);
+    }
+
+    // ---------- Membership plans ------------------------------------------
+    match /membershipPlans/{id} {
+      allow read: if isStaff() && canReadTenant(resource);
+      allow create, update: if isFinance() && canWriteTenant(resource);
+      allow delete: if isFinance() && canDeleteTenant(resource);
+    }
+
+    // ---------- Memberships (per-period records — financial) ----------------
+    match /memberships/{id} {
+      allow read: if isStaff() && canReadTenant(resource);
+      allow create, update: if isFinance() && canWriteTenant(resource);
+      allow delete: if isOwner() && canDeleteTenant(resource);
+    }
+
+    // ---------- Payments (financial — owner/admin only) --------------------
+    match /payments/{id} {
+      allow read: if isFinance() && canReadTenant(resource);
+      allow create, update: if isFinance() && canWriteTenant(resource);
+      allow delete: if isOwner() && canDeleteTenant(resource);
+    }
+
+    // ---------- Expenses (financial — owner/admin only) --------------------
+    match /expenses/{id} {
+      allow read: if isFinance() && canReadTenant(resource);
+      allow create, update: if isFinance() && canWriteTenant(resource);
+      allow delete: if isOwner() && canDeleteTenant(resource);
+    }
+
+    // ---------- Attendance -------------------------------------------------
+    match /attendance/{id} {
+      allow read: if isStaff() && canReadTenant(resource);
+      allow create, update: if isStaff() && canWriteTenant(resource);
+      allow delete: if (isRole('admin') || isOwner()) && canDeleteTenant(resource);
+    }
+
+    // ---------- Classes ----------------------------------------------------
+    match /classes/{id} {
+      allow read: if isStaff() && canReadTenant(resource);
+      allow create, update: if (isFinance() || isRole('front-desk')) && canWriteTenant(resource);
+      allow delete: if (isFinance() || isRole('front-desk')) && canDeleteTenant(resource);
+    }
+
+    // ---------- Bookings ---------------------------------------------------
+    match /bookings/{id} {
+      allow read: if isStaff() && canReadTenant(resource);
+      allow create, update: if isStaff() && canWriteTenant(resource);
+      allow delete: if isStaff() && canDeleteTenant(resource);
+    }
+
+    // ---------- Audit log (append-only by staff, read by finance) ----------
+    match /auditLog/{id} {
+      allow read: if isFinance() && canReadTenant(resource);
+      allow create: if isStaff() && canWriteTenant(resource);
+      allow update, delete: if false;
+    }
+
+    // ---------- App settings (owner only) ----------------------------------
+    // NOTE: settings/app remains a global, owner-managed singleton for now.
+    // Relocation to per-gym settings (gyms/{gymId}/settings) is deferred to the
+    // owner-auth/settings phase so this screen keeps working unchanged.
+    match /settings/{doc} {
+      allow read: if isSignedIn();
+      allow create, update, delete: if isOwner();
+    }
+  }
+}

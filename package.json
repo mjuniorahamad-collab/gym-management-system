@@ -1,0 +1,59 @@
+{
+  "name": "gym-management-system",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Production-ready gym management system for members, attendance, payments, classes and analytics",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:rules": "set FIRESTORE_EMULATOR_VERSION=1.19.8&& firebase emulators:exec --project demo-himalye-gym --only firestore \"vitest run --config vitest.emulator.js\""
+  },
+  "dependencies": {
+    "@hookform/resolvers": "^3.9.1",
+    "clsx": "^2.1.1",
+    "firebase": "^11.0.2",
+    "lucide-react": "^0.454.0",
+    "qrcode.react": "^3.1.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-hook-form": "^7.53.2",
+    "react-hot-toast": "^2.4.1",
+    "react-router-dom": "^6.28.1",
+    "recharts": "^2.13.3",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.14.0",
+    "@firebase/rules-unit-testing": "^4.0.1",
+    "@testing-library/jest-dom": "^6.6.3",
+    "@testing-library/react": "^16.0.1",
+    "@testing-library/user-event": "^14.5.2",
+    "@vitejs/plugin-react": "^4.3.3",
+    "autoprefixer": "^10.4.20",
+    "eslint": "^9.14.0",
+    "eslint-config-prettier": "^9.1.0",
+    "eslint-plugin-react": "^7.37.2",
+    "eslint-plugin-react-hooks": "^5.0.0",
+    "eslint-plugin-react-refresh": "^0.4.14",
+    "globals": "^15.12.0",
+    "jsdom": "^25.0.1",
+    "postcss": "^8.4.49",
+    "prettier": "^3.3.3",
+    "tailwindcss": "^3.4.15",
+    "vite": "^5.4.11",
+    "vitest": "^2.1.5"
+  },
+  "allowScripts": {
+    "@firebase/util@1.12.1": true,
+    "esbuild@0.21.5": true,
+    "protobufjs@7.6.5": true
+  }
+}

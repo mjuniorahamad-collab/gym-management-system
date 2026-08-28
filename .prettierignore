@@ -1,0 +1,10 @@
+dist
+node_modules
+coverage
+functions/node_modules
+firestore.rules
+storage.rules
+firestore.indexes.json
+firebase.json
+package-lock.json
+*.md

@@ -1,0 +1,137 @@
+import { parseDate, toDateInputValue } from '@/utils/dateHelpers'
+import { getMembershipPeriod, getRenewalPaymentSummary } from '@/utils/renewal'
+import { createDoc, updateDocById } from './firestore'
+import { logAudit } from './audit'
+
+function requireValidPlan(plan) {
+  if (!plan || !plan.id) throw new Error('Select a valid membership plan')
+  const price = Number(plan.price)
+  const duration = Number(plan.durationDays)
+  if (!Number.isFinite(price) || price <= 0) throw new Error('Selected plan has an invalid price')
+  if (!Number.isFinite(duration) || duration < 1) throw new Error('Selected plan has an invalid duration')
+  return { price, duration }
+}
+
+function requirePaidAmount(paidAmount) {
+  const paid = Number(paidAmount)
+  if (!Number.isFinite(paid) || paid < 0) throw new Error('Payment amount cannot be negative')
+  return paid
+}
+
+function requireDate(date) {
+  const d = parseDate(date)
+  if (!d) throw new Error('A valid payment date is required')
+  return date
+}
+
+/**
+ * Renew a member's membership in one professional workflow:
+ *
+ * 1. Creates a `memberships` record for the new period (history + anchor).
+ * 2. Creates a `payments` record linked to that membership (`type: 'renewal'`).
+ * 3. Links the membership to the payment.
+ * 4. Updates the member's current membership (plan, joinDate = new start,
+ *    status = active). Expiry is derived from joinDate + plan duration, so
+ *    every existing screen (Dashboard, MemberDetail) reflects the new period
+ *    automatically.
+ *
+ * Existing payment/membership history is never modified.
+ *
+ * Returns { membership, payment }. Throws on any invalid input or write failure.
+ */
+export async function renewMembership({
+  member,
+  plan,
+  currentExpiry,
+  effectiveStartDate,
+  paidAmount,
+  method,
+  date,
+  note,
+  receiptPrefix = 'HWG',
+}) {
+  if (!member || !member.id) throw new Error('A valid member is required to renew')
+  const { price } = requireValidPlan(plan)
+  const paid = requirePaidAmount(paidAmount)
+  // Payment date = when money was actually received. It is stored on the
+  // payment and NEVER overwritten by the membership effective start date.
+  const paymentDate = requireDate(date || toDateInputValue(new Date()))
+  if (!method) throw new Error('Select a payment method')
+
+  // Membership period = the effective active window. When the owner backdates
+  // (effectiveStartDate given) the period starts there; otherwise it defaults
+  // to the automatic start (today when expired).
+  const period = getMembershipPeriod({ currentExpiry, plan, effectiveStartDate })
+  if (!period) throw new Error('Selected plan has an invalid duration')
+
+  const summary = getRenewalPaymentSummary({ planPrice: price, paidAmount: paid })
+  const startDate = toDateInputValue(period.startDate)
+  const expiryDate = toDateInputValue(period.expiryDate)
+  const receiptNo = `${receiptPrefix}-${Date.now().toString().slice(-6)}`
+
+  const membershipData = {
+    memberId: member.id,
+    planId: plan.id,
+    planName: plan.name,
+    startDate,
+    expiryDate,
+    price: summary.price,
+    amountPaid: summary.paid,
+    amountDue: summary.due,
+    paymentStatus: summary.status,
+    paymentId: null,
+    receiptNo: null,
+  }
+
+  const membershipId = await createDoc('memberships', membershipData)
+
+  const paymentData = {
+    memberId: member.id,
+    planId: plan.id,
+    membershipId,
+    memberName: member.name,
+    planName: plan.name,
+    amount: summary.paid,
+    method,
+    date: paymentDate,
+    note: note || `Renewal — ${plan.name}`,
+    receiptNo,
+    type: 'renewal',
+    startDate,
+    expiryDate,
+    paymentStatus: summary.status,
+  }
+
+  const paymentId = await createDoc('payments', paymentData)
+
+  await updateDocById('memberships', membershipId, { paymentId, receiptNo })
+  await updateDocById('members', member.id, {
+    membershipPlanId: plan.id,
+    joinDate: startDate,
+    status: 'active',
+  })
+
+  await logAudit({
+    action: 'create',
+    entity: 'payments',
+    entityId: paymentId,
+    details: { member: member.name, amount: summary.paid, renewal: true, paymentDate, membershipStart: startDate },
+  })
+  await logAudit({
+    action: 'create',
+    entity: 'memberships',
+    entityId: membershipId,
+    details: { member: member.name, plan: plan.name, startDate, expiryDate },
+  })
+  await logAudit({
+    action: 'update',
+    entity: 'members',
+    entityId: member.id,
+    details: { status: 'active', renewed: true, plan: plan.name, startDate, expiryDate },
+  })
+
+  return {
+    membership: { id: membershipId, ...membershipData, paymentId, receiptNo },
+    payment: { id: paymentId, ...paymentData },
+  }
+}

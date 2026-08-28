@@ -1,0 +1,23 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Member profile photos. Public reads keep image URLs simple to share;
+    // any authenticated staff member may upload/replace.
+    match /memberPhotos/{memberId} {
+      allow read: if request.auth != null;
+      allow write: if request.auth != null;
+    }
+
+    // Gym logo / branding assets.
+    match /logos/{name} {
+      allow read: if true;
+      allow write: if request.auth != null;
+    }
+
+    // Cloud Functions backup output — never publicly readable.
+    match /backups/{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}
