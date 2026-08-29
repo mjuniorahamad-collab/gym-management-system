@@ -35,8 +35,16 @@ service cloud.firestore {
     // The caller's gym is derived from users/{uid}.gymId. It is the source of
     // truth for data isolation and can only be set once (see the users block).
     // gymId is deliberately NOT client-assignable after bootstrap.
+    //
+    // This accessor is NULL-SAFE: it never dereferences a missing profile (a
+    // brand-new user who has not yet bootstrapped has no users/{uid} doc).
+    // Accessing .data.gymId on a non-existent document raises a rules
+    // evaluation error (which surfaces as PERMISSION_DENIED), so we guard with
+    // exists(...) and a field check. A null result simply means "no bound gym
+    // yet", letting a fresh owner reach the self-provisioning onboarding path.
     function gymOf(uid) {
-      return get(/databases/$(database)/documents/users/$(uid)).data.gymId;
+      let ref = /databases/$(database)/documents/users/$(uid);
+      return exists(ref) && 'gymId' in get(ref).data ? get(ref).data.gymId : null;
     }
 
     // True when the caller's profile exists and carries a bound gymId.

@@ -153,7 +153,14 @@ export function AuthProvider({ children }) {
       setError(null)
       setLoading(false)
     } catch (e) {
+      // A bootstrap failure (e.g. a rules-denied discovery read for a user
+      // with no users/{uid} profile yet) must NEVER leave a signed-in user
+      // with profile=null and pendingOnboarding=false, because the Login page
+      // auto-navigates on that combination and would drop them into a
+      // data-less dashboard with no way to start a gym. Route to the
+      // onboarding flow instead so they can recover (and see the error there).
       setError(e.message)
+      setPendingOnboarding(true)
       setLoading(false)
     }
   }, [user, subscribeProfile, discoverOwnGym])

@@ -17,7 +17,17 @@ const MODE_SIGNIN = 'signin'
 const MODE_SIGNUP = 'signup'
 
 export default function Login() {
-  const { user, loading, isConfigured, pendingOnboarding, signIn, signUp, completeOnboarding, demoSignIn } = useAuth()
+  const {
+    user,
+    profile,
+    loading,
+    isConfigured,
+    pendingOnboarding,
+    signIn,
+    signUp,
+    completeOnboarding,
+    demoSignIn,
+  } = useAuth()
   const { settings } = useSettings()
   const toast = useToast()
   const navigate = useNavigate()
@@ -31,15 +41,18 @@ export default function Login() {
   const onboardingForm = useForm({ resolver: zodResolver(gymOnboardingSchema) })
 
   useEffect(() => {
-    // Only auto-navigate once the user is bound to a gym. A brand-new owner
-    // with no gym yet stays on this screen to complete onboarding.
-    if (!loading && user && !pendingOnboarding) {
+    // Only auto-navigate once the user is BOUND to a gym. A brand-new owner
+    // (no gym yet) stays on this screen to complete onboarding. Requiring a
+    // bound profile is deliberate: if bootstrap ever fails without resolving
+    // a profile, the user must not be dropped into a data-less dashboard.
+    if (!loading && user && !pendingOnboarding && profile?.gymId) {
       navigate(location.state?.from || '/', { replace: true })
     }
-  }, [loading, user, pendingOnboarding, navigate, location.state])
+  }, [loading, user, pendingOnboarding, profile, navigate, location.state])
 
   if (loading) return null
-  if (user && !pendingOnboarding) return <Navigate to={location.state?.from || '/'} replace />
+  if (user && !pendingOnboarding && profile?.gymId)
+    return <Navigate to={location.state?.from || '/'} replace />
 
   const handleSignIn = async (values) => {
     setSubmitting(true)
