@@ -47,6 +47,11 @@ async function seed() {
     await fs.doc(`counters/memberNumber`).set({ value: 5, gymId: GYM_A })
     // a member belonging to Gym B (for cross-gym tenancy checks)
     await fs.doc(`members/m-other`).set({ name: 'Other Member', gymId: GYM_B })
+    // weight records: Gym A owns a record, Gym B owns another for cross-gym checks
+    await fs.doc(`weightRecords/w-1`).set({ memberId: 'm-1', weight: 80, date: '2026-08-01', gymId: GYM_A })
+    await fs.doc(`weightRecords/w-other`).set({ memberId: 'm-other', weight: 70, date: '2026-08-01', gymId: GYM_B })
+    // a pre-tenancy legacy weight record with NO gymId tag (readable but not deletable)
+    await fs.doc(`weightRecords/w-legacy`).set({ memberId: 'm-1', weight: 75, date: '2026-07-01' })
   })
 }
 
@@ -99,6 +104,86 @@ describe('firestore rules — emulator verification (renewal write path)', () =>
     await assertSucceeds(created)
     await assertFails(db(UID.admin).collection('auditLog').doc(created.id).update({ action: 'tampered' }))
     await assertFails(db(UID.admin).collection('auditLog').doc(created.id).delete())
+  })
+
+  it('gates weightRecords reads/writes to the caller gym', async () => {
+    // own-gym read allowed
+    await assertSucceeds(db(UID.admin).doc('weightRecords/w-1').get())
+    // own-gym write (add + update) allowed
+    await assertSucceeds(db(UID.admin).collection('weightRecords').add({ memberId: 'm-1', weight: 78, date: '2026-08-15', gymId: GYM_A }))
+    await assertSucceeds(db(UID.admin).doc('weightRecords/w-1').update({ weight: 79 }))
+    // any staff member can add a weight record
+    await assertSucceeds(db(UID.frontDesk).collection('weightRecords').add({ memberId: 'm-1', weight: 77, date: '2026-08-20', gymId: GYM_A }))
+  })
+
+  it('denies cross-gym weightRecords access (tenant isolation)', async () => {
+    // cross-gym read denied
+    await assertFails(db(UID.admin).doc('weightRecords/w-other').get())
+    // cross-gym create denied
+    await assertFails(db(UID.admin).collection('weightRecords').add({ memberId: 'm-other', weight: 60, date: '2026-08-01', gymId: GYM_B }))
+    // cross-gym update denied
+    await assertFails(db(UID.admin).doc('weightRecords/w-other').update({ weight: 61 }))
+    // cannot move an own-gym record into another gym
+    await assertFails(db(UID.admin).doc('weightRecords/w-1').update({ gymId: GYM_B }))
+  })
+
+  it('scopes weightRecords deletes to admin/owner within the gym', async () => {
+    // use a dedicated record so shared w-1/w-other stay intact for later tests
+    const created = await db(UID.admin).collection('weightRecords').add({ memberId: 'm-1', weight: 84, date: '2026-08-25', gymId: GYM_A })
+    // front-desk cannot delete an own-gym record
+    await assertFails(db(UID.frontDesk).collection('weightRecords').doc(created.id).delete())
+    // trainer cannot delete an own-gym record
+    await assertFails(db(UID.trainer).collection('weightRecords').doc(created.id).delete())
+    // admin can delete an own-gym record
+    await assertSucceeds(db(UID.admin).collection('weightRecords').doc(created.id).delete())
+    // owner can delete an own-gym record (regression: previously owner got PERMISSION_DENIED)
+    const owned = await db(UID.owner).collection('weightRecords').add({ memberId: 'm-1', weight: 83, date: '2026-08-26', gymId: GYM_A })
+    await assertSucceeds(db(UID.owner).collection('weightRecords').doc(owned.id).delete())
+  })
+
+  it('denies cross-gym weightRecords deletes for owner/admin (tenant isolation)', async () => {
+    // w-other belongs to Gym B; a Gym A owner/admin must not delete it
+    await assertFails(db(UID.owner).doc('weightRecords/w-other').delete())
+    await assertFails(db(UID.admin).doc('weightRecords/w-other').delete())
+    // own-gym record remains readable by owner right after the cross-gym denial
+    await assertSucceeds(db(UID.owner).doc('weightRecords/w-1').get())
+  })
+
+  it('enforces the full weightRecords permission matrix (read/create/update/delete)', async () => {
+    // own-gym read allowed for any staff
+    await assertSucceeds(db(UID.admin).doc('weightRecords/w-1').get())
+    await assertSucceeds(db(UID.frontDesk).doc('weightRecords/w-1').get())
+    await assertSucceeds(db(UID.owner).doc('weightRecords/w-1').get())
+    // own-gym create allowed for any staff
+    await assertSucceeds(db(UID.trainer).collection('weightRecords').add({ memberId: 'm-1', weight: 76, date: '2026-08-22', gymId: GYM_A }))
+    // own-gym update allowed for any staff
+    await assertSucceeds(db(UID.frontDesk).doc('weightRecords/w-1').update({ weight: 79 }))
+    // own-gym delete allowed for owner and admin (covered in the delete test above)
+    const ownerDel = await db(UID.owner).collection('weightRecords').add({ memberId: 'm-1', weight: 82, date: '2026-08-27', gymId: GYM_A })
+    await assertSucceeds(db(UID.owner).collection('weightRecords').doc(ownerDel.id).delete())
+    // cross-gym read denied
+    await assertFails(db(UID.owner).doc('weightRecords/w-other').get())
+    await assertFails(db(UID.admin).doc('weightRecords/w-other').get())
+    // cross-gym create denied
+    await assertFails(db(UID.admin).collection('weightRecords').add({ memberId: 'm-other', weight: 60, date: '2026-08-01', gymId: GYM_B }))
+    // cross-gym update denied
+    await assertFails(db(UID.admin).doc('weightRecords/w-other').update({ weight: 61 }))
+    // cross-gym delete denied
+    await assertFails(db(UID.admin).doc('weightRecords/w-other').delete())
+  })
+
+  it('keeps pre-tenancy legacy weight records readable but NOT deletable (read-but-undeletable)', async () => {
+    // A legacy (no-gymId) record is readable so existing data is never lost ...
+    await assertSucceeds(db(UID.owner).doc('weightRecords/w-legacy').get())
+    await assertSucceeds(db(UID.admin).doc('weightRecords/w-legacy').get())
+    // ... but it cannot be deleted until tagged to a gym, because canDeleteTenant
+    // requires an exact gymId match. This is exactly the production symptom where
+    // a measurement is visible in the Progress tab yet delete returns
+    // PERMISSION_DENIED. The fix is a data tag, NOT a rule weakening.
+    await assertFails(db(UID.owner).doc('weightRecords/w-legacy').delete())
+    await assertFails(db(UID.admin).doc('weightRecords/w-legacy').delete())
+    // legacy records cannot be created (opaque legacy creates are forbidden)
+    await assertFails(db(UID.owner).collection('weightRecords').add({ memberId: 'm-1', weight: 70, date: '2026-08-02' }))
   })
 
   it('denies unauthenticated access and any unconditional/if-true rules', async () => {
@@ -283,6 +368,253 @@ describe('firestore rules — member-number counter tenancy (member creation pat
     await assertFails(a().doc('members/member-b').update({ name: 'Hijack' }))
     await assertSucceeds(a().doc('members/member-a').delete())
     await assertFails(a().doc('members/member-b').delete())
+  })
+})
+
+describe('firestore rules — per-gym PT settings + member PT tenancy', () => {
+  let env
+  const PT_OWNER_A = 'pt-owner-a'
+  const PT_OWNER_B = 'pt-owner-b'
+  const PT_STAFF_A = 'pt-staff-a'
+
+  beforeAll(async () => {
+    env = await initializeTestEnvironment({
+      projectId: PROJECT_ID,
+      firestore: { host: HOST, port: PORT, rules },
+    })
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      const fs = ctx.firestore()
+      await fs.doc(`gyms/${GYM_A}`).set({ ownerUid: PT_OWNER_A })
+      await fs.doc(`gyms/${GYM_B}`).set({ ownerUid: PT_OWNER_B })
+      await fs.doc(`users/${PT_OWNER_A}`).set({ role: 'owner', gymId: GYM_A })
+      await fs.doc(`users/${PT_OWNER_B}`).set({ role: 'owner', gymId: GYM_B })
+      await fs.doc(`users/${PT_STAFF_A}`).set({ role: 'staff', gymId: GYM_A })
+      // an owner whose profile exists but is not yet bound to a gym
+      await fs.doc(`users/pt-unbound`).set({ role: 'owner' })
+      await fs.doc(`members/member-a`).set({ name: 'A', gymId: GYM_A, isPT: false })
+      await fs.doc(`members/member-b`).set({ name: 'B', gymId: GYM_B, isPT: false })
+      // pre-provision each gym's PT settings doc with a matching gymId
+      await fs.doc(`gyms/${GYM_A}/settings/pt`).set({ surcharge: 1000, gymId: GYM_A })
+      await fs.doc(`gyms/${GYM_B}/settings/pt`).set({ surcharge: 500, gymId: GYM_B })
+    })
+  })
+
+  afterAll(async () => {
+    await env.cleanup()
+  })
+
+  const ownerA = () => env.authenticatedContext(PT_OWNER_A).firestore()
+  const ownerB = () => env.authenticatedContext(PT_OWNER_B).firestore()
+  const staffA = () => env.authenticatedContext(PT_STAFF_A).firestore()
+
+  it('own-gym owner and staff can read their PT settings doc', async () => {
+    await assertSucceeds(ownerA().doc(`gyms/${GYM_A}/settings/pt`).get())
+    await assertSucceeds(staffA().doc(`gyms/${GYM_A}/settings/pt`).get())
+  })
+
+  it('a cross-gym owner cannot read another gym PT settings', async () => {
+    await assertFails(ownerA().doc(`gyms/${GYM_B}/settings/pt`).get())
+    await assertFails(ownerB().doc(`gyms/${GYM_A}/settings/pt`).get())
+  })
+
+  it('own-gym owner can CREATE a brand-new PT settings doc (non-existent path, matching gymId)', async () => {
+    await assertSucceeds(
+      ownerA().doc(`gyms/${GYM_A}/settings/pt-fresh`).set({ surcharge: 1500, gymId: GYM_A })
+    )
+  })
+
+  it('own-gym owner can UPDATE their existing PT settings doc (matching gymId)', async () => {
+    await assertSucceeds(ownerA().doc(`gyms/${GYM_A}/settings/pt`).update({ surcharge: 1200, gymId: GYM_A }))
+  })
+
+  it('owner cannot CREATE a PT settings doc in another gym (cross-gym create denied)', async () => {
+    // a never-provisioned cross-gym id forces the create branch
+    await assertFails(
+      ownerA().doc(`gyms/${GYM_B}/settings/pt-cross`).set({ surcharge: 999, gymId: GYM_B })
+    )
+    // and the existing cross-gym doc cannot be written either (set + update)
+    await assertFails(ownerA().doc(`gyms/${GYM_B}/settings/pt`).set({ surcharge: 999, gymId: GYM_B }))
+    await assertFails(ownerA().doc(`gyms/${GYM_B}/settings/pt`).update({ surcharge: 999, gymId: GYM_B }))
+  })
+
+  it('owner cannot create/update their own PT settings with a forged gymId (path mismatch)', async () => {
+    // create at caller's own gym path but payload claims another gym
+    await assertFails(ownerA().doc(`gyms/${GYM_A}/settings/pt-forge`).set({ surcharge: 111, gymId: GYM_B }))
+    // update on existing doc with a forged gymId
+    await assertFails(ownerA().doc(`gyms/${GYM_A}/settings/pt`).update({ surcharge: 111, gymId: GYM_B }))
+  })
+
+  it('a non-owner staff member cannot write PT settings (owner-only)', async () => {
+    await assertFails(staffA().doc(`gyms/${GYM_A}/settings/pt`).update({ surcharge: 2000, gymId: GYM_A }))
+  })
+
+  it('unbound and unauthenticated users cannot read or write any PT settings', async () => {
+    // unbound owner (profile exists but no gymId yet) cannot access PT settings
+    const unboundCtx = env.authenticatedContext('pt-unbound').firestore()
+    await assertFails(unboundCtx.doc(`gyms/${GYM_A}/settings/pt`).get())
+    await assertFails(unboundCtx.doc(`gyms/${GYM_A}/settings/pt`).set({ surcharge: 1, gymId: GYM_A }))
+    // unauthenticated access is denied too
+    await assertFails(env.unauthenticatedContext().firestore().doc(`gyms/${GYM_A}/settings/pt`).get())
+    await assertFails(env.unauthenticatedContext().firestore().doc(`gyms/${GYM_A}/settings/pt`).set({ surcharge: 1, gymId: GYM_A }))
+  })
+
+  it('PT settings deletes are always denied', async () => {
+    await assertFails(ownerA().doc(`gyms/${GYM_A}/settings/pt`).delete())
+  })
+
+  it('owner can toggle member isPT within their own gym only', async () => {
+    await assertSucceeds(ownerA().doc('members/member-a').update({ isPT: true }))
+    // cross-gym member isPT toggling is denied by tenancy
+    await assertFails(ownerA().doc('members/member-b').update({ isPT: true }))
+  })
+
+  it('owner can set a member PT surcharge override within their own gym only', async () => {
+    await assertSucceeds(ownerA().doc('members/member-a').update({ ptSurchargeOverride: 400 }))
+    await assertSucceeds(ownerA().doc('members/member-a').update({ ptSurchargeOverride: 0 }))
+    await assertSucceeds(ownerA().doc('members/member-a').update({ ptSurchargeOverride: null }))
+    // cross-gym member override write is denied by tenancy
+    await assertFails(ownerA().doc('members/member-b').update({ ptSurchargeOverride: 400 }))
+    await assertFails(ownerB().doc('members/member-a').update({ ptSurchargeOverride: 400 }))
+  })
+})
+
+describe('firestore rules — per-gym WhatsApp group setting', () => {
+  let env
+  const WA_OWNER_A = 'wa-owner-a'
+  const WA_OWNER_B = 'wa-owner-b'
+  const WA_STAFF_A = 'wa-staff-a'
+
+  beforeAll(async () => {
+    env = await initializeTestEnvironment({
+      projectId: PROJECT_ID,
+      firestore: { host: HOST, port: PORT, rules },
+    })
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      const fs = ctx.firestore()
+      await fs.doc(`gyms/${GYM_A}`).set({ ownerUid: WA_OWNER_A })
+      await fs.doc(`gyms/${GYM_B}`).set({ ownerUid: WA_OWNER_B })
+      await fs.doc(`users/${WA_OWNER_A}`).set({ role: 'owner', gymId: GYM_A })
+      await fs.doc(`users/${WA_OWNER_B}`).set({ role: 'owner', gymId: GYM_B })
+      await fs.doc(`users/${WA_STAFF_A}`).set({ role: 'staff', gymId: GYM_A })
+      // an owner whose profile exists but is not yet bound to a gym
+      await fs.doc(`users/wa-unbound`).set({ role: 'owner' })
+      // pre-provision each gym's WhatsApp settings doc with a matching gymId
+      await fs.doc(`gyms/${GYM_A}/settings/whatsapp`).set({
+        link: 'https://chat.whatsapp.com/gym-a-group',
+        gymId: GYM_A,
+      })
+      await fs.doc(`gyms/${GYM_B}/settings/whatsapp`).set({
+        link: 'https://chat.whatsapp.com/gym-b-group',
+        gymId: GYM_B,
+      })
+    })
+  })
+
+  afterAll(async () => {
+    await env.cleanup()
+  })
+
+  const ownerA = () => env.authenticatedContext(WA_OWNER_A).firestore()
+  const ownerB = () => env.authenticatedContext(WA_OWNER_B).firestore()
+  const staffA = () => env.authenticatedContext(WA_STAFF_A).firestore()
+
+  it('own-gym owner and staff can READ their WhatsApp settings doc', async () => {
+    await assertSucceeds(ownerA().doc(`gyms/${GYM_A}/settings/whatsapp`).get())
+    await assertSucceeds(staffA().doc(`gyms/${GYM_A}/settings/whatsapp`).get())
+  })
+
+  it('a cross-gym owner cannot READ another gym WhatsApp settings (tenant isolation)', async () => {
+    await assertFails(ownerA().doc(`gyms/${GYM_B}/settings/whatsapp`).get())
+    await assertFails(ownerB().doc(`gyms/${GYM_A}/settings/whatsapp`).get())
+  })
+
+  it('own-gym owner can CREATE a brand-new WhatsApp settings doc (non-existent path, matching gymId)', async () => {
+    await assertSucceeds(
+      ownerA().doc(`gyms/${GYM_A}/settings/whatsapp-fresh`).set({
+        link: 'https://chat.whatsapp.com/fresh',
+        gymId: GYM_A,
+      })
+    )
+  })
+
+  it('own-gym owner can UPDATE the existing WhatsApp settings doc (matching gymId)', async () => {
+    await assertSucceeds(
+      ownerA().doc(`gyms/${GYM_A}/settings/whatsapp`).update({
+        link: 'https://chat.whatsapp.com/gym-a-updated',
+        gymId: GYM_A,
+      })
+    )
+    // clearing via update (empty link) is allowed — this is how Disable works
+    await assertSucceeds(
+      ownerA().doc(`gyms/${GYM_A}/settings/whatsapp`).update({ link: '', gymId: GYM_A })
+    )
+  })
+
+  it('owner cannot CREATE a WhatsApp settings doc in another gym (cross-gym create denied)', async () => {
+    await assertFails(
+      ownerA().doc(`gyms/${GYM_B}/settings/whatsapp-cross`).set({
+        link: 'https://chat.whatsapp.com/x',
+        gymId: GYM_B,
+      })
+    )
+    await assertFails(
+      ownerA().doc(`gyms/${GYM_B}/settings/whatsapp`).set({
+        link: 'https://chat.whatsapp.com/x',
+        gymId: GYM_B,
+      })
+    )
+    await assertFails(
+      ownerA().doc(`gyms/${GYM_B}/settings/whatsapp`).update({
+        link: 'https://chat.whatsapp.com/x',
+        gymId: GYM_B,
+      })
+    )
+  })
+
+  it('owner cannot write their own WhatsApp settings with a forged gymId (path mismatch)', async () => {
+    await assertFails(
+      ownerA().doc(`gyms/${GYM_A}/settings/whatsapp-forge`).set({
+        link: 'https://chat.whatsapp.com/x',
+        gymId: GYM_B,
+      })
+    )
+    await assertFails(
+      ownerA().doc(`gyms/${GYM_A}/settings/whatsapp`).update({
+        link: 'https://chat.whatsapp.com/x',
+        gymId: GYM_B,
+      })
+    )
+  })
+
+  it('a non-owner staff member cannot write WhatsApp settings (owner-only)', async () => {
+    await assertFails(
+      staffA().doc(`gyms/${GYM_A}/settings/whatsapp`).update({
+        link: 'https://chat.whatsapp.com/x',
+        gymId: GYM_A,
+      })
+    )
+  })
+
+  it('unbound and unauthenticated users cannot read or write any WhatsApp settings', async () => {
+    const unboundCtx = env.authenticatedContext('wa-unbound').firestore()
+    await assertFails(unboundCtx.doc(`gyms/${GYM_A}/settings/whatsapp`).get())
+    await assertFails(
+      unboundCtx.doc(`gyms/${GYM_A}/settings/whatsapp`).set({
+        link: 'https://chat.whatsapp.com/x',
+        gymId: GYM_A,
+      })
+    )
+    await assertFails(env.unauthenticatedContext().firestore().doc(`gyms/${GYM_A}/settings/whatsapp`).get())
+    await assertFails(
+      env.unauthenticatedContext().firestore().doc(`gyms/${GYM_A}/settings/whatsapp`).set({
+        link: 'https://chat.whatsapp.com/x',
+        gymId: GYM_A,
+      })
+    )
+  })
+
+  it('WhatsApp settings deletes are always denied (clearing is done via update)', async () => {
+    await assertFails(ownerA().doc(`gyms/${GYM_A}/settings/whatsapp`).delete())
   })
 })
 

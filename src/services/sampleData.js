@@ -41,7 +41,7 @@ export const samplePlans = [
 
 export const sampleMembers = [
   { name: 'Aarav Shrestha', email: 'aarav@example.com', phone: '9801234567', gender: 'Male', planIndex: 3, status: 'active', joinDaysAgo: 210, address: 'Baneshwor, Kathmandu' },
-  { name: 'Priya Gurung', email: 'priya@example.com', phone: '9812345678', gender: 'Female', planIndex: 1, status: 'active', joinDaysAgo: 95, address: 'Jhamsikhel, Lalitpur' },
+  { name: 'Priya Gurung', email: 'priya@example.com', phone: '9812345678', gender: 'Female', planIndex: 1, status: 'active', joinDaysAgo: 95, address: 'Jhamsikhel, Lalitpur', isPT: true },
   { name: 'Rohan Thapa', email: 'rohan@example.com', phone: '9823456789', gender: 'Male', planIndex: 2, status: 'active', joinDaysAgo: 150, address: 'Boudha, Kathmandu' },
   { name: 'Maya Tamang', email: 'maya@example.com', phone: '9834567890', gender: 'Female', planIndex: 0, status: 'expired', joinDaysAgo: 240, address: 'Balaju, Kathmandu' },
   { name: 'Suman Rai', email: 'suman@example.com', phone: '9845678901', gender: 'Male', planIndex: 4, status: 'active', joinDaysAgo: 320, address: 'Gwarko, Lalitpur' },

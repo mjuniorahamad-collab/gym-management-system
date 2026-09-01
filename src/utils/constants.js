@@ -58,6 +58,17 @@ export const EXPENSE_CATEGORIES = [
   'Other',
 ]
 
+export const FITNESS_GOALS = [
+  'Weight Loss',
+  'Muscle Gain',
+  'Weight Gain',
+  'Fat Loss / Body Recomposition',
+  'Strength',
+  'General Fitness',
+  'Endurance',
+  'Other',
+]
+
 export const MEMBER_STATUSES = [
   { value: 'active', label: 'Active' },
   { value: 'expired', label: 'Expired' },

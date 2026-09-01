@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Building2, Database, Loader2, ShieldCheck, Upload } from 'lucide-react'
-import { settingsSchema } from '@/schemas/validationSchemas'
+import { Building2, Database, Dumbbell, Loader2, MessageCircle, ShieldCheck, Upload } from 'lucide-react'
+import { settingsSchema, ptSurchargeSchema } from '@/schemas/validationSchemas'
 import { useSettings, DEFAULT_SETTINGS } from '@/context/SettingsContext'
 import { useToast } from '@/context/ToastContext'
 import { uploadFile, logoPath, isStorageReady } from '@/services/storage'
+import { getPtSurcharge, setPtSurcharge as persistPtSurcharge } from '@/services/pt'
+import { getWhatsAppLink, setWhatsAppLink } from '@/services/whatsappGroup'
 import { loadSampleData } from '@/services/seedService'
 import { ensureOriginPeriods, ensureGymTenancy } from '@/services/migration'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -16,6 +18,7 @@ import { Select } from '@/components/ui/Select'
 import { Button } from '@/components/ui/Button'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { CURRENCIES, DATE_FORMATS } from '@/utils/constants'
+import { formatCurrency } from '@/utils/formatters'
 
 export default function Settings() {
   const { settings, updateSettings } = useSettings()
@@ -27,6 +30,12 @@ export default function Settings() {
   const [migrating, setMigrating] = useState(false)
   const [tenancySyncing, setTenancySyncing] = useState(false)
   const [migrateConfirm, setMigrateConfirm] = useState(false)
+  const [ptSurcharge, setPtSurcharge] = useState('')
+  const [ptSaving, setPtSaving] = useState(false)
+  const [ptError, setPtError] = useState('')
+  const [whatsAppLink, setWhatsAppLinkLocal] = useState('')
+  const [whatsAppSaving, setWhatsAppSaving] = useState(false)
+  const [whatsAppError, setWhatsAppError] = useState('')
   const logoRef = useRef(null)
 
   const {
@@ -45,6 +54,79 @@ export default function Settings() {
       receiptPrefix: settings.receiptPrefix,
     })
   }, [settings, reset])
+
+  useEffect(() => {
+    let active = true
+    getPtSurcharge()
+      .then((value) => {
+        if (active) setPtSurcharge(value === 0 ? '' : String(value))
+      })
+      .catch(() => {
+        // Kept empty on read failure; surfaced when saving.
+        if (active) setPtSurcharge('')
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  useEffect(() => {
+    let active = true
+    getWhatsAppLink()
+      .then((link) => {
+        if (active) setWhatsAppLinkLocal(link)
+      })
+      .catch(() => {
+        // Kept empty on read failure; surfaced when saving.
+        if (active) setWhatsAppLinkLocal('')
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  const handlePtSave = async () => {
+    setPtError('')
+    setPtSaving(true)
+    try {
+      const parsed = ptSurchargeSchema.parse(ptSurcharge)
+      await persistPtSurcharge(parsed)
+      setPtSurcharge(parsed === 0 ? '' : String(parsed))
+      toast.success(`PT surcharge set to ${formatCurrency(parsed, settings.currency)}`)
+    } catch (e) {
+      setPtError(e?.issues?.[0]?.message || e?.message || 'Enter a valid PT surcharge')
+    } finally {
+      setPtSaving(false)
+    }
+  }
+
+  const handleWhatsAppSave = async () => {
+    setWhatsAppError('')
+    setWhatsAppSaving(true)
+    try {
+      await setWhatsAppLink(whatsAppLink)
+      setWhatsAppLinkLocal(whatsAppLink.trim())
+      toast.success(whatsAppLink.trim() ? 'WhatsApp group link saved' : 'WhatsApp group link cleared')
+    } catch (e) {
+      setWhatsAppError(e?.issues?.[0]?.message || e?.message || 'Enter a valid WhatsApp group invite link')
+    } finally {
+      setWhatsAppSaving(false)
+    }
+  }
+
+  const handleWhatsAppClear = async () => {
+    setWhatsAppError('')
+    setWhatsAppSaving(true)
+    try {
+      await setWhatsAppLink('')
+      setWhatsAppLinkLocal('')
+      toast.success('WhatsApp group link cleared')
+    } catch (e) {
+      setWhatsAppError(e?.issues?.[0]?.message || e?.message || 'Could not clear the WhatsApp group link')
+    } finally {
+      setWhatsAppSaving(false)
+    }
+  }
 
   const onSubmit = async (values) => {
     setSaving(true)
@@ -124,6 +206,80 @@ export default function Settings() {
       <PageHeader title="Settings" subtitle="Gym branding, preferences and data tools" />
 
       <div className="grid gap-5 lg:grid-cols-2">
+        <Card>
+          <CardHeader
+            title="Personal Training pricing"
+            subtitle="Per-gym PT surcharge added on top of a member's plan price"
+            actions={<Dumbbell size={16} className="text-slate-400" />}
+          />
+          <CardBody>
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              A Personal Training (PT) member is charged their plan price plus this surcharge. Each
+              gym sets its own amount &mdash; it never applies to regular members, and past payment
+              records are never changed.
+            </p>
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              <FormField
+                label={`PT surcharge (${settings.currency})`}
+                error={ptError}
+                hint="Enter 0 to disable PT pricing for this gym"
+              >
+                <Input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  placeholder="0.00"
+                  value={ptSurcharge}
+                  onChange={(e) => { setPtSurcharge(e.target.value); setPtError('') }}
+                />
+              </FormField>
+              <div className="flex items-end">
+                <Button onClick={handlePtSave} loading={ptSaving}>
+                  Save PT surcharge
+                </Button>
+              </div>
+            </div>
+          </CardBody>
+        </Card>
+
+        <Card>
+          <CardHeader
+            title="WhatsApp Group"
+            subtitle="Per-gym invite link to your members' WhatsApp group"
+            actions={<MessageCircle size={16} className="text-slate-400" />}
+          />
+          <CardBody>
+            <p className="text-sm text-slate-500 dark:text-slate-400">
+              Paste your gym&rsquo;s WhatsApp group invite link so staff can offer it to members. Members
+              join voluntarily — nothing is ever sent or added automatically. Each gym keeps its own link.
+            </p>
+            <div className="mt-4 space-y-4">
+              <FormField
+                label="WhatsApp Group Invite Link"
+                error={whatsAppError}
+                hint="Leave empty to disable the invite action for this gym"
+              >
+                <Input
+                  type="url"
+                  placeholder="https://chat.whatsapp.com/…"
+                  value={whatsAppLink}
+                  onChange={(e) => { setWhatsAppLinkLocal(e.target.value); setWhatsAppError('') }}
+                />
+              </FormField>
+              <div className="flex flex-wrap items-center gap-3">
+                <Button onClick={handleWhatsAppSave} loading={whatsAppSaving}>
+                  Save
+                </Button>
+                {whatsAppLink.trim() && (
+                  <Button variant="outline" onClick={handleWhatsAppClear} disabled={whatsAppSaving}>
+                    Clear
+                  </Button>
+                )}
+              </div>
+            </div>
+          </CardBody>
+        </Card>
+
         <Card>
           <CardHeader
             title="Gym profile"

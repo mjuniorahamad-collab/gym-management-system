@@ -116,6 +116,20 @@ export function buildWhatsAppMessage({ memberName, gymName, planName, expiryDate
 }
 
 /**
+ * Build a pre-filled invite message for adding a member to the gym's WhatsApp
+ * group. Only ever a draft — it is never sent automatically; the owner presses
+ * Send in WhatsApp themselves.
+ */
+export function buildWhatsAppGroupInviteMessage({ memberName, gymName, link }) {
+  const name = String(memberName || '').trim()
+  const gym = String(gymName || '').trim() || 'our gym'
+  const invite = String(link || '').trim()
+  return name
+    ? `Hi ${name}, welcome to ${gym}! Please join our gym WhatsApp group using this link:\n${invite}`
+    : `Welcome to ${gym}! Please join our gym WhatsApp group using this link:\n${invite}`
+}
+
+/**
  * Build a https://wa.me link with a URL-encoded pre-filled message.
  * Returns { ok, url, error } — never an invalid link.
  */

@@ -1,4 +1,6 @@
 import { createDoc, isReady, listAll, updateDocById } from './firestore'
+import { getPtSurcharge } from './pt'
+import { getMembershipCharge } from '@/utils/pt'
 import {
   paymentMethods,
   sampleClasses,
@@ -47,12 +49,18 @@ async function seedCollections() {
   }
 
   // Members — every membership period is created as a first-class record so
-  // dues, history and renewals all account through the same ledger.
+  // dues, history and renewals all account through the same ledger. Origin
+  // periods are priced through the SAME canonical getMembershipCharge helper
+  // the rest of the app uses, so a PT member's first period carries the
+  // PT-inclusive amount (gym default, or the member's own override) instead
+  // of the bare plan price — mirroring src/pages/Members.jsx.
   const memberIds = []
+  const seedPtSurcharge = await getPtSurcharge()
   for (const [index, member] of sampleMembers.entries()) {
     const planId = planIds[member.planIndex]
     const joinDate = isoDaysAgo(member.joinDaysAgo)
     const status = member.status === 'active' ? 'active' : member.status
+    const isPt = Boolean(member.isPT)
     const id = await createDoc('members', {
       name: member.name,
       email: member.email,
@@ -69,21 +77,30 @@ async function seedCollections() {
       status,
       joinDate,
       memberUid: '',
+      isPT: isPt,
+      ptSurchargeOverride: member.ptSurchargeOverride == null ? null : member.ptSurchargeOverride,
     })
     memberIds.push(id)
 
     const plan = samplePlans[member.planIndex]
     let originMembershipId = ''
+    let originPrice = plan ? Number(plan.price) : 0
     if (planId && plan) {
+      originPrice = getMembershipCharge({
+        plan,
+        isPT: isPt,
+        ptSurcharge: seedPtSurcharge,
+        ptSurchargeOverride: member.ptSurchargeOverride,
+      }).total
       originMembershipId = await createDoc('memberships', {
         memberId: id,
         planId,
         planName: plan.name,
         startDate: joinDate,
         expiryDate: isoDaysAgo(member.joinDaysAgo - plan.durationDays),
-        price: plan.price,
+        price: originPrice,
         amountPaid: 0,
-        amountDue: plan.price,
+        amountDue: originPrice,
         paymentStatus: 'due',
         paymentId: null,
         receiptNo: null,
@@ -92,9 +109,9 @@ async function seedCollections() {
     }
 
     if (member.status === 'active' && plan) {
-      let paidAmount = plan.price
-      if (index === 1) paidAmount = Math.max(0, plan.price - 1500)
-      const due = Math.max(0, plan.price - paidAmount)
+      let paidAmount = originPrice ?? plan.price
+      if (index === 1) paidAmount = Math.max(0, (originPrice ?? plan.price) - 1500)
+      const due = Math.max(0, (originPrice ?? plan.price) - paidAmount)
       if (originMembershipId) {
         await updateDocById('memberships', originMembershipId, {
           amountPaid: paidAmount,

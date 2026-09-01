@@ -1,6 +1,66 @@
-import { listAll, removeDoc, updateDocById } from './firestore'
+import { getById, listAll, removeDoc, updateDocById } from './firestore'
 import { logAudit } from './audit'
 import { refreshMembershipSnapshots } from './payments'
+import { getMembershipCharge, getEffectivePtSurcharge } from '@/utils/pt'
+
+/**
+ * Apply PT-inclusive pricing to ONE membership period (the owner's explicit,
+ * audited "apply PT to the current period" action).
+ *
+ * This is the SAFE, INTENTIONAL adjustment referenced by the PT enable flow:
+ * it re-prices a single (current/open) period to the canonical effective
+ * price (base plan + applicable PT surcharge/override), snapshots WHY on the
+ * record (basePrice / ptSurcharge / isPT), and recomputes that member's dues
+ * from the finance ledger. It NEVER touches older or closed periods, and
+ * NEVER rewrites a payment record.
+ *
+ * Returns the updated period document. Throws on invalid input or write failure.
+ */
+export async function applyPTInclusivePriceToPeriod({
+  periodId,
+  memberId,
+  isPT = true,
+  ptSurcharge = 0,
+  ptSurchargeOverride,
+}) {
+  if (!periodId) throw new Error('A period ID is required')
+  if (!memberId) throw new Error('A member ID is required')
+
+  const period = await getById('memberships', periodId)
+  if (!period) throw new Error('Membership period not found')
+  if (period.memberId !== memberId) throw new Error('Period does not belong to this member')
+
+  const plans = await listAll('membershipPlans')
+  const plan = plans.find((p) => String(p.id) === String(period.planId)) || null
+
+  let charge
+  if (plan) {
+    charge = getMembershipCharge({ plan, isPT, ptSurcharge, ptSurchargeOverride })
+  } else {
+    const rawBase = Number(period.price)
+    const base = Number.isFinite(rawBase) && rawBase > 0 ? rawBase : 0
+    const addon = isPT ? getEffectivePtSurcharge({ ptSurcharge, ptSurchargeOverride }) : 0
+    charge = { base, addon, total: base + addon }
+  }
+
+  const patch = {
+    price: charge.total,
+    basePrice: charge.base,
+    ptSurcharge: charge.addon,
+    isPT: Boolean(isPT),
+  }
+  await updateDocById('memberships', periodId, patch)
+  await refreshMembershipSnapshots(memberId)
+
+  await logAudit({
+    action: 'update',
+    entity: 'memberships',
+    entityId: periodId,
+    details: { memberId, ptAdjusted: true, ...patch },
+  })
+
+  return { id: periodId, ...period, ...patch }
+}
 
 /**
  * Edit an existing membership period's plan, price, start/expiry dates.

@@ -27,6 +27,7 @@ export const store = {
   attendance: [],
   classes: [],
   bookings: [],
+  weightRecords: [],
   auditLog: [],
   counters: {},
 }

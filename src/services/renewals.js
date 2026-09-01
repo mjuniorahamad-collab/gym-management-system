@@ -49,14 +49,37 @@ export async function renewMembership({
   date,
   note,
   receiptPrefix = 'HWG',
+  effectivePrice,
+  isPT = false,
+  ptSurcharge = 0,
 }) {
   if (!member || !member.id) throw new Error('A valid member is required to renew')
-  const { price } = requireValidPlan(plan)
+  const { price: basePrice } = requireValidPlan(plan)
   const paid = requirePaidAmount(paidAmount)
   // Payment date = when money was actually received. It is stored on the
   // payment and NEVER overwritten by the membership effective start date.
   const paymentDate = requireDate(date || toDateInputValue(new Date()))
   if (!method) throw new Error('Select a payment method')
+
+  // The amount charged for this period. Normally the plan price; when a PT
+  // surcharge applies the caller supplies the PT-inclusive total
+  // (computed by the canonical getMembershipCharge helper). This is the
+  // SNAPSHOT stored on the period and payment — it is never recomputed or
+  // rewritten later, so a later PT toggle cannot change a past record.
+  let price = basePrice
+  if (effectivePrice !== undefined && effectivePrice !== null) {
+    const effective = Number(effectivePrice)
+    if (Number.isFinite(effective) && effective >= 0) price = effective
+  }
+
+  // Preserve why the total was charged. The base price and PT surcharge are
+  // snapshot alongside the total so a later change to the plan or PT settings
+  // never rewrites this historical record. The PT surcharge only applies when
+  // the caller actually charged a PT-inclusive total (effectivePrice given);
+  // a bare renewal with no PT price never fabricates a surcharge.
+  const ptInclusive = effectivePrice !== undefined && effectivePrice !== null
+  const addonSnapshot = ptInclusive && Boolean(isPT) ? Math.max(0, Number(ptSurcharge) || 0) : 0
+  const baseSnapshot = Math.max(0, price - addonSnapshot)
 
   // Membership period = the effective active window. When the owner backdates
   // (effectiveStartDate given) the period starts there; otherwise it defaults
@@ -76,6 +99,9 @@ export async function renewMembership({
     startDate,
     expiryDate,
     price: summary.price,
+    basePrice: baseSnapshot,
+    ptSurcharge: addonSnapshot,
+    isPT: Boolean(isPT),
     amountPaid: summary.paid,
     amountDue: summary.due,
     paymentStatus: summary.status,
@@ -92,6 +118,9 @@ export async function renewMembership({
     memberName: member.name,
     planName: plan.name,
     amount: summary.paid,
+    basePrice: baseSnapshot,
+    ptSurcharge: addonSnapshot,
+    isPT: Boolean(isPT),
     method,
     date: paymentDate,
     note: note || `Renewal — ${plan.name}`,

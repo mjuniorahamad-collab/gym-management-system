@@ -182,7 +182,7 @@ describe('RenewalModal', () => {
     )
 
     // The user's selection is preserved instead of being reset to the member's plan.
-    const newPlanPriceRow = screen.getByText('New plan price').closest('div')
+    const newPlanPriceRow = screen.getByText('Membership plan — base price').closest('div')
     expect(newPlanPriceRow.textContent).toContain('₹1,000')
     expect(newPlanPriceRow.textContent).not.toContain('₹2,600')
     expect(screen.getAllByRole('combobox')[0].value).toBe('1')
@@ -348,6 +348,59 @@ describe('RenewalModal', () => {
       ],
     })
     expect(screen.queryByText(/Overlapping period/i)).toBeNull()
+  })
+
+  it('for a PT member shows the surcharge breakdown and charges base + surcharge', async () => {
+    const user = userEvent.setup()
+    renewMembership.mockResolvedValue({ membership: { id: 'ms-pt' }, payment: { id: 'pay-pt' } })
+
+    renderModal({ ptSurcharge: 1000, member: { id: 'm1', name: 'Zaid', status: 'expired', isPT: true } })
+
+    await user.selectOptions(screen.getAllByRole('combobox')[0], 'p1')
+    await user.type(screen.getByPlaceholderText('0.00'), '4500')
+    fireEvent.submit(screen.getByRole('form', { name: 'Renewal form' }))
+
+    // base 3500 + surcharge 1000 = 4500 new period total
+    expect(screen.getByText('Personal Training surcharge')).toBeInTheDocument()
+    expect(screen.getByText('New period total')).toBeInTheDocument()
+    expect(screen.getAllByText('₹4,500').length).toBeGreaterThan(0)
+
+    await waitFor(() => expect(renewMembership).toHaveBeenCalledTimes(1))
+    expect(renewMembership).toHaveBeenCalledWith(
+      expect.objectContaining({
+        effectivePrice: 4500,
+        isPT: true,
+        ptSurcharge: 1000,
+      })
+    )
+  })
+
+  it('for a regular member shows PT None and does not add the surcharge', async () => {
+    const user = userEvent.setup()
+    renewMembership.mockResolvedValue({ membership: { id: 'ms-reg' }, payment: { id: 'pay-reg' } })
+
+    renderModal({ ptSurcharge: 1000, member: { id: 'm1', name: 'Zaid', status: 'expired', isPT: false } })
+
+    await user.selectOptions(screen.getAllByRole('combobox')[0], 'p1')
+    await user.type(screen.getByPlaceholderText('0.00'), '3500')
+    fireEvent.submit(screen.getByRole('form', { name: 'Renewal form' }))
+
+    expect(screen.getByText('Personal Training')).toBeInTheDocument()
+    expect(screen.queryByText('Personal Training surcharge')).toBeNull()
+    // the PT row shows "None" (surcharge), distinct from the "Outstanding due: None"
+    const baseRow = screen.getByText('Membership plan — base price').closest('div')
+    const ptRow = baseRow.nextElementSibling
+    expect(ptRow.textContent).toContain('Personal Training')
+    expect(ptRow.textContent).toContain('None')
+
+    await waitFor(() => expect(renewMembership).toHaveBeenCalledTimes(1))
+    expect(renewMembership).toHaveBeenCalledWith(
+      expect.objectContaining({
+        effectivePrice: 3500,
+        isPT: false,
+        ptSurcharge: 0,
+      })
+    )
   })
 })
 

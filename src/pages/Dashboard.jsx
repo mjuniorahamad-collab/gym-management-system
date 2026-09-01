@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import {
   Activity,
@@ -17,6 +17,7 @@ import { useToast } from '@/context/ToastContext'
 import { useCollection } from '@/hooks/useFirestore'
 import { loadSampleData } from '@/services/seedService'
 import { recordPayment } from '@/services/payments'
+import { getPtSurcharge } from '@/services/pt'
 import { StatCard } from '@/components/charts/StatCard'
 import { RevenueChart } from '@/components/charts/RevenueChart'
 import { MembersTrendChart } from '@/components/charts/MembersTrendChart'
@@ -69,6 +70,19 @@ export default function Dashboard() {
   const [renewalResult, setRenewalResult] = useState(null)
   const [payTarget, setPayTarget] = useState(null)
   const [submitting, setSubmitting] = useState(false)
+  const [ptSurcharge, setPtSurcharge] = useState(0)
+
+  useEffect(() => {
+    let mounted = true
+    getPtSurcharge()
+      .then((v) => {
+        if (mounted) setPtSurcharge(v)
+      })
+      .catch(() => {})
+    return () => {
+      mounted = false
+    }
+  }, [can])
 
   const canFinance = can('finance.view')
   const canFinanceWrite = can('finance.write')
@@ -112,9 +126,10 @@ export default function Dashboard() {
             plans: plans.items,
             payments: payments.items,
             memberships: memberships.items,
+            ptSurcharge,
           })
         : { rows: [], totalDue: 0, count: 0 },
-    [canFinance, members.items, plans.items, payments.items, memberships.items]
+    [canFinance, members.items, plans.items, payments.items, memberships.items, ptSurcharge]
   )
 
   // Members with an undocumented origin period (pre-records history).
@@ -127,11 +142,12 @@ export default function Dashboard() {
         plans: plans.items,
         payments: payments.items,
         memberships: memberships.items,
+        ptSurcharge,
       })
       if (ledger.periods.some((p) => p.implicit)) count += 1
     }
     return count
-  }, [canFinance, members.items, plans.items, payments.items, memberships.items])
+  }, [canFinance, members.items, plans.items, payments.items, memberships.items, ptSurcharge])
 
   const expiringRows = useMemo(() => {
     const rows = []
@@ -576,6 +592,7 @@ export default function Dashboard() {
               }
             : undefined
         }
+        ptSurcharge={ptSurcharge}
       />
 
       <RenewalModal
@@ -588,6 +605,7 @@ export default function Dashboard() {
         payments={payments.items}
         memberships={memberships.items}
         onRenewed={handleRenewed}
+        ptSurcharge={ptSurcharge}
       />
 
       <ReceiptModal

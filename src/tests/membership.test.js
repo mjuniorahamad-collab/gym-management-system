@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { addDays, toDateInputValue } from '@/utils/dateHelpers'
 import {
+  buildWhatsAppGroupInviteMessage,
   buildWhatsAppMessage,
   buildWhatsAppUrl,
   getDaysRemaining,
@@ -210,6 +211,28 @@ describe('buildWhatsAppMessage', () => {
       expiryDate: null,
     })
     expect(message).toContain('is expiring soon.')
+  })
+})
+
+describe('buildWhatsAppGroupInviteMessage', () => {
+  it('builds the pre-filled group invite message', () => {
+    const message = buildWhatsAppGroupInviteMessage({
+      memberName: 'Umar',
+      gymName: 'Himalye Wonders Gym',
+      link: 'https://chat.whatsapp.com/abc123',
+    })
+    expect(message).toBe(
+      'Hi Umar, welcome to Himalye Wonders Gym! Please join our gym WhatsApp group using this link:\nhttps://chat.whatsapp.com/abc123'
+    )
+  })
+
+  it('falls back gracefully when the member name is missing', () => {
+    const message = buildWhatsAppGroupInviteMessage({
+      memberName: '',
+      gymName: 'Himalye Wonders Gym',
+      link: 'https://chat.whatsapp.com/abc123',
+    })
+    expect(message.startsWith('Welcome to Himalye Wonders Gym!')).toBe(true)
   })
 })
 

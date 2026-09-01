@@ -16,6 +16,7 @@ import { recordPayment } from '@/services/payments'
 import { toDateInputValue } from '@/utils/dateHelpers'
 import { formatCurrency, formatDate } from '@/utils/formatters'
 import { computeMemberLedger } from '@/utils/dues'
+import { getMembershipCharge } from '@/utils/pt'
 import {
   getMembershipPeriod,
   getRenewalPaymentSummary,
@@ -39,7 +40,7 @@ function defaultsFor(currentPlan) {
   }
 }
 
-export function RenewalModal({ open, onClose, member, currentPlan, currentExpiry, plans, payments = [], memberships = [], onRenewed }) {
+export function RenewalModal({ open, onClose, member, currentPlan, currentExpiry, plans, payments = [], memberships = [], onRenewed, ptSurcharge = 0 }) {
   const toast = useToast()
   const { settings } = useSettings()
   const {
@@ -107,17 +108,44 @@ export function RenewalModal({ open, onClose, member, currentPlan, currentExpiry
   const ledger = useMemo(
     () =>
       member
-        ? computeMemberLedger({ member, plans, payments, memberships })
+        ? computeMemberLedger({
+            member,
+            plans,
+            payments,
+            memberships,
+            ptSurcharge,
+            ptSurchargeOverride: member?.ptSurchargeOverride,
+          })
         : null,
-    [member, plans, payments, memberships]
+    [member, plans, payments, memberships, ptSurcharge]
   )
 
   const previousDue = ledger?.totals.due || 0
   const targetMembershipId = ledger?.targetMembershipId
 
   const summary = useMemo(
-    () => getRenewalPaymentSummary({ planPrice: selectedPlan?.price, paidAmount: watched.amount }),
-    [selectedPlan, watched.amount]
+    () =>
+      getRenewalPaymentSummary({
+        planPrice: getMembershipCharge({
+          plan: selectedPlan,
+          isPT: Boolean(member?.isPT),
+          ptSurcharge,
+          ptSurchargeOverride: member?.ptSurchargeOverride,
+        }).total,
+        paidAmount: watched.amount,
+      }),
+    [selectedPlan, watched.amount, member, ptSurcharge]
+  )
+
+  const charge = useMemo(
+    () =>
+      getMembershipCharge({
+        plan: selectedPlan,
+        isPT: Boolean(member?.isPT),
+        ptSurcharge,
+        ptSurchargeOverride: member?.ptSurchargeOverride,
+      }),
+    [selectedPlan, member, ptSurcharge]
   )
 
   const rawCollect = Number(collectAmount)
@@ -146,6 +174,9 @@ export function RenewalModal({ open, onClose, member, currentPlan, currentExpiry
         date: values.date,
         note: values.note,
         receiptPrefix: settings.receiptPrefix,
+        effectivePrice: charge.total,
+        isPT: Boolean(member?.isPT),
+        ptSurcharge: charge.addon,
       })
 
       if (collectAmt > 0 && targetMembershipId) {
@@ -378,9 +409,9 @@ export function RenewalModal({ open, onClose, member, currentPlan, currentExpiry
               </>
             )}
 
-            <div className="flex items-center justify-between">
-              <span className="text-slate-500 dark:text-slate-400">New plan price</span>
-              <span className="font-medium text-slate-800 dark:text-slate-100">{formatCurrency(summary.price, settings.currency)}</span>
+            <div className="flex items-center justify-between border-t border-slate-100 pt-2 dark:border-slate-800">
+              <span className="font-semibold text-slate-700 dark:text-slate-200">Total amount payable now</span>
+              <span className="font-bold text-slate-900 dark:text-slate-100">{formatCurrency(totalPayable, settings.currency)}</span>
             </div>
             {collectAmt > 0 && (
               <div className="flex items-center justify-between">
@@ -388,9 +419,24 @@ export function RenewalModal({ open, onClose, member, currentPlan, currentExpiry
                 <span className="font-medium text-emerald-600 dark:text-emerald-400">{formatCurrency(collectAmt, settings.currency)}</span>
               </div>
             )}
-            <div className="flex items-center justify-between border-t border-slate-100 pt-2 dark:border-slate-800">
-              <span className="font-semibold text-slate-700 dark:text-slate-200">Total amount payable now</span>
-              <span className="font-bold text-slate-900 dark:text-slate-100">{formatCurrency(totalPayable, settings.currency)}</span>
+            <div className="flex items-center justify-between">
+              <span className="text-slate-500 dark:text-slate-400">Membership plan — base price</span>
+              <span className="font-medium text-slate-800 dark:text-slate-100">{formatCurrency(charge.base, settings.currency)}</span>
+            </div>
+            {charge.addon > 0 ? (
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500 dark:text-slate-400">Personal Training surcharge</span>
+                <span className="font-medium text-slate-800 dark:text-slate-100">{formatCurrency(charge.addon, settings.currency)}</span>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500 dark:text-slate-400">Personal Training</span>
+                <span className="font-medium text-slate-400">None</span>
+              </div>
+            )}
+            <div className="flex items-center justify-between">
+              <span className="text-slate-500 dark:text-slate-400">New period total</span>
+              <span className="font-medium text-slate-800 dark:text-slate-100">{formatCurrency(charge.total, settings.currency)}</span>
             </div>
             <div className="flex items-center justify-between">
               <span className="text-slate-500 dark:text-slate-400">Remaining due (new period)</span>

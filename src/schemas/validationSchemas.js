@@ -28,6 +28,12 @@ export const gymOnboardingSchema = z.object({
   tagline: z.string().optional().or(z.literal('')),
 })
 
+export const ptSurchargeSchema = z
+  .coerce
+  .number({ invalid_type_error: 'PT surcharge must be a number' })
+  .min(0, 'PT surcharge cannot be negative')
+  .max(100000000, 'PT surcharge is too large')
+
 export const memberSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters').max(80),
   email: email.optional().or(z.literal('')),
@@ -41,6 +47,10 @@ export const memberSchema = z.object({
   membershipPlanId: z.string().optional().or(z.literal('')),
   status: z.enum(['active', 'expired', 'frozen']),
   joinDate: z.string().optional().or(z.literal('')),
+  ptSurchargeOverride: z
+    .union([z.literal(''), ptSurchargeSchema])
+    .optional()
+    .transform((v) => (v === '' ? null : v)),
 })
 
 export const trainerSchema = z.object({
@@ -137,6 +147,29 @@ export const classSchema = z.object({
   active: z.boolean().default(true),
 })
 
+export const weightRecordSchema = z
+  .object({
+    weight: z.coerce
+      .number({ invalid_type_error: 'Weight must be a number' })
+      .positive('Weight must be positive')
+      .max(500, 'Weight seems too high'),
+    date: z.string().min(1, 'Date is required'),
+  })
+  .refine((v) => !v.date || !Number.isNaN(Date.parse(v.date)), {
+    message: 'Enter a valid date',
+    path: ['date'],
+  })
+
+export const fitnessGoalSchema = z.object({
+  fitnessGoal: z.string().optional().or(z.literal('')),
+  targetWeight: z.coerce
+    .number({ invalid_type_error: 'Target weight must be a number' })
+    .positive('Target weight must be positive')
+    .max(500, 'Target weight seems too high')
+    .optional()
+    .or(z.literal('')),
+})
+
 export const settingsSchema = z.object({
   gymName: z.string().min(2, 'Gym name is required').max(80),
   tagline: z.string().optional().or(z.literal('')),
@@ -144,3 +177,39 @@ export const settingsSchema = z.object({
   dateFormat: z.string().min(1, 'Select a date format'),
   receiptPrefix: z.string().min(1, 'Receipt prefix is required').max(8),
 })
+
+export const whatsAppLinkSchema = z
+  .string()
+  .trim()
+  .refine((v) => v === '' || isValidWhatsAppGroupLink(v), {
+    message: 'Enter a valid WhatsApp group invite link',
+  })
+
+/**
+ * True for a plausible WhatsApp group invite URL that this app's invite flow
+ * supports. Accepts the current WhatsApp group-invite forms (chat.whatsapp.com
+ * and chats.whatsapp.com share links, plus the newer whatsapp.com/channel
+ * invite path) and upgrades http to https. Rejects unrelated or malformed URLs.
+ */
+function isValidWhatsAppGroupLink(value) {
+  const trimmed = value.trim()
+  if (!trimmed) return false
+  let url
+  try {
+    url = new URL(trimmed)
+  } catch {
+    return false
+  }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return false
+  const host = url.hostname.toLowerCase().replace(/^www\./, '')
+  const isWhatsApp = host === 'chat.whatsapp.com' || host === 'chats.whatsapp.com' || host === 'whatsapp.com'
+  if (!isWhatsApp) return false
+  const path = url.pathname
+  const hasInvitePath = /^\/[^/]+/.test(path)
+  if (!hasInvitePath) return false
+  if (host === 'whatsapp.com') {
+    // Only the /channel/<id> style invite is supported on the bare domain.
+    return /^\/channel\/.+$/.test(path)
+  }
+  return true
+}

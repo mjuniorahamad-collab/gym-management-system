@@ -1,9 +1,12 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Eye, Pencil, Plus, Trash2, UserPlus } from 'lucide-react'
 import { usePaginatedCollection, useCollection } from '@/hooks/useFirestore'
 import { createDoc, removeDoc, updateDocById } from '@/services/firestore'
 import { logAudit } from '@/services/audit'
+import { getWhatsAppLink, openWhatsAppGroupInvite } from '@/services/whatsappGroup'
+import { getPtSurcharge } from '@/services/pt'
+import { getMembershipCharge } from '@/utils/pt'
 import { exportMembersToCsv } from '@/services/export'
 import { useAuth } from '@/context/AuthContext'
 import { useSettings } from '@/context/SettingsContext'
@@ -34,6 +37,63 @@ export default function Members() {
   const [editing, setEditing] = useState(null)
   const [deleting, setDeleting] = useState(null)
   const [submitting, setSubmitting] = useState(false)
+  const [whatsAppLink, setWhatsAppLink] = useState('')
+  const [pendingInvite, setPendingInvite] = useState(null)
+  const whatsAppLinkRef = useRef('')
+  const ptSurchargeRef = useRef(0)
+
+  useEffect(() => {
+    let active = true
+    getWhatsAppLink()
+      .then((link) => {
+        if (!active) return
+        setWhatsAppLink(link)
+        whatsAppLinkRef.current = link
+      })
+      .catch(() => {
+        if (active) whatsAppLinkRef.current = ''
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  useEffect(() => {
+    let active = true
+    getPtSurcharge()
+      .then((value) => {
+        if (active) ptSurchargeRef.current = Number(value) || 0
+      })
+      .catch(() => {
+        if (active) ptSurchargeRef.current = 0
+      })
+    return () => {
+      active = false
+    }
+  }, [])
+
+  const handleWhatsAppInvite = async () => {
+    const result = await openWhatsAppGroupInvite({
+      memberName: pendingInvite?.name || pendingInvite || '',
+      phone: pendingInvite?.phone || '',
+      link: whatsAppLink || whatsAppLinkRef.current,
+      gymName: settings.gymName,
+    })
+    setPendingInvite(null)
+    if (!result.ok) {
+      toast.error(result.reason || 'Could not open WhatsApp. Share the invite link from Settings.')
+      if (result.fallbackCopy) {
+        try {
+          await navigator.clipboard?.writeText(result.fallbackCopy)
+          toast.success('Invite link copied to clipboard')
+        } catch {
+          // No clipboard — the error toast above is the fallback.
+        }
+      }
+    } else if (result.copied) {
+      toast.success('Invite link copied to clipboard')
+    }
+  }
 
   const plans = useCollection('membershipPlans')
   const planMap = Object.fromEntries(plans.items.map((p) => [p.id, p]))
@@ -89,6 +149,12 @@ export default function Members() {
             Number.isFinite(duration) && duration > 0
               ? toDateInputValue(addDays(new Date(`${start}T12:00:00`), duration))
               : ''
+          const originCharge = getMembershipCharge({
+            plan: originPlan,
+            isPT: Boolean(payload.isPT),
+            ptSurcharge: ptSurchargeRef.current,
+            ptSurchargeOverride: payload.ptSurchargeOverride,
+          })
           try {
             await createDoc('memberships', {
               memberId: id,
@@ -96,9 +162,12 @@ export default function Members() {
               planName: originPlan.name,
               startDate: start,
               expiryDate: expiry,
-              price: Number(originPlan.price) || 0,
+              price: originCharge.total,
+              basePrice: originCharge.base,
+              ptSurcharge: originCharge.addon,
+              isPT: Boolean(payload.isPT),
               amountPaid: 0,
-              amountDue: Number(originPlan.price) || 0,
+              amountDue: originCharge.total,
               paymentStatus: 'due',
               paymentId: null,
               receiptNo: null,
@@ -108,7 +177,7 @@ export default function Members() {
               action: 'create',
               entity: 'memberships',
               entityId: null,
-              details: { member: payload.name, originPeriod: true, price: originPlan.price },
+              details: { member: payload.name, originPeriod: true, price: originCharge.total },
             })
           } catch (periodError) {
             // Member creation must not fail because period creation was not
@@ -118,6 +187,14 @@ export default function Members() {
         }
 
         toast.success('Member added')
+
+        // Optional, non-blocking: if this gym has a WhatsApp group invite
+        // link, offer to invite the newly added member. Member creation is
+        // already committed and never depends on WhatsApp, so this is purely
+        // a convenience the owner can skip.
+        if (whatsAppLinkRef.current) {
+          setPendingInvite({ name: payload.name, phone: payload.phone || '' })
+        }
       }
       setFormOpen(false)
       setEditing(null)
@@ -237,8 +314,9 @@ export default function Members() {
                         <Link to={`/members/${member.id}`} className="flex items-center gap-3">
                           <MemberPhoto member={member} size="sm" />
                           <div className="min-w-0">
-                            <p className="truncate font-medium text-slate-900 dark:text-slate-100">
-                              {member.name}
+                            <p className="flex items-center gap-1 truncate font-medium text-slate-900 dark:text-slate-100">
+                              <span className="truncate">{member.name}</span>
+                              {member.isPT && <Badge tone="indigo" className="shrink-0 px-1.5 py-0 text-[10px]">PT</Badge>}
                             </p>
                             <p className="truncate text-xs text-slate-400">
                               {member.email || member.memberNo || '—'}
@@ -323,6 +401,15 @@ export default function Members() {
         title="Delete member?"
         message={`This will permanently remove ${deleting?.name}. Payments and attendance history for this member will be kept.`}
         confirmLabel="Delete member"
+      />
+
+      <ConfirmDialog
+        open={Boolean(pendingInvite)}
+        onCancel={() => setPendingInvite(null)}
+        onConfirm={handleWhatsAppInvite}
+        title={`Invite ${pendingInvite?.name || ''} to WhatsApp Group?`}
+        message="This opens a WhatsApp chat with the member, pre-filled with an invite to your gym's WhatsApp group. Nothing is sent automatically — the member joins voluntarily."
+        confirmLabel="Invite to WhatsApp Group"
       />
     </div>
   )

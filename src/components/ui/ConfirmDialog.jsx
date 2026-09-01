@@ -11,6 +11,7 @@ export function ConfirmDialog({
   loading = false,
   onConfirm,
   onCancel,
+  children,
 }) {
   return (
     <Modal
@@ -35,6 +36,7 @@ export function ConfirmDialog({
         </div>
         <p className="pt-1.5 text-sm text-slate-600 dark:text-slate-300">{message}</p>
       </div>
+      {children ? <div className="mt-4">{children}</div> : null}
     </Modal>
   )
 }

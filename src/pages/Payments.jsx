@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useEffect } from 'react'
 import { CreditCard, DollarSign, Plus, Receipt as ReceiptIcon, TrendingUp, Trash2 } from 'lucide-react'
 import { useCollection } from '@/hooks/useFirestore'
 import { recordPayment, deletePayment } from '@/services/payments'
+import { getPtSurcharge } from '@/services/pt'
 import { exportPaymentsToCsv } from '@/services/export'
 import { useAuth } from '@/context/AuthContext'
 import { useSettings } from '@/context/SettingsContext'
@@ -43,6 +44,19 @@ export default function Payments() {
   const [receipt, setReceipt] = useState(null)
   const [submitting, setSubmitting] = useState(false)
   const [visible, setVisible] = useState(PAGE_SIZE)
+  const [ptSurcharge, setPtSurcharge] = useState(0)
+
+  useEffect(() => {
+    let mounted = true
+    getPtSurcharge()
+      .then((v) => {
+        if (mounted) setPtSurcharge(v)
+      })
+      .catch(() => {})
+    return () => {
+      mounted = false
+    }
+  }, [can])
 
   const memberMap = useMemo(() => Object.fromEntries(members.map((m) => [m.id, m])), [members])
   const planMap = useMemo(() => Object.fromEntries(plans.map((p) => [p.id, p])), [plans])
@@ -232,6 +246,7 @@ export default function Payments() {
         memberships={memberships}
         submitting={submitting}
         onSubmit={handleSubmit}
+        ptSurcharge={ptSurcharge}
       />
 
       <ReceiptModal

@@ -15,7 +15,7 @@ import { useSettings } from '@/context/SettingsContext'
 
 const EMPTY = { memberId: '', planId: '', amount: '', method: 'Cash', date: toDateInputValue(), note: '' }
 
-export function PaymentForm({ open, onClose, members, plans, payments = [], memberships = [], submitting, onSubmit, initial }) {
+export function PaymentForm({ open, onClose, members, plans, payments = [], memberships = [], submitting, onSubmit, initial, ptSurcharge = 0 }) {
   const { settings } = useSettings()
   const {
     register,
@@ -38,12 +38,14 @@ export function PaymentForm({ open, onClose, members, plans, payments = [], memb
   )
 
   // Single source of truth: the finance ledger drives every figure shown.
+  // The gym-level PT surcharge is threaded through so a PT member's implicit
+  // legacy periods reconstruct at the PT-inclusive price like everywhere else.
   const ledger = useMemo(
     () =>
       member
-        ? computeMemberLedger({ member, plans, payments, memberships })
+        ? computeMemberLedger({ member, plans, payments, memberships, ptSurcharge })
         : null,
-    [member, plans, payments, memberships]
+    [member, plans, payments, memberships, ptSurcharge]
   )
 
   const openTargets = useMemo(

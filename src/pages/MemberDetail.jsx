@@ -2,10 +2,14 @@ import { createPortal } from 'react-dom'
 import { useEffect, useMemo, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { QRCodeSVG } from 'qrcode.react'
-import { ArrowLeft, CreditCard, Pencil, Plus, Printer, QrCode, RefreshCcw, ScrollText, Trash2 } from 'lucide-react'
+import { ArrowLeft, CreditCard, LineChart as LineChartIcon, Pencil, Plus, Printer, QrCode, RefreshCcw, ScrollText, Trash2 } from 'lucide-react'
 import { getById, updateDocById } from '@/services/firestore'
 import { recordPayment } from '@/services/payments'
-import { editMembershipPeriod, deleteMembershipPeriod } from '@/services/memberships'
+import { editMembershipPeriod, deleteMembershipPeriod, applyPTInclusivePriceToPeriod } from '@/services/memberships'
+import { getPtSurcharge } from '@/services/pt'
+import { getWhatsAppLink } from '@/services/whatsappGroup'
+import { getMembershipCharge } from '@/utils/pt'
+import { addWeightRecord, updateWeightRecord, deleteWeightRecord, setFitnessGoal, parseWeightHistory } from '@/services/weightRecords'
 import { useCollection } from '@/hooks/useFirestore'
 import { logAudit } from '@/services/audit'
 import { useAuth } from '@/context/AuthContext'
@@ -20,16 +24,23 @@ import { MembershipPeriodForm } from '@/components/common/MembershipPeriodForm'
 import { DeletePeriodConfirm } from '@/components/common/DeletePeriodConfirm'
 import { ReceiptModal } from '@/components/common/ReceiptModal'
 import { WhatsAppReminderButton } from '@/components/common/WhatsAppReminderButton'
+import { WhatsAppGroupButton } from '@/components/common/WhatsAppGroupButton'
+import { WeightForm } from '@/components/common/WeightForm'
+import { FitnessGoalForm } from '@/components/common/FitnessGoalForm'
+import { WeightProgressChart } from '@/components/charts/WeightProgressChart'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
 import { Badge, StatusBadge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
+import { Input } from '@/components/ui/Input'
 import { Tabs } from '@/components/ui/Tabs'
 import { Spinner } from '@/components/ui/Spinner'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { formatCurrency, formatDate, formatDateTime } from '@/utils/formatters'
 import { addDays, daysUntil, parseDate } from '@/utils/dateHelpers'
 import { computeMemberLedger } from '@/utils/dues'
 import { PAYMENT_STATUS_LABELS } from '@/utils/renewal'
+import { ptSurchargeSchema } from '@/schemas/validationSchemas'
 
 export default function MemberDetail() {
   const { id } = useParams()
@@ -50,12 +61,23 @@ export default function MemberDetail() {
   const [editPeriod, setEditPeriod] = useState(null)
   const [deletePeriodOpen, setDeletePeriodOpen] = useState(false)
   const [deletePeriod, setDeletePeriod] = useState(null)
+  const [weightFormOpen, setWeightFormOpen] = useState(false)
+  const [editingWeight, setEditingWeight] = useState(null)
+  const [goalFormOpen, setGoalFormOpen] = useState(false)
+  const [deleteWeightOpen, setDeleteWeightOpen] = useState(false)
+  const [deleteWeight, setDeleteWeight] = useState(null)
+  const [ptSurcharge, setPtSurcharge] = useState(0)
+  const [ptToggleOpen, setPtToggleOpen] = useState(false)
+  const [applyPtToCurrent, setApplyPtToCurrent] = useState(false)
+  const [ptOverrideInput, setPtOverrideInput] = useState('')
+  const [whatsAppLink, setWhatsAppLink] = useState('')
 
   const plans = useCollection('membershipPlans')
   const payments = useCollection('payments')
   const attendance = useCollection('attendance')
   const memberships = useCollection('memberships')
   const membersCol = useCollection('members')
+  const weightRecords = useCollection('weightRecords')
 
   const reload = async () => {
     const data = await getById('members', id)
@@ -67,6 +89,42 @@ export default function MemberDetail() {
     setLoading(true)
     reload()
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id])
+
+  useEffect(() => {
+    if (member) {
+      setPtOverrideInput(member.ptSurchargeOverride == null ? '' : String(member.ptSurchargeOverride))
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [member?.ptSurchargeOverride, member?.id])
+
+  useEffect(() => {
+    let active = true
+    getPtSurcharge()
+      .then((value) => {
+        if (active) setPtSurcharge(value)
+      })
+      .catch(() => {
+        // Kept at 0 (regular) on read failure; surfaced via the toggle path.
+        if (active) setPtSurcharge(0)
+      })
+    return () => {
+      active = false
+    }
+  }, [id])
+
+  useEffect(() => {
+    let active = true
+    getWhatsAppLink()
+      .then((link) => {
+        if (active) setWhatsAppLink(link)
+      })
+      .catch(() => {
+        if (active) setWhatsAppLink('')
+      })
+    return () => {
+      active = false
+    }
   }, [id])
 
   const plan = useMemo(() => planFor(member, plans.items), [member, plans.items])
@@ -98,6 +156,21 @@ export default function MemberDetail() {
   )
   const latestMembershipId = memberMemberships[0]?.id
 
+  const memberWeightRecords = useMemo(
+    () => (weightRecords.items || []).filter((r) => r && r.memberId === id),
+    [weightRecords.items, id]
+  )
+  const weightProgress = useMemo(() => parseWeightHistory(memberWeightRecords), [memberWeightRecords])
+  const chartData = useMemo(
+    () =>
+      weightProgress.chronological.map((r) => ({
+        date: r.date,
+        label: formatDate(r.date),
+        weight: Number(r.weight),
+      })),
+    [weightProgress.chronological]
+  )
+
   // Single source of truth: every figure on this page derives from the
   // finance ledger (periods + payments), never from stored snapshots.
   const ledger = useMemo(() => {
@@ -107,8 +180,10 @@ export default function MemberDetail() {
       plans: plans.items,
       payments: payments.items,
       memberships: memberships.items,
+      ptSurcharge,
+      ptSurchargeOverride: member?.ptSurchargeOverride,
     })
-  }, [member, plans.items, payments.items, memberships.items])
+  }, [member, plans.items, payments.items, memberships.items, ptSurcharge])
 
   // History rows, newest period first.
   const ledgerPeriodsDesc = useMemo(
@@ -126,10 +201,115 @@ export default function MemberDetail() {
   const canWrite = can('members.write')
   const canFinanceWrite = can('finance.write')
 
+  // Canonical PT charge for display: base plan price + applicable surcharge
+  // (per-member override when set, otherwise the per-gym default) when the
+  // member takes Personal Training. Derived from the SAME helper used by the
+  // renewal modal and origin-period creation, so profile, dues and renewal can
+  // never disagree.
+  const ptCharge = useMemo(
+    () =>
+      getMembershipCharge({
+        plan,
+        isPT: Boolean(member?.isPT),
+        ptSurcharge,
+        ptSurchargeOverride: member?.ptSurchargeOverride,
+      }),
+    [plan, member, ptSurcharge]
+  )
+
   const handleRenewed = (result) => {
     setRenewOpen(false)
     setRenewalResult(result)
     reload()
+  }
+
+  const handlePtToggle = async () => {
+    if (!member) return
+    setSubmitting(true)
+    try {
+      const next = !member.isPT
+      await updateDocById('members', id, { isPT: next })
+      await logAudit({
+        action: 'update',
+        entity: 'members',
+        entityId: id,
+        details: { name: member.name, isPT: next },
+      })
+
+      // Safe, intentional adjustment (opt-in only): when the owner explicitly
+      // asks, re-price ONLY the current open membership period at the
+      // PT-inclusive effective amount. Older periods and every payment record
+      // are never rewritten.
+      if (next && applyPtToCurrent) {
+        const targetPeriodId = ledger?.targetMembershipId || latestMembershipId
+        if (targetPeriodId) {
+          await applyPTInclusivePriceToPeriod({
+            periodId: targetPeriodId,
+            memberId: id,
+            isPT: true,
+            ptSurcharge,
+            ptSurchargeOverride: member.ptSurchargeOverride,
+          })
+        }
+      }
+
+      toast.success(next ? 'Personal Training enabled' : 'Personal Training disabled')
+      setPtToggleOpen(false)
+      setApplyPtToCurrent(false)
+      reload()
+    } catch (e) {
+      toast.error(e.message || 'Could not update Personal Training status')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const handlePtOverrideSave = async () => {
+    if (!member) return
+    setSubmitting(true)
+    try {
+      const parsed = ptSurchargeSchema.safeParse(ptOverrideInput)
+      if (!parsed.success) {
+        toast.error(parsed.error?.issues?.[0]?.message || 'Enter a valid PT surcharge override')
+        return
+      }
+      const value = parsed.data
+      await updateDocById('members', id, {
+        ptSurchargeOverride: value,
+      })
+      await logAudit({
+        action: 'update',
+        entity: 'members',
+        entityId: id,
+        details: { name: member.name, ptSurchargeOverride: value },
+      })
+      toast.success('Member PT surcharge updated')
+      reload()
+    } catch (e) {
+      toast.error(e.message || 'Could not update PT surcharge override')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const handlePtOverrideClear = async () => {
+    if (!member) return
+    setSubmitting(true)
+    try {
+      await updateDocById('members', id, { ptSurchargeOverride: null })
+      await logAudit({
+        action: 'update',
+        entity: 'members',
+        entityId: id,
+        details: { name: member.name, ptSurchargeOverride: null },
+      })
+      toast.success('Using the gym default PT surcharge')
+      reload()
+    } catch (e) {
+      toast.error(e.message || 'Could not clear PT surcharge override')
+    } finally {
+      setSubmitting(false)
+    }
   }
 
   const handleUpdate = async (values) => {
@@ -222,6 +402,56 @@ export default function MemberDetail() {
     }
   }
 
+  const handleWeightSubmit = async (values) => {
+    setSubmitting(true)
+    try {
+      if (editingWeight) {
+        await updateWeightRecord(editingWeight.id, { weight: values.weight, date: values.date })
+        toast.success('Measurement updated')
+        setWeightFormOpen(false)
+        setEditingWeight(null)
+      } else {
+        await addWeightRecord(id, { weight: values.weight, date: values.date })
+        toast.success('Measurement added')
+        setWeightFormOpen(false)
+      }
+      reload()
+    } catch (e) {
+      toast.error(e.message || 'Could not save measurement')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const handleDeleteWeight = async () => {
+    setSubmitting(true)
+    try {
+      await deleteWeightRecord(deleteWeight.id)
+      toast.success('Measurement deleted')
+      setDeleteWeightOpen(false)
+      setDeleteWeight(null)
+      reload()
+    } catch (e) {
+      toast.error(e.message || 'Could not delete measurement')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const handleGoalSubmit = async (values) => {
+    setSubmitting(true)
+    try {
+      await setFitnessGoal(id, { fitnessGoal: values.fitnessGoal, targetWeight: values.targetWeight })
+      toast.success('Fitness goal updated')
+      setGoalFormOpen(false)
+      reload()
+    } catch (e) {
+      toast.error(e.message || 'Could not update goal')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
   if (loading) return <Spinner label="Loading member…" />
   if (!member) {
     return (
@@ -241,6 +471,7 @@ export default function MemberDetail() {
     { key: 'overview', label: 'Overview' },
     { key: 'payments', label: `Payments (${memberPayments.length})` },
     { key: 'attendance', label: `Attendance (${memberAttendance.length})` },
+    { key: 'progress', label: `Progress (${weightProgress.chronological.length})` },
   ]
 
   return (
@@ -320,6 +551,81 @@ export default function MemberDetail() {
                               : `${daysLeft} day${daysLeft === 1 ? '' : 's'}`
                         }
                       />
+                    </CardBody>
+                  </Card>
+                  <Card className="sm:col-span-2">
+                    <CardHeader
+                      title="Personal Training"
+                      subtitle="Member-level PT add-on charged on top of the membership plan"
+                    />
+                    <CardBody>
+                      <div className="flex flex-wrap items-center justify-between gap-4">
+                        <div className="flex items-center gap-3">
+                          <p className="text-sm text-slate-500 dark:text-slate-400">Status</p>
+                          <Badge tone={member.isPT ? 'indigo' : 'neutral'}>
+                            {member.isPT ? 'Personal Training' : 'Regular'}
+                          </Badge>
+                        </div>
+                        {canWrite && (
+                          <Button variant={member.isPT ? 'outline' : 'primary'} size="sm" onClick={() => setPtToggleOpen(true)}>
+                            {member.isPT ? 'Disable PT' : 'Enable PT'}
+                          </Button>
+                        )}
+                      </div>
+                      {member.isPT && (
+                        <div className="mt-4 grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 sm:grid-cols-3 dark:border-slate-800 dark:bg-slate-950/40">
+                          <div>
+                            <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Plan price</p>
+                            <p className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">
+                              {formatCurrency(ptCharge.base, settings.currency)}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-xs font-medium uppercase tracking-wide text-slate-400">PT surcharge</p>
+                            <p className="mt-1 text-lg font-bold text-slate-900 dark:text-slate-100">
+                              {formatCurrency(ptCharge.addon, settings.currency)}
+                            </p>
+                          </div>
+                          <div>
+                            <p className="text-xs font-medium uppercase tracking-wide text-slate-400">Total membership amount</p>
+                            <p className="mt-1 text-lg font-bold text-indigo-600 dark:text-indigo-400">
+                              {formatCurrency(ptCharge.total, settings.currency)}
+                            </p>
+                          </div>
+                        </div>
+                      )}
+                      {canWrite && member.isPT && (
+                        <div className="mt-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2.5 dark:border-slate-800 dark:bg-slate-900/40">
+                          <div>
+                            <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Member surcharge override</p>
+                            <p className="text-xs text-slate-400">
+                              {member.ptSurchargeOverride == null
+                                ? `Uses gym default (${formatCurrency(ptSurcharge, settings.currency)}) — set a custom amount below, or 0 for free PT`
+                                : `Custom · ${formatCurrency(member.ptSurchargeOverride, settings.currency)} (gym default ${formatCurrency(ptSurcharge, settings.currency)})`}
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <Input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              placeholder={String(ptSurcharge)}
+                              value={ptOverrideInput}
+                              onChange={(e) => setPtOverrideInput(e.target.value)}
+                              className="w-28"
+                              aria-label="Member PT surcharge override"
+                            />
+                            <Button size="sm" onClick={handlePtOverrideSave} loading={submitting}>
+                              Save
+                            </Button>
+                            {member.ptSurchargeOverride != null && (
+                              <Button size="sm" variant="outline" onClick={handlePtOverrideClear} disabled={submitting}>
+                                Reset
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </CardBody>
                   </Card>
                   {member.notes && (
@@ -469,6 +775,135 @@ export default function MemberDetail() {
                   )}
                 </div>
               )}
+
+              {tab === 'progress' && (
+                <div className="space-y-5">
+                  {/* Fitness goal */}
+                  <Card>
+                    <CardHeader
+                      title="Fitness goal"
+                      subtitle={member.fitnessGoal ? `Focusing on ${member.fitnessGoal}` : 'No goal set for this member'}
+                      actions={
+                        canWrite && (
+                          <Button variant="outline" size="sm" onClick={() => setGoalFormOpen(true)}>
+                            <Pencil size={14} /> {member.fitnessGoal ? 'Edit goal' : 'Set goal'}
+                          </Button>
+                        )
+                      }
+                    />
+                    <CardBody>
+                      {member.fitnessGoal ? (
+                        <div className="flex flex-wrap items-center gap-3">
+                          <Badge tone="indigo">{member.fitnessGoal}</Badge>
+                          {member.targetWeight ? (
+                            <p className="text-sm text-slate-500 dark:text-slate-400">
+                              Target weight: <span className="font-semibold text-slate-700 dark:text-slate-200">{member.targetWeight} kg</span>
+                            </p>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <p className="text-sm text-slate-400">Goal not set.</p>
+                      )}
+                    </CardBody>
+                  </Card>
+
+                  {/* Weight summary */}
+                  <Card>
+                    <CardHeader
+                      title="Weight summary"
+                      subtitle="Based on recorded measurements, newest one is the current weight"
+                      actions={
+                        canWrite && (
+                          <Button size="sm" onClick={() => { setEditingWeight(null); setWeightFormOpen(true) }}>
+                            <Plus size={14} /> Add measurement
+                          </Button>
+                        )
+                      }
+                    />
+                    <CardBody>
+                      {weightProgress.chronological.length === 0 ? (
+                        <EmptyState icon={LineChartIcon} title="No weight measurements yet" />
+                      ) : (
+                        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                          <WeightStat label="Starting weight" value={`${formatNumber(weightProgress.starting.weight)} kg`} />
+                          <WeightStat label="Current weight" value={`${formatNumber(weightProgress.current.weight)} kg`} />
+                          {member.targetWeight ? (
+                            <WeightStat label="Target weight" value={`${formatNumber(member.targetWeight)} kg`} />
+                          ) : (
+                            <WeightStat label="Target weight" value="—" muted />
+                          )}
+                          <WeightStat
+                            label="Change from start"
+                            value={`${signNumber(weightProgress.change)} ${formatNumber(Math.abs(weightProgress.change))}`}
+                            tone={weightProgress.change < 0 ? 'down' : weightProgress.change > 0 ? 'up' : 'neutral'}
+                          />
+                        </div>
+                      )}
+                    </CardBody>
+                  </Card>
+
+                  {/* Chart */}
+                  {chartData.length > 1 && (
+                    <Card>
+                      <CardHeader title="Weight progress" />
+                      <CardBody>
+                        <WeightProgressChart data={chartData} />
+                      </CardBody>
+                    </Card>
+                  )}
+
+                  {/* History */}
+                  {weightProgress.chronological.length > 0 && (
+                    <div className="overflow-hidden rounded-xl border border-slate-200 dark:border-slate-800">
+                      <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-slate-800">
+                        <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Weight history</h4>
+                        <p className="text-xs text-slate-400">Oldest → newest</p>
+                      </div>
+                      <div className="overflow-x-auto">
+                        <table className="w-full">
+                          <thead className="border-b border-slate-200 dark:border-slate-800">
+                            <tr>
+                              <th className="th">Date</th>
+                              <th className="th">Weight</th>
+                              {canWrite && <th className="th" />}
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                            {weightProgress.chronological.map((r) => (
+                              <tr key={r.id}>
+                                <td className="td whitespace-nowrap">{formatDate(r.date)}</td>
+                                <td className="td font-semibold">{formatNumber(r.weight)} kg</td>
+                                {canWrite && (
+                                  <td className="td">
+                                    <div className="flex justify-end gap-1">
+                                      <button
+                                        type="button"
+                                        onClick={() => { setEditingWeight(r); setWeightFormOpen(true) }}
+                                        className="rounded p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-300"
+                                        aria-label="Edit measurement"
+                                      >
+                                        <Pencil size={14} />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => { setDeleteWeight(r); setDeleteWeightOpen(true) }}
+                                        className="rounded p-1 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-500/10 dark:hover:text-red-400"
+                                        aria-label="Delete measurement"
+                                      >
+                                        <Trash2 size={14} />
+                                      </button>
+                                    </div>
+                                  </td>
+                                )}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </CardBody>
         </Card>
@@ -527,6 +962,15 @@ export default function MemberDetail() {
                   phone={member.phone}
                 />
               )}
+              {canWrite && (
+                <WhatsAppGroupButton
+                  link={whatsAppLink}
+                  memberName={member.name}
+                  phone={member.phone}
+                  gymName={settings.gymName}
+                  className="w-full"
+                />
+              )}
               <Link to="/payments">
                 <Button variant="outline" className="w-full">
                   Go to payments
@@ -568,6 +1012,7 @@ export default function MemberDetail() {
         memberships={memberships.items}
         submitting={submitting}
         onSubmit={handlePayment}
+        ptSurcharge={ptSurcharge}
         initial={{
           memberId: member.id,
           membershipId: ledger?.targetMembershipId || latestMembershipId || '',
@@ -585,6 +1030,7 @@ export default function MemberDetail() {
         payments={payments.items}
         memberships={memberships.items}
         onRenewed={handleRenewed}
+        ptSurcharge={ptSurcharge}
       />
 
       <ReceiptModal
@@ -625,6 +1071,69 @@ export default function MemberDetail() {
         onConfirm={handleDeletePeriod}
       />
 
+      <WeightForm
+        open={weightFormOpen}
+        onClose={() => { setWeightFormOpen(false); setEditingWeight(null) }}
+        initial={editingWeight}
+        submitting={submitting}
+        onSubmit={handleWeightSubmit}
+      />
+
+      <FitnessGoalForm
+        open={goalFormOpen}
+        onClose={() => setGoalFormOpen(false)}
+        initial={member}
+        submitting={submitting}
+        onSubmit={handleGoalSubmit}
+      />
+
+      <ConfirmDialog
+        open={deleteWeightOpen}
+        onCancel={() => { setDeleteWeightOpen(false); setDeleteWeight(null) }}
+        title="Delete measurement"
+        message={`Delete the ${deleteWeight ? `${formatNumber(deleteWeight.weight)} kg measurement from ${formatDate(deleteWeight.date)}` : 'weight measurement'}? Other entries and member data are not affected.`}
+        confirmLabel="Delete"
+        danger
+        loading={submitting}
+        onConfirm={handleDeleteWeight}
+      />
+
+      <ConfirmDialog
+        open={ptToggleOpen}
+        onCancel={() => { setPtToggleOpen(false); setApplyPtToCurrent(false) }}
+        title={member?.isPT ? 'Disable Personal Training?' : 'Enable Personal Training?'}
+        message={
+          member?.isPT
+            ? `Disabling PT means ${member?.name} will be charged the regular plan price only from the next renewal. Existing payment records and past periods are never changed.`
+            : `Enabling PT means ${member?.name} will be charged the plan price plus the applicable PT surcharge. Existing payment records and past periods are never changed.`
+        }
+        confirmLabel={member?.isPT ? 'Disable PT' : 'Enable PT'}
+        loading={submitting}
+        onConfirm={handlePtToggle}
+      >
+        {!member?.isPT && (ledger?.targetMembershipId || latestMembershipId) && ledger?.totals.due > 0 && (
+          <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3 dark:border-indigo-500/30 dark:bg-indigo-500/10">
+            <label className="flex cursor-pointer items-start gap-2 text-sm text-indigo-900 dark:text-indigo-200">
+              <input
+                type="checkbox"
+                checked={applyPtToCurrent}
+                onChange={(e) => setApplyPtToCurrent(e.target.checked)}
+                className="mt-0.5 h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+              />
+              <span>
+                <span className="font-medium">
+                  Apply PT pricing to the current unpaid period now ({formatCurrency(ptCharge.total, settings.currency)})
+                </span>
+                <span className="mt-0.5 block text-xs text-indigo-600/80 dark:text-indigo-300/80">
+                  Re-prices ONLY this period — its remaining due becomes the PT-inclusive total. Older periods and
+                  every payment record stay untouched.
+                </span>
+              </span>
+            </label>
+          </div>
+        )}
+      </ConfirmDialog>
+
       {qrOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setQrOpen(false)} />
@@ -659,4 +1168,32 @@ function InfoRow({ label, value }) {
       <span className="text-right font-medium text-slate-700 dark:text-slate-200">{value || '—'}</span>
     </div>
   )
+}
+
+function WeightStat({ label, value, tone = 'neutral', muted = false }) {
+  const tones = {
+    neutral: 'text-slate-900 dark:text-slate-100',
+    up: 'text-emerald-600 dark:text-emerald-400',
+    down: 'text-rose-600 dark:text-rose-400',
+  }
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 dark:border-slate-800 dark:bg-slate-950/40">
+      <p className="text-xs font-medium uppercase tracking-wide text-slate-400">{label}</p>
+      <p className={`mt-1.5 text-xl font-bold ${muted ? 'text-slate-300 dark:text-slate-600' : tones[tone]}`}>{value}</p>
+    </div>
+  )
+}
+
+function formatNumber(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return '—'
+  return n % 1 === 0 ? String(n) : n.toFixed(1)
+}
+
+function signNumber(value) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return ''
+  if (n > 0) return '+'
+  if (n < 0) return '−'
+  return '0'
 }

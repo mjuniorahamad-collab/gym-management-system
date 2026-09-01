@@ -1,5 +1,6 @@
 import { addDays, parseDate } from './dateHelpers'
 import { safePaymentAmount } from './payments'
+import { getMembershipCharge } from './pt'
 
 /**
  * SINGLE SOURCE OF TRUTH for all membership money math.
@@ -25,6 +26,20 @@ import { safePaymentAmount } from './payments'
 function periodPrice(membership) {
   const price = Number(membership?.price)
   return Number.isFinite(price) && price > 0 ? price : 0
+}
+
+/**
+ * Price for an implicit/reconstructed origin period (no recorded document).
+ * Uses the canonical PT pricing when the member is PT so a legacy member's
+ * reconstructed charge matches what a recorded PT period would carry.
+ */
+function implicitPeriodPrice({ plan, member, ptSurcharge, ptSurchargeOverride }) {
+  return getMembershipCharge({
+    plan,
+    isPT: Boolean(member?.isPT),
+    ptSurcharge,
+    ptSurchargeOverride,
+  }).total
 }
 
 function periodStatus({ dueAmount, totalPaid }) {
@@ -111,7 +126,14 @@ function sortByStartDate(list) {
  *   targetMembershipId: id | undefined // oldest open RECORDED period
  * }
  */
-export function computeMemberLedger({ member, plans = [], payments = [], memberships = [] } = {}) {
+export function computeMemberLedger({
+  member,
+  plans = [],
+  payments = [],
+  memberships = [],
+  ptSurcharge = 0,
+  ptSurchargeOverride,
+} = {}) {
   if (!member?.id) {
     return { periods: [], openPeriods: [], totals: { billed: 0, paid: 0, due: 0 }, targetMembershipId: undefined }
   }
@@ -144,7 +166,12 @@ export function computeMemberLedger({ member, plans = [], payments = [], members
       label: plan.name || 'Membership',
       startDate: start,
       expiryDate: start && Number.isFinite(duration) && duration > 0 ? addDays(start, duration) : null,
-      price: periodPrice(plan),
+      price: implicitPeriodPrice({
+        plan,
+        member,
+        ptSurcharge,
+        ptSurchargeOverride: ptSurchargeOverride ?? member?.ptSurchargeOverride,
+      }),
       implicit: true,
     })
   } else {
@@ -171,7 +198,12 @@ export function computeMemberLedger({ member, plans = [], payments = [], members
         startDate: earliestStray,
         expiryDate:
           earliestStray && Number.isFinite(duration) && duration > 0 ? addDays(earliestStray, duration) : null,
-        price: periodPrice(plan),
+        price: implicitPeriodPrice({
+          plan,
+          member,
+          ptSurcharge,
+          ptSurchargeOverride: ptSurchargeOverride ?? member?.ptSurchargeOverride,
+        }),
         implicit: true,
       })
     }
@@ -252,6 +284,8 @@ export function computeOutstandingDues({
   plans = [],
   payments = [],
   memberships = [],
+  ptSurcharge = 0,
+  _ptSurchargeOverride,
 } = {}) {
   const planMap = Object.fromEntries(plans.map((p) => [p.id, p]))
 
@@ -260,7 +294,13 @@ export function computeOutstandingDues({
     const plan = planMap[member?.membershipPlanId]
     if (!plan) continue
 
-    const ledger = computeMemberLedger({ member, plans, payments, memberships })
+    const ledger = computeMemberLedger({
+      member,
+      plans,
+      payments,
+      memberships,
+      ptSurcharge,
+    })
     if (ledger.totals.due <= 0) continue
 
     rows.push({
