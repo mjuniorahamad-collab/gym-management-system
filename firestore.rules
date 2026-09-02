@@ -145,6 +145,29 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
+    // ---------- Gym settings (per-gym, tenant-isolated) --------------------
+    // PT pricing (and any future per-gym config) lives as a sub-collection of
+    // the owner-of-record gym document. Unlike the global `settings/app`
+    // singleton (shared across tenants), these documents carry gymId and are
+    // scoped to their own gym, so Owner A can never read or modify Owner B's
+    // PT pricing.
+    //
+    // Read: any staff member of the owning gym (like other operational data).
+    // Write (create/update): the owner of THAT gym only, and the pending doc
+    // must carry the caller's gymId — cross-gym writes are impossible. Deletes
+    // are never allowed from the client.
+    match /gyms/{gymId}/settings/{doc} {
+      allow read: if isSignedIn()
+        && hasGym()
+        && resource != null
+        && resource.data.gymId == gymOf(request.auth.uid);
+      allow create, update: if isOwner()
+        && 'gymId' in request.resource.data
+        && request.resource.data.gymId == gymOf(request.auth.uid)
+        && gymOf(request.auth.uid) == gymId;
+      allow delete: if false;
+    }
+
     // ---------- Users (auth profiles + roles) -----------------------------
     match /users/{uid} {
       // A user can always read their own profile, plus profiles within their
@@ -165,6 +188,15 @@ service cloud.firestore {
 
     // ---------- Members ---------------------------------------------------
     match /members/{id} {
+      allow read: if isStaff() && canReadTenant(resource);
+      allow create, update: if isStaff() && canWriteTenant(resource);
+      allow delete: if (isRole('admin') || isOwner()) && canDeleteTenant(resource);
+    }
+
+    // ---------- Weight records (member fitness progress) -------------------
+    // Historical weight measurements keyed by memberId and scoped to the
+    // caller's gym. Same tenancy + role guards as members.
+    match /weightRecords/{id} {
       allow read: if isStaff() && canReadTenant(resource);
       allow create, update: if isStaff() && canWriteTenant(resource);
       allow delete: if (isRole('admin') || isOwner()) && canDeleteTenant(resource);
