@@ -530,6 +530,7 @@ export default function MemberDetail() {
                     <CardHeader title="Contact details" />
                     <CardBody className="space-y-2 text-sm">
                       <InfoRow label="Address" value={member.address} />
+                      {member.fatherName && <InfoRow label="Father's name" value={member.fatherName} />}
                       <InfoRow label="Date of birth" value={formatDate(member.dob)} />
                       <InfoRow label="Emergency contact" value={member.emergencyName} />
                       <InfoRow label="Emergency phone" value={member.emergencyPhone} />

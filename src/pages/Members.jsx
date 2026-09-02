@@ -124,6 +124,7 @@ export default function Members() {
         email: values.email || '',
         dob: values.dob || '',
         address: values.address || '',
+        fatherName: values.fatherName || '',
         emergencyName: values.emergencyName || '',
         emergencyPhone: values.emergencyPhone || '',
         notes: values.notes || '',

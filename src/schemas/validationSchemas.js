@@ -41,6 +41,7 @@ export const memberSchema = z.object({
   dob: z.string().optional().or(z.literal('')),
   gender: z.enum(['Male', 'Female', 'Other']),
   address: z.string().optional().or(z.literal('')),
+  fatherName: z.string().optional().or(z.literal('')),
   emergencyName: z.string().optional().or(z.literal('')),
   emergencyPhone: z.string().optional().or(z.literal('')),
   notes: z.string().optional().or(z.literal('')),

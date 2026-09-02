@@ -87,6 +87,6 @@ export const sampleExpenses = [
   { title: 'Insurance premium', category: 'Insurance', amount: 8000, daysAgo: 25 },
 ]
 
-export const paymentMethods = ['Cash', 'Card', 'eSewa', 'Khalti', 'Bank Transfer']
+export const paymentMethods = ['Cash', 'UPI / Online', 'Card', 'Bank Transfer', 'Other']
 
 export const membershipPlanNames = samplePlans.map((p) => p.name)

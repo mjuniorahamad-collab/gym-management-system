@@ -38,14 +38,7 @@ export const PERMISSIONS = {
   'seed.data': ['owner', 'admin'],
 }
 
-export const PAYMENT_METHODS = [
-  'Cash',
-  'Card',
-  'eSewa',
-  'Khalti',
-  'Bank Transfer',
-  'Other',
-]
+export const PAYMENT_METHODS = ['Cash', 'UPI / Online', 'Card', 'Bank Transfer', 'Other']
 
 export const EXPENSE_CATEGORIES = [
   'Rent',

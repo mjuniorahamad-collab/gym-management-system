@@ -16,6 +16,7 @@ const EMPTY = {
   gender: 'Male',
   dob: '',
   address: '',
+  fatherName: '',
   emergencyName: '',
   emergencyPhone: '',
   notes: '',
@@ -69,14 +70,14 @@ export function MemberForm({ open, onClose, initial, plans, submitting, onSubmit
           <FormField label="Full name" error={errors.name?.message} required>
             <Input placeholder="e.g. Aarav Shrestha" error={errors.name} {...register('name')} />
           </FormField>
-          <FormField label="Phone" error={errors.phone?.message} required>
-            <Input placeholder="98XXXXXXXX" error={errors.phone} {...register('phone')} />
+          <FormField label="Father's name" error={errors.fatherName?.message}>
+            <Input placeholder="Optional" error={errors.fatherName} {...register('fatherName')} />
           </FormField>
         </div>
 
         <div className="grid gap-4 sm:grid-cols-2">
-          <FormField label="Email" error={errors.email?.message}>
-            <Input type="email" placeholder="member@example.com" error={errors.email} {...register('email')} />
+          <FormField label="Phone" error={errors.phone?.message} required>
+            <Input placeholder="98XXXXXXXX" error={errors.phone} {...register('phone')} />
           </FormField>
           <FormField label="Gender" error={errors.gender?.message}>
             <Select error={errors.gender} {...register('gender')}>

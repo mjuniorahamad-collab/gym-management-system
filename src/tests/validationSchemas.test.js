@@ -31,6 +31,24 @@ describe('memberSchema', () => {
     expect(memberSchema.parse(valid).name).toBe('Aarav Shrestha')
   })
 
+  it('accepts a member with an optional father name', () => {
+    const result = memberSchema.parse({ ...valid, fatherName: 'Ramesh Shrestha' })
+    expect(result.fatherName).toBe('Ramesh Shrestha')
+  })
+
+  it('accepts a member with a blank father name', () => {
+    expect(memberSchema.safeParse({ ...valid, fatherName: '' }).success).toBe(true)
+  })
+
+  it('accepts an existing member without a father name field', () => {
+    expect(memberSchema.safeParse(valid).success).toBe(true)
+  })
+
+  it('accepts a father name with surrounding whitespace', () => {
+    const result = memberSchema.parse({ ...valid, fatherName: '  Ramesh Shrestha  ' })
+    expect(result.fatherName).toBe('  Ramesh Shrestha  ')
+  })
+
   it('rejects a missing name', () => {
     expect(memberSchema.safeParse({ ...valid, name: 'A' }).success).toBe(false)
   })
