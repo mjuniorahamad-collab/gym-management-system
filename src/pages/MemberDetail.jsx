@@ -2,7 +2,7 @@ import { createPortal } from 'react-dom'
 import { useEffect, useMemo, useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { QRCodeSVG } from 'qrcode.react'
-import { ArrowLeft, CreditCard, LineChart as LineChartIcon, Pencil, Plus, Printer, QrCode, RefreshCcw, ScrollText, Trash2 } from 'lucide-react'
+import { ArrowLeft, CreditCard, LineChart as LineChartIcon, Pencil, Plus, Printer, QrCode, RefreshCcw, ScrollText, Share2, Trash2 } from 'lucide-react'
 import { getById, updateDocById } from '@/services/firestore'
 import { recordPayment } from '@/services/payments'
 import { editMembershipPeriod, deleteMembershipPeriod, applyPTInclusivePriceToPeriod } from '@/services/memberships'
@@ -25,6 +25,7 @@ import { DeletePeriodConfirm } from '@/components/common/DeletePeriodConfirm'
 import { ReceiptModal } from '@/components/common/ReceiptModal'
 import { WhatsAppReminderButton } from '@/components/common/WhatsAppReminderButton'
 import { WhatsAppGroupButton } from '@/components/common/WhatsAppGroupButton'
+import { ShareSummaryModal } from '@/components/common/ShareSummaryModal'
 import { WeightForm } from '@/components/common/WeightForm'
 import { FitnessGoalForm } from '@/components/common/FitnessGoalForm'
 import { WeightProgressChart } from '@/components/charts/WeightProgressChart'
@@ -57,6 +58,7 @@ export default function MemberDetail() {
   const [submitting, setSubmitting] = useState(false)
   const [tab, setTab] = useState('overview')
   const [qrOpen, setQrOpen] = useState(false)
+  const [shareOpen, setShareOpen] = useState(false)
   const [editPeriodOpen, setEditPeriodOpen] = useState(false)
   const [editPeriod, setEditPeriod] = useState(null)
   const [deletePeriodOpen, setDeletePeriodOpen] = useState(false)
@@ -515,6 +517,9 @@ export default function MemberDetail() {
                 )}
                 <Button variant="outline" size="sm" onClick={() => setQrOpen(true)}>
                   <QrCode size={14} /> Member card
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => setShareOpen(true)}>
+                  <Share2 size={14} /> Share Summary
                 </Button>
               </div>
             </div>
@@ -1051,6 +1056,18 @@ export default function MemberDetail() {
             : null
         }
         settings={settings}
+      />
+
+      <ShareSummaryModal
+        open={shareOpen}
+        onClose={() => setShareOpen(false)}
+        member={member}
+        plan={plan}
+        expiry={expiry}
+        ptCharge={ptCharge}
+        ledger={ledger}
+        settings={settings}
+        whatsAppLink={whatsAppLink}
       />
 
       <MembershipPeriodForm

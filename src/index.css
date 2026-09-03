@@ -118,6 +118,11 @@
   display: none;
 }
 
+/* The print-only member summary (portaled into <body>) is hidden on screen. */
+#print-member-summary {
+  display: none;
+}
+
 /* Membership card shell (screen preview + print portal). */
 .membership-card {
   box-sizing: border-box;
@@ -261,5 +266,38 @@
     box-shadow: none;
     page-break-inside: avoid;
     break-inside: avoid;
+  }
+
+  /* Member summary: hide the whole app shell and print only the summary. */
+  body:has(#print-member-summary) #root {
+    display: none !important;
+  }
+  #print-member-summary,
+  #print-member-summary * {
+    visibility: visible !important;
+  }
+  #print-member-summary {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    max-width: 186mm;
+    box-sizing: border-box;
+    margin: 0 !important;
+    padding: 0 !important;
+    min-height: 0 !important;
+    height: auto !important;
+    background: #fff !important;
+    color: #111 !important;
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+  #print-member-summary * {
+    color: inherit !important;
+  }
+  #print-member-summary pre {
+    max-width: none !important;
+    box-shadow: none !important;
+    page-break-inside: auto !important;
+    break-inside: auto !important;
   }
 }
