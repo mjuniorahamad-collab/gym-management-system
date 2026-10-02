@@ -558,7 +558,9 @@ Removing the client-side `ensureGymTenancy` also removed `ensureMemberNumberCoun
 
 The 20 failures fall into **two distinct classes**, and the distinction is the point of this section:
 
-**Class 1 — the 15 pre-existing emulator-semantic failures (unchanged).** `C6/C7`, `E8`, `F9`, `J1`×10, `J5`×2. These were classified before the booking work and remain exactly as they were. The deployed Firestore rules were byte-identical to the local rules, and these cases are query-evaluation semantics of the emulator, not product behaviour. **No rules change was made for them, and none should be.** Do not treat them as regressions.
+**Class 1 — the 15 pre-existing emulator-semantic failures (unchanged).** `C6/C7`, `E8`, `F9`, `J1`×11, `J5`×1. These were classified before the booking work and remain exactly as they were. The deployed Firestore rules were byte-identical to the local rules, and these cases are query-evaluation semantics of the emulator, not product behaviour. **No rules change was made for them, and none should be.** Do not treat them as regressions.
+
+- **Bookkeeping correction (recorded during Phase 3 re-verification).** Earlier revisions of this line stated `J1`×10 and `J5`×2. The split was re-derived from the actual `test:rules` output and is `J1`×11 and `J5`×1, giving the same 15 total. The totals, the class assignment and the "no rules change" conclusion were always correct; only the per-code counts were transposed. The failing set itself was not modified.
 
 **Class 2 — the 5 new failures caused by the intentional strict class-existence rule.** `F1–F4` (one per staff role: owner, admin, trainer, frontDesk) and `F12`. These are **fixture-dependent, not product regressions**: all five assert that a booking can be created against `sec-class-a`, an id for which the frozen fixture seeds **no** `classes/{id}` document at all. The assertion encodes an incomplete fixture, not a capability the application provides — the real client cannot reach this state (§17.1).
 
@@ -575,6 +577,79 @@ The 20 failures fall into **two distinct classes**, and the distinction is the p
 - **Correctness note:** the active gym is resolved with the same `getGymId() || DEMO_GYM_ID` fallback that `createDoc` stamps onto every document, so demo/offline mode stays consistent with the write path.
 - **Status:** this remains **defense-in-depth only.** The Firestore rules are and remain the sole authoritative security boundary; §6 says so explicitly. No role, no permission constant and no rule was changed by this entry, and none of the trainer booking capability was affected.
 - **Interaction with §17.1:** the app-side check now rejects a mismatched class before the rule does, so staff get a readable error instead of a bare `PERMISSION_DENIED`.
+
+---
+
+## 18. Phase 3 — reliability and data-flow hardening
+
+Phase 3 addressed only the seven deferred P2 issues recorded at the end of Phase 2. It touched **no** rule, **no** index definition, **no** storage rule and **no** production system, and it ran no migration, no `ensureGymTenancy`, no `ensureOriginPeriods`, and no deployment. Every entry below is a client-side correctness or read-cost change, and every one is classified rather than assumed fixed.
+
+Each fix was checked by reverting it and confirming the new tests fail, so none of these tests passes for a reason unrelated to the behaviour it claims to pin.
+
+| # | Issue | Disposition |
+|---|-------|-------------|
+| 1 | Concurrent check-ins can write two open records | **Fixed** in-tab; cross-device **infrastructure blocked** (§18.1) |
+| 2 | Overnight members not counted as "currently in the gym" | **Needs product decision** (§18.2) |
+| 3 | Clipboard failure reported as success | **Fixed** (§18.3) |
+| 4 | Dashboard computed every member ledger twice | **Fixed** (§18.4) |
+| 5 | Full-collection payment re-reads on every mutation | **Partly fixed**; query narrowing **infrastructure blocked** (§18.5) |
+| 6 | Reports showed a wrong plan breakdown mid-load | **Fixed**; date range / average **needs product decision** (§18.6) |
+| 7 | Failed logo save reported success and stranded the object | **Partly fixed**; object lifecycle **infrastructure blocked** (§18.7) |
+
+### 18.1 Concurrent check-ins — fixed within a tab, cross-device requires a schema decision
+
+`handleCheckIn` rejected duplicates through `checkedInToday`, which is derived from the realtime attendance subscription. A check-in that has been accepted but not yet echoed back is invisible to that set, so anything issued in that gap was written. Two reachable paths hit it:
+
+- The Check in button sets `submitting`, and `Button` renders `disabled={disabled || loading}` — but only on the **next** render, so two clicks dispatched before React re-renders both reach the handler.
+- The QR input is never disabled. Only the adjacent submit button gets `loading`. A scanner firing Enter twice starts a second check-in with no gate at all.
+
+An in-flight set now claims the member synchronously before awaiting and releases it in `finally`, so a failed write stays retryable and one member's slow write cannot block another's. It holds only in-flight writes, so a member who checked out can still check in again.
+
+An overlapping call is a silent no-op rather than an "Already checked in" toast, because the member is not yet in the gym — the first write is still on its way.
+
+**Not fixed:** two devices, or two tabs, can still both write, because nothing server-side makes a check-in unique. Closing that needs a transaction or lock document, and a deterministic `attendance/{gymId}/{memberId}/{date}` id would be *worse* than the race: it would make a second same-day session after a check-out impossible, which the product allows today. This needs a schema decision and was deliberately not smuggled in.
+
+### 18.2 Overnight "currently in the gym" — needs a product decision
+
+`Currently in the gym` counts open entries whose `date` is today, where `date` is stamped at check-in. So a member who checked in at 23:50 and never checked out disappears from the count at midnight, and a member who checks in at 00:05 while checked out on the previous day's record is not counted either.
+
+There is no evidence anywhere in the codebase or docs for a gym closing time, a cross-midnight session, an auto-check-out, or a stale-open policy — `useToday` is purely local-midnight based, and the only midnight comment in `Attendance.jsx` concerns *stamping* a check-in against the correct day, which is already handled.
+
+No closing-time concept exists to read, and inventing one (a configurable cut-off, a session that spans two days, an auto-check-out sweep) would each be a different product with different reporting consequences. **No code change was made.**
+
+### 18.3 Clipboard failure reported as success — fixed
+
+`ShareSummaryModal` called `navigator.clipboard.writeText` without checking it exists and reported success unconditionally, so an unsupported browser or a rejected permission produced a false confirmation. It now checks the API first and treats a rejected write as an error.
+
+### 18.4 Dashboard computed every member ledger twice — fixed
+
+The dashboard ran two independent memos over the same arrays with byte-identical arguments: `computeOutstandingDues()` for the dues card, and a second loop calling `computeMemberLedger()` again for every member purely to count undocumented origin periods. Because `computeMemberLedger` filters the entire payments array once per member, the second memo doubled the dominant cost of the finance section on every payment, membership, member, plan or PT-surcharge change.
+
+`computeMemberFinanceRollups()` is now the single pass producing both figures; `computeOutstandingDues()` is a thin wrapper returning its `dues` half, so its public contract is unchanged, and `countPendingOriginPeriods()` delegates to the same roll-up. No financial formula moved — the `ptSurcharge` default of 0 is what that function always used, and the surcharge affects an implicit period's price, never whether one exists.
+
+Equivalence was proved against verbatim copies of both previous implementations across 13 scenarios rather than asserted.
+
+### 18.5 Full-collection payment re-reads — partly fixed
+
+**Fixed:** `deleteMembershipPeriod` read the entire payments collection to find the payments attached to the period, unlinked them, and then called `refreshMembershipSnapshots()`, which read the entire collection again in the same operation. The second read is the same read, so it is now skipped. The copy handed over has the unlinks applied, making it identical to what a fresh read returns — passing the raw pre-delete array would have been subtly wrong, because those payments would still name a period that no longer exists, and the ledger distinguishes an aimed payment from an unallocated FIFO payment by exactly that field.
+
+**Not fixed:** narrowing `refreshMembershipSnapshots()` to `where('memberId', '==', id)` for payments and memberships. `listAll` applies `orderBy('createdAt', 'desc')`, and every index in `firestore.indexes.json` is scoped `gymId` + one other field. That query needs a **new** composite index on `gymId` + `memberId` + `createdAt`, which must be deployed to production before the query can run — and until it is deployed the query **fails outright**, breaking payment recording entirely. That is strictly worse than reading a collection twice. Membership documents have no `memberId` index at all, for the same reason.
+
+### 18.6 Reports plan breakdown mid-load — fixed; date range and average need a product decision
+
+**Fixed:** the loading gate covered members, payments, expenses and attendance but not `membershipPlans`. `planRevenue` resolves each payment's plan with `plans.items.find(...)` and falls back to the literal `"Membership"` on a miss, so while plans were loading every membership payment collapsed into one wrong bucket and the chart silently re-bucketed into real plan names a moment later.
+
+**Not changed:** there are no date-range controls, and `Avg check-ins/day` divides total check-ins by the number of *distinct dates that have attendance records*, over the entire retained history, while the charts around it are explicitly labelled "last 6 months". Neither the intended window nor the intended denominator is derivable from the codebase. Both were reported, neither was guessed.
+
+### 18.7 Logo lifecycle — partly fixed, object cleanup needs infrastructure
+
+**Fixed:** the page awaited `updateSettings({ logoUrl })` and unconditionally showed "Logo uploaded". `updateSettings` does not throw when the settings document cannot be written — it raises its own error toast and returns `false`. Every failed save therefore showed an error and immediately a success, and the operator believed a logo was live while the document still pointed at the old one. The boolean is now honoured, and on a confirmed failure the object just uploaded is deleted: nothing references it, it was created seconds ago, and its path is known, so leaving it would strand a file nothing can ever reach again.
+
+**Not fixed, and each for a concrete reason:**
+
+- Replacing a logo does not delete the previous object. `storage.rules` matches `/logos/{name}` and only the download URL is stored, not the object path, so the old file cannot be identified with confidence. Deleting it could also break a URL already printed on signage or sent to a member — a product call.
+- The upload path is still not gym-scoped. This looks like an oversight, but `storage.rules` matches a single segment after `/logos/`, so `logos/{gymId}/{file}` would not match and would be **denied by the rules** until they were changed and deployed.
+- There is still no way to remove a logo, and nothing cleans up on gym deletion. The already-orphaned objects are production data and cannot be enumerated from here.
 
 ---
 
