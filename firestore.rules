@@ -297,7 +297,23 @@ service cloud.firestore {
 
     // ---------- Counters (sequence sources, e.g. member numbers) -----------
     match /counters/{id} {
-      allow read: if isStaff() && canReadTenant(resource);
+      // A point-read of a document that DOES NOT EXIST is permitted for bound
+      // staff. This is required by the member-number sequence, which runs a
+      // single transaction that reads `counters/memberNo_<gymId>` and then
+      // creates it (see src/services/memberNumbers.js). Firestore evaluates
+      // the read half of a transaction against `resource == null`, and every
+      // tenant guard below is false for a null document, so without this the
+      // very first member created in a new gym would fail PERMISSION_DENIED.
+      //
+      // This discloses nothing: a missing document has no contents, so the
+      // response is simply "not found". It grants no access to any existing
+      // document — `canReadTenant` still governs every real counter, so
+      // cross-gym reads stay denied and an untagged legacy counter stays
+      // readable only by the documented legacy path. Writes are untouched:
+      // `canWriteTenant` requires the caller's own gymId and has no
+      // untagged-claim escape hatch, so no counter can be adopted from a
+      // client.
+      allow read: if isStaff() && ((resource == null && hasGym()) || canReadTenant(resource));
       allow create, update: if isStaff() && canWriteTenant(resource);
     }
 
