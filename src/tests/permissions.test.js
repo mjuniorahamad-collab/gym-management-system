@@ -19,6 +19,27 @@ describe('can', () => {
     expect(can('admin', 'settings.write')).toBe(false)
   })
 
+  it('grants booking management to every staff role', () => {
+    // Bookings CRUD is offered to all staff that can open the Classes page, and
+    // firestore.rules enforces the tenant boundary on bookings rather than the
+    // role, so trainer access must not be narrowed here.
+    for (const perm of ['bookings.view', 'bookings.write', 'bookings.delete']) {
+      expect(can('owner', perm)).toBe(true)
+      expect(can('admin', perm)).toBe(true)
+      expect(can('front-desk', perm)).toBe(true)
+      expect(can('trainer', perm)).toBe(true)
+    }
+  })
+
+  it('keeps the full member editor away from trainer only', () => {
+    // Distinct from bookings: the rules apply a field-level restriction to
+    // trainer writes, so the UI must not offer the full member editor to them.
+    expect(can('owner', 'members.write')).toBe(true)
+    expect(can('admin', 'members.write')).toBe(true)
+    expect(can('front-desk', 'members.write')).toBe(true)
+    expect(can('trainer', 'members.write')).toBe(false)
+  })
+
   it('returns false for unknown permissions', () => {
     expect(can('owner', 'nope')).toBe(false)
     expect(can(null, 'members.view')).toBe(false)

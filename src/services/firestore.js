@@ -34,19 +34,6 @@ function scopedConstraints() {
   return gymId ? [where('gymId', '==', gymId)] : [where('__unbound__', '==', '__impossible__')]
 }
 
-/**
- * Unscoaled enumeration used ONLY by the tenancy backfill (see migration.js).
- * Returns raw documents across the collection so legacy (untagged) records can
- * be discovered and tagged. Safe because the security rules still gate every
- * doc; while records are untagged (legacy) they remain readable, and once
- * tagged they are scoped to the caller's gym.
- */
-export async function listAllUnscoped(name) {
-  const q = query(collection(db, name))
-  const snap = await getDocs(q)
-  return snap.docs.map((d) => ({ id: d.id, ...d.data() }))
-}
-
 export async function listAll(name) {
   if (!isReady()) return mockList(name)
   const q = query(collection(db, name), ...scopedConstraints(), orderBy('createdAt', 'desc'))

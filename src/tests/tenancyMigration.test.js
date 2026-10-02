@@ -1,157 +1,133 @@
 import { describe, beforeEach, expect, it, vi } from 'vitest'
-import { ensureGymTenancy } from '@/services/migration'
-import { getGymId } from '@/services/ownerContext'
-import { listAllUnscoped, updateDocById, isReady, getById, upsertDoc } from '@/services/firestore'
+import { readFileSync } from 'node:fs'
+import * as migration from '@/services/migration'
+import { createDoc, listAll } from '@/services/firestore'
 import { logAudit } from '@/services/audit'
+import { computeMemberLedger } from '@/utils/dues'
 
-const BUSINESS_COLLECTIONS = [
-  'members',
-  'membershipPlans',
-  'memberships',
-  'payments',
-  'expenses',
-  'attendance',
-  'classes',
-  'bookings',
-  'trainers',
-]
-
-vi.mock('@/services/firestore', () => {
-  const store = {}
-  for (const name of [
-    'members',
-    'membershipPlans',
-    'memberships',
-    'payments',
-    'expenses',
-    'attendance',
-    'classes',
-    'bookings',
-    'trainers',
-    'counters',
-  ]) {
-    store[name] = []
-  }
-  return {
-    createDoc: vi.fn(async () => 'mock'),
-    listAll: vi.fn(async (name) => store[name]),
-    isReady: vi.fn(() => true),
-    listAllUnscoped: vi.fn(async (name) => [...store[name]]),
-    getById: vi.fn(async (name, id) => store[name].find((d) => d.id === id) || null),
-    updateDocById: vi.fn(async (name, id, data) => {
-      const doc = store[name].find((d) => d.id === id)
-      if (doc) Object.assign(doc, data)
-    }),
-    upsertDoc: vi.fn(async (name, id, data) => {
-      const existing = store[name].find((d) => d.id === id)
-      if (existing) Object.assign(existing, data)
-      else store[name].push({ id, ...data })
-    }),
-    __tenancyStore: store,
-  }
-})
+vi.mock('@/services/firestore', () => ({
+  createDoc: vi.fn(async () => 'mock'),
+  listAll: vi.fn(async () => []),
+}))
 
 vi.mock('@/services/audit', () => ({ logAudit: vi.fn(async () => {}) }))
-vi.mock('@/services/ownerContext', () => ({ getGymId: vi.fn(() => 'gym-1') }))
 
-const store = (await import('@/services/firestore')).__tenancyStore
+vi.mock('@/utils/dues', () => ({ computeMemberLedger: vi.fn(() => ({ periods: [] })) }))
+
+/** Reads a source file with comments stripped, so these guards assert on
+ *  executable code rather than on prose that merely names a removed symbol. */
+const read = (rel) =>
+  readFileSync(new URL(rel, import.meta.url), 'utf8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:])\/\/.*$/gm, '$1')
 
 beforeEach(() => {
-  for (const name of BUSINESS_COLLECTIONS) store[name] = []
-  store.counters = []
-  vi.mocked(isReady).mockReturnValue(true)
-  vi.mocked(getGymId).mockReturnValue('gym-1')
+  vi.mocked(createDoc).mockClear()
+  vi.mocked(listAll).mockClear()
   vi.mocked(logAudit).mockClear()
-  vi.mocked(listAllUnscoped).mockClear()
-  vi.mocked(updateDocById).mockClear()
-  vi.mocked(getById).mockClear()
-  vi.mocked(upsertDoc).mockClear()
+  vi.mocked(computeMemberLedger).mockReturnValue({ periods: [] })
 })
 
-describe('ensureGymTenancy', () => {
-  it('does nothing and reports no-gym when the caller has no bound gym', async () => {
-    vi.mocked(getGymId).mockReturnValue(null)
-    const result = await ensureGymTenancy()
-    expect(result.status).toBe('no-gym')
-    expect(updateDocById).not.toHaveBeenCalled()
+describe('client tenancy claiming has been removed', () => {
+  it('no longer exports ensureGymTenancy', () => {
+    expect(migration.ensureGymTenancy).toBeUndefined()
   })
 
-  it('reports demo in offline/mock mode', async () => {
-    vi.mocked(isReady).mockReturnValue(false)
-    const result = await ensureGymTenancy()
-    expect(result.status).toBe('demo')
-    expect(updateDocById).not.toHaveBeenCalled()
+  it('firestore.js never declares an unscoped enumeration helper', () => {
+    // A source-level guard is used here because this file mocks the firestore
+    // module, so its runtime namespace cannot prove the real export surface.
+    expect(read('../services/firestore.js')).not.toMatch(/listAllUnscoped/)
   })
 
-  it('tags records missing a gymId and counts them', async () => {
-    store.members = [{ id: 'm1', name: 'A' }, { id: 'm2', name: 'B', gymId: 'gym-9' }]
-    store.payments = [{ id: 'p1', amount: 100 }]
+  it('migration.js never enumerates a collection unscoped', () => {
+    const source = read('../services/migration.js')
+    expect(source).not.toMatch(/listAllUnscoped/)
+    expect(source).not.toMatch(/TENANCY_COLLECTIONS/)
+  })
 
-    const result = await ensureGymTenancy()
+  it('App.jsx does not auto-run a tenancy backfill on startup', () => {
+    const source = read('../App.jsx')
+    expect(source).not.toMatch(/TenancyBootstrap/)
+    expect(source).not.toMatch(/ensureGymTenancy/)
+  })
 
-    expect(result.status).toBe('ok')
-    expect(result.tagged).toBe(2)
-    // m1 (no gymId) gets tagged; m2 (already gym-9) is left untouched
-    expect(store.members.find((m) => m.id === 'm1').gymId).toBe('gym-1')
-    expect(store.members.find((m) => m.id === 'm2').gymId).toBe('gym-9')
-    expect(store.payments[0].gymId).toBe('gym-1')
+  it('Settings.jsx does not expose a tenant re-sync action', () => {
+    const source = read('../pages/Settings.jsx')
+    expect(source).not.toMatch(/ensureGymTenancy/)
+    expect(source).not.toMatch(/handleTenancySync/)
+  })
+
+  it('settings are read from the tenant-scoped path, never the global singleton', () => {
+    const source = read('../context/SettingsContext.jsx')
+    // The scoped document lives under gyms/{gymId}/settings/app.
+    expect(source).toMatch(/doc\(\s*db,\s*'gyms',\s*gymId,\s*'settings',\s*SETTINGS_DOC\s*\)/)
+    // There must be no read or write against the shared `settings/app`.
+    expect(source).not.toMatch(/doc\(\s*db,\s*'settings',\s*SETTINGS_DOC\s*\)/)
+  })
+})
+
+describe('ensureOriginPeriods (finance backfill, retained)', () => {
+  beforeEach(() => {
+    vi.mocked(listAll).mockImplementation(async (name) => {
+      if (name === 'members') return [{ id: 'm1', membershipPlanId: 'plan-1', name: 'A' }]
+      if (name === 'membershipPlans') return [{ id: 'plan-1', name: 'Monthly', price: 1000 }]
+      return []
+    })
+  })
+
+  it('creates nothing when no member has an implicit origin period', async () => {
+    const result = await migration.ensureOriginPeriods()
+    expect(result).toEqual({ created: 0 })
+    expect(createDoc).not.toHaveBeenCalled()
+  })
+
+  it('materializes each implicit period through the scoped createDoc helper', async () => {
+    vi.mocked(computeMemberLedger).mockReturnValue({
+      periods: [
+        {
+          implicit: true,
+          label: 'Monthly (earlier)',
+          planId: 'plan-1',
+          startDate: '2026-01-01',
+          expiryDate: '2026-01-31',
+          price: 1000,
+          paid: 1000,
+          due: 0,
+          status: 'paid',
+        },
+      ],
+    })
+
+    const result = await migration.ensureOriginPeriods()
+
+    expect(result).toEqual({ created: 1 })
+    expect(createDoc).toHaveBeenCalledTimes(1)
+    const [collection, payload] = vi.mocked(createDoc).mock.calls[0]
+    expect(collection).toBe('memberships')
+    expect(payload.memberId).toBe('m1')
+    expect(payload.planId).toBe('plan-1')
+    // Flagged for review, and the helper stamps the gymId itself so a
+    // document can never be written outside the caller's own gym.
+    expect(payload.migratedFromLegacy).toBe(true)
+    expect(payload).not.toHaveProperty('gymId')
     expect(logAudit).toHaveBeenCalled()
   })
+})
 
-  it('is idempotent — a second run tags zero records', async () => {
-    store.members = [{ id: 'm1', name: 'A' }]
-    await ensureGymTenancy()
-    vi.mocked(updateDocById).mockClear()
-    vi.mocked(logAudit).mockClear()
+describe('countPendingOriginPeriods', () => {
+  it('counts members whose ledger still has an implicit period', () => {
+    vi.mocked(computeMemberLedger).mockImplementation(({ member }) => ({
+      periods: [{ implicit: member.needsRebuild === true }],
+    }))
 
-    const result = await ensureGymTenancy()
-    expect(result.status).toBe('ok')
-    expect(result.tagged).toBe(0)
-    expect(updateDocById).not.toHaveBeenCalled()
-    expect(logAudit).not.toHaveBeenCalled()
+    const count = migration.countPendingOriginPeriods({
+      members: [{ id: 'a', needsRebuild: true }, { id: 'b' }, { id: 'c', needsRebuild: true }],
+    })
+
+    expect(count).toBe(2)
   })
 
-  it('never overwrites an existing valid gymId', async () => {
-    store.expenses = [{ id: 'e1', title: 'Rent', gymId: 'other-gym' }]
-    const result = await ensureGymTenancy()
-    expect(result.tagged).toBe(0)
-    expect(store.expenses[0].gymId).toBe('other-gym')
-    expect(updateDocById).not.toHaveBeenCalled()
-  })
-
-  it('provisions the per-gym member-number counter seeded from existing members', async () => {
-    store.members = [
-      { id: 'm1', name: 'A', memberNo: 'MEM-0003' },
-      { id: 'm2', name: 'B', memberNo: 'MEM-0009' },
-    ]
-
-    const result = await ensureGymTenancy()
-
-    expect(result.countersCreated).toBe(1)
-    const counter = store.counters.find((c) => c.id === 'memberNo_gym-1')
-    expect(counter).toBeTruthy()
-    expect(counter.value).toBe(9)
-    // seeding is scoped to the bound gym id
-    expect(counter.gymId).toBe('gym-1')
-  })
-
-  it('seeds the counter at 0 when the gym has no members yet', async () => {
-    const result = await ensureGymTenancy()
-
-    expect(result.countersCreated).toBe(1)
-    const counter = store.counters.find((c) => c.id === 'memberNo_gym-1')
-    expect(counter.value).toBe(0)
-  })
-
-  it('does not overwrite an already-provisioned member-number counter', async () => {
-    store.counters = [{ id: 'memberNo_gym-1', value: 14, gymId: 'gym-1' }]
-    store.members = [{ id: 'm1', name: 'A', memberNo: 'MEM-0003' }]
-
-    const result = await ensureGymTenancy()
-
-    expect(result.countersCreated).toBe(0)
-    // the existing counter and its value are left untouched
-    expect(store.counters[0].value).toBe(14)
-    expect(upsertDoc).not.toHaveBeenCalled()
+  it('is zero for an empty member set', () => {
+    expect(migration.countPendingOriginPeriods()).toBe(0)
   })
 })

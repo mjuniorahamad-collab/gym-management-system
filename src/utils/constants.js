@@ -31,6 +31,15 @@ export const PERMISSIONS = {
   'trainers.view': ['owner', 'admin', 'front-desk', 'trainer'],
   'trainers.write': ['owner', 'admin'],
   'classes.write': ['owner', 'admin', 'front-desk'],
+  // Booking management is offered to every staff role that can open the
+  // Classes page (src/pages/Classes.jsx renders "Manage bookings" for each
+  // role holding 'members.view'), and firestore.rules grants bookings CRUD to
+  // all staff. Trainer access is deliberately preserved — the rules now
+  // enforce the TENANT boundary on bookings (the referenced member must belong
+  // to the caller's gym) rather than restricting the role.
+  'bookings.view': ['owner', 'admin', 'front-desk', 'trainer'],
+  'bookings.write': ['owner', 'admin', 'front-desk', 'trainer'],
+  'bookings.delete': ['owner', 'admin', 'front-desk', 'trainer'],
   'settings.write': ['owner'],
   'audit.view': ['owner', 'admin'],
   'attendance.write': ['owner', 'admin', 'front-desk'],

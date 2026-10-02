@@ -9,7 +9,7 @@ import { uploadFile, logoPath, isStorageReady } from '@/services/storage'
 import { getPtSurcharge, setPtSurcharge as persistPtSurcharge } from '@/services/pt'
 import { getWhatsAppLink, setWhatsAppLink } from '@/services/whatsappGroup'
 import { loadSampleData } from '@/services/seedService'
-import { ensureOriginPeriods, ensureGymTenancy } from '@/services/migration'
+import { ensureOriginPeriods } from '@/services/migration'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
 import { FormField } from '@/components/ui/FormField'
@@ -21,14 +21,13 @@ import { CURRENCIES, DATE_FORMATS } from '@/utils/constants'
 import { formatCurrency } from '@/utils/formatters'
 
 export default function Settings() {
-  const { settings, updateSettings } = useSettings()
+  const { settings, updateSettings, error: settingsError } = useSettings()
   const toast = useToast()
 
   const [saving, setSaving] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [seeding, setSeeding] = useState(false)
   const [migrating, setMigrating] = useState(false)
-  const [tenancySyncing, setTenancySyncing] = useState(false)
   const [migrateConfirm, setMigrateConfirm] = useState(false)
   const [ptSurcharge, setPtSurcharge] = useState('')
   const [ptSaving, setPtSaving] = useState(false)
@@ -183,27 +182,25 @@ export default function Settings() {
     }
   }
 
-  const handleTenancySync = async () => {
-    setTenancySyncing(true)
-    try {
-      const result = await ensureGymTenancy()
-      if (result.status === 'no-gym') {
-        toast.error('No gym is assigned yet. Provision the gyms/{gymId} owner record first.')
-      } else if (result.tagged === 0) {
-        toast.success('Tenancy is up to date — all records already carry a gym.')
-      } else {
-        toast.success(`Tenancy synced: tagged ${result.tagged} record${result.tagged === 1 ? '' : 's'} with the gym.`)
-      }
-    } catch (e) {
-      toast.error(e.message || 'Could not sync gym tenancy')
-    } finally {
-      setTenancySyncing(false)
-    }
-  }
-
   return (
     <div className="space-y-5">
       <PageHeader title="Settings" subtitle="Gym branding, preferences and data tools" />
+
+      {settingsError && (
+        <div
+          role="alert"
+          className="rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-800 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300"
+        >
+          <p className="font-semibold">Tenant settings could not be loaded</p>
+          <p className="mt-1">{settingsError}</p>
+          <p className="mt-2">
+            Changes saved below will fail until this gym has its own scoped settings document at{' '}
+            <code className="whitespace-nowrap">gyms/&#123;gymId&#125;/settings/app</code>. This is
+            expected during the per-gym isolation migration &mdash; do not fall back to a shared
+            global settings record.
+          </p>
+        </div>
+      )}
 
       <div className="grid gap-5 lg:grid-cols-2">
         <Card>
@@ -381,15 +378,15 @@ export default function Settings() {
             </div>
 
             <div className="rounded-lg border border-slate-200 p-4 dark:border-slate-700">
-              <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Re-sync gym tenancy</p>
-              <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-                Tags any existing records that are missing a gym with yours, keeping multi-gym data
-                isolated. Idempotent and safe to run anytime &mdash; it never overwrites an existing gym
-                or destroys data.
+              <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+                Legacy record ownership
               </p>
-              <Button variant="outline" size="sm" className="mt-3" onClick={handleTenancySync} loading={tenancySyncing}>
-                Re-sync gym tenancy
-              </Button>
+              <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                Records created before per-gym isolation existed carry no gym. They are no longer
+                claimable from this app: whichever gym signed in first would otherwise silently absorb
+                pre-tenancy data that may belong to another tenant. Re-assigning them is an
+                infrastructure task run against a verified backup with a full audit trail.
+              </p>
             </div>
 
             <div className="rounded-lg border border-slate-200 p-4 dark:border-slate-700">

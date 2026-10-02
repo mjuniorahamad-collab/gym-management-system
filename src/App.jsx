@@ -1,11 +1,9 @@
-import { lazy, Suspense, useEffect, useRef } from 'react'
+import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { ThemeProvider } from '@/context/ThemeContext'
 import { ToastProvider } from '@/context/ToastContext'
 import { AuthProvider } from '@/context/AuthContext'
-import { useAuth } from '@/context/AuthContext'
 import { SettingsProvider } from '@/context/SettingsContext'
-import { ensureGymTenancy } from '@/services/migration'
 import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import { ProtectedRoute } from '@/components/layout/ProtectedRoute'
 import { RoleGuard } from '@/components/layout/RoleGuard'
@@ -37,23 +35,6 @@ function PageLoader() {
   )
 }
 
-// Runs the idempotent gymId backfill once, right after an owner becomes bound,
-// so existing (legacy) data is tagged into their gym automatically. It is a
-// no-op when there is nothing to do and never overwrites existing gymIds.
-function TenancyBootstrap() {
-  const { gymId, profile } = useAuth()
-  const ranForGym = useRef(null)
-
-  useEffect(() => {
-    if (!gymId || !profile || profile.role !== 'owner') return
-    if (ranForGym.current === gymId) return
-    ranForGym.current = gymId
-    ensureGymTenancy().catch(() => {})
-  }, [gymId, profile])
-
-  return null
-}
-
 export default function App() {
   return (
     <ErrorBoundary>
@@ -61,7 +42,6 @@ export default function App() {
         <ToastProvider>
           <AuthProvider>
             <SettingsProvider>
-              <TenancyBootstrap />
               <BrowserRouter>
                 <Suspense fallback={<PageLoader />}>
                   <Routes>
