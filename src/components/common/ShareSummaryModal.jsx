@@ -69,12 +69,21 @@ export function ShareSummaryModal({ open, onClose, member, plan, expiry, ptCharg
         <SummaryContent summary={summary} />
       </Modal>
 
-      {createPortal(
-        <div id="print-member-summary" className="print-member-summary" aria-hidden="true">
-          <SummaryContent summary={summary} />
-        </div>,
-        document.body
-      )}
+      {/*
+        The print portal must only exist while this modal is open. index.css
+        forces `#print-member-summary { display: block !important }` inside
+        @media print, so a permanently mounted portal would be appended to
+        EVERY print on the page - including the membership card and payment
+        receipt prints. Gating on `open` matches the membership card portal in
+        MemberDetail.jsx and keeps each print target exclusive.
+      */}
+      {open &&
+        createPortal(
+          <div id="print-member-summary" className="print-member-summary" aria-hidden="true">
+            <SummaryContent summary={summary} />
+          </div>,
+          document.body
+        )}
     </>
   )
 }

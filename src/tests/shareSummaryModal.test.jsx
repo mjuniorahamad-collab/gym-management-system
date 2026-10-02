@@ -149,4 +149,28 @@ describe('ShareSummaryModal', () => {
     expect(decoded).toContain('Personal Training: ₹1,000')
     expect(decoded).toContain('Total: ₹2,500')
   })
+
+  // index.css forces `#print-member-summary { display: block !important }`
+  // inside @media print, so a portal that stays mounted after the modal closes
+  // is appended to EVERY print on the page - including the membership card and
+  // payment receipt prints, which use their own exclusive print targets.
+  it('mounts the print portal only while open', () => {
+    const { rerender } = renderModal()
+    expect(document.getElementById('print-member-summary')).not.toBeNull()
+
+    rerender(
+      <ShareSummaryModal
+        open={false}
+        onClose={() => {}}
+        member={member}
+        plan={plan}
+        expiry={new Date(2026, 8, 30)}
+        ptCharge={ptCharge}
+        ledger={ledger}
+        settings={settings}
+        whatsAppLink=""
+      />
+    )
+    expect(document.getElementById('print-member-summary')).toBeNull()
+  })
 })
