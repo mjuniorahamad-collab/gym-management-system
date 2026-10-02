@@ -37,7 +37,8 @@ import { Tabs } from '@/components/ui/Tabs'
 import { TableSkeleton } from '@/components/ui/Skeleton'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { formatCurrency, formatDate, formatDateTime, formatNumber } from '@/utils/formatters'
-import { lastNMonths, monthKey, parseDate, addDays } from '@/utils/dateHelpers'
+import { parseDate, addDays } from '@/utils/dateHelpers'
+import { gymDayKey, gymLastNMonthKeys, gymMonthKey } from '@/utils/gymTime'
 import { getCurrentMembershipExpiry, getDaysRemaining, getExpiryBucket, matchesExpiryFilter } from '@/utils/membership'
 import { computeMemberFinanceRollups } from '@/utils/dues'
 
@@ -62,7 +63,7 @@ const EXPIRY_BADGES = {
 
 export default function Dashboard() {
   const { can } = useAuth()
-  const { settings } = useSettings()
+  const { settings, timezone } = useSettings()
   const toast = useToast()
 
   const [expiryFilter, setExpiryFilter] = useState('all')
@@ -173,19 +174,22 @@ export default function Dashboard() {
   const stats = useMemo(() => {
     const activeMembers = members.items.filter((m) => m.status === 'active')
     const now = new Date()
-    const todayKey = monthKey(now)
-    const todayStart = now.toDateString()
+    // Billing month and "today" both resolved in the gym's timezone: a payment
+    // taken at 00:30 IST on 1 April is March revenue to a device set to UTC, and
+    // "checked in today" must match what the front desk sees.
+    const todayMonthKey = gymMonthKey(now, timezone)
+    const todayStart = gymDayKey(now, timezone)
 
     const monthlyIncome = payments.items
-      .filter((p) => monthKey(parseDate(p.date)) === todayKey)
+      .filter((p) => gymMonthKey(p.date, timezone) === todayMonthKey)
       .reduce((sum, p) => sum + (Number(p.amount) || 0), 0)
 
     const monthlyExpense = expenses.items
-      .filter((e) => monthKey(parseDate(e.date)) === todayKey)
+      .filter((e) => gymMonthKey(e.date, timezone) === todayMonthKey)
       .reduce((sum, e) => sum + (Number(e.amount) || 0), 0)
 
     const todayCheckIns = attendance.items.filter(
-      (a) => parseDate(a.date)?.toDateString() === todayStart
+      (a) => gymDayKey(a.date, timezone) === todayStart
     ).length
 
     return {
@@ -195,35 +199,35 @@ export default function Dashboard() {
       monthlyExpense,
       todayCheckIns,
     }
-  }, [members.items, payments.items, expenses.items, attendance.items])
+  }, [members.items, payments.items, expenses.items, attendance.items, timezone])
 
   const series = useMemo(() => {
-    const months = lastNMonths(6)
+    const months = gymLastNMonthKeys(6, timezone)
     return months.map((key) => {
       const label = new Date(key.split('-')[0], Number(key.split('-')[1]) - 1, 1).toLocaleDateString(
         'en-US',
         { month: 'short' }
       )
       const income = payments.items
-        .filter((p) => monthKey(parseDate(p.date)) === key)
+        .filter((p) => gymMonthKey(p.date, timezone) === key)
         .reduce((s, p) => s + (Number(p.amount) || 0), 0)
       const expense = expenses.items
-        .filter((e) => monthKey(parseDate(e.date)) === key)
+        .filter((e) => gymMonthKey(e.date, timezone) === key)
         .reduce((s, e) => s + (Number(e.amount) || 0), 0)
       return { label, income, expense }
     })
-  }, [payments.items, expenses.items])
+  }, [payments.items, expenses.items, timezone])
 
   const membersTrend = useMemo(() => {
-    const months = lastNMonths(6)
+    const months = gymLastNMonthKeys(6, timezone)
     return months.map((key) => ({
       label: new Date(key.split('-')[0], Number(key.split('-')[1]) - 1, 1).toLocaleDateString(
         'en-US',
         { month: 'short' }
       ),
-      newMembers: members.items.filter((m) => monthKey(parseDate(m.joinDate)) === key).length,
+      newMembers: members.items.filter((m) => gymMonthKey(m.joinDate, timezone) === key).length,
     }))
-  }, [members.items])
+  }, [members.items, timezone])
 
   const expensePie = useMemo(() => {
     const sixMonthsAgo = addDays(new Date(), -180)

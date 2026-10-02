@@ -239,3 +239,29 @@ export function gymDaysUntil(expiryDateOnly, timezone = DEFAULT_GYM_TIMEZONE, no
   if (!today || !expiry) return null
   return daysBetween(today, expiry) - 1
 }
+
+/**
+ * The billing month `value` falls in, as `YYYY-MM`, in the gym's timezone.
+ *
+ * This replaces `monthKey()`, which read `getFullYear()`/`getMonth()` from the
+ * device. That made "this month's income" depend on the viewer: a payment at
+ * 00:30 IST on 1 April is March revenue to a phone set to UTC, and the monthly
+ * total on the dashboard did not match the receipt.
+ */
+export function gymMonthKey(value, timezone = DEFAULT_GYM_TIMEZONE) {
+  const day = gymDayKey(value, timezone)
+  return day ? day.slice(0, 7) : ''
+}
+
+/** The last `count` billing months in the gym's timezone, oldest first. */
+export function gymLastNMonthKeys(count, timezone = DEFAULT_GYM_TIMEZONE, now = new Date()) {
+  const current = gymMonthKey(now, timezone)
+  if (!current) return []
+  const [y, m] = current.split('-').map(Number)
+  const keys = []
+  for (let i = count - 1; i >= 0; i -= 1) {
+    const shifted = new Date(Date.UTC(y, m - 1 - i, 1))
+    keys.push(`${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, '0')}`)
+  }
+  return keys
+}

@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from 'react'
 import { CheckCircle2, ClipboardCheck, QrCode, Search, UserCheck } from 'lucide-react'
 import { useCollection } from '@/hooks/useFirestore'
 import { useToday } from '@/hooks/useToday'
+import { useSettings } from '@/context/SettingsContext'
 import { createDoc, updateDocById } from '@/services/firestore'
 import { logAudit } from '@/services/audit'
 import { useAuth } from '@/context/AuthContext'
@@ -15,11 +16,12 @@ import { SearchInput } from '@/components/ui/SearchInput'
 import { Spinner } from '@/components/ui/Spinner'
 import { StatCard } from '@/components/charts/StatCard'
 import { formatDateTime, formatNumber } from '@/utils/formatters'
-import { parseDate } from '@/utils/dateHelpers'
+import { gymDayKey } from '@/utils/gymTime'
 
 export default function Attendance() {
   const { can } = useAuth()
   const toast = useToast()
+  const { timezone } = useSettings()
 
   const { items: attendance, loading } = useCollection('attendance')
   const { items: members } = useCollection('members')
@@ -35,9 +37,9 @@ export default function Attendance() {
   const todaysEntries = useMemo(
     () =>
       attendance
-        .filter((a) => parseDate(a.date)?.toDateString() === todayStart)
+        .filter((a) => gymDayKey(a.date, timezone) === todayStart)
         .sort((a, b) => String(b.checkIn || b.date).localeCompare(String(a.checkIn || a.date))),
-    [attendance, todayStart]
+    [attendance, todayStart, timezone]
   )
 
   const checkedInToday = useMemo(() => {
