@@ -9,8 +9,14 @@ service cloud.firestore {
     }
 
     // Reads the caller's profile doc. Admin/write access is derived from role.
+    //
+    // NULL-SAFE: a caller with no profile document yet (brand-new signup, or
+    // an unauthenticated/anon request) yields null instead of raising a rules
+    // evaluation error. Every role-derived guard therefore denies explicitly
+    // rather than by exception, so access control never depends on a crash.
     function role() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role;
+      let ref = /databases/$(database)/documents/users/$(request.auth.uid);
+      return exists(ref) && 'role' in get(ref).data ? get(ref).data.role : null;
     }
 
     function isRole(r) {
@@ -61,9 +67,13 @@ service cloud.firestore {
     }
 
     // True when a document belongs to the caller's own gym.
+    // NULL-SAFE: an absent document, or a legacy document that carries no
+    // gymId at all, evaluates to false rather than raising an error on the
+    // missing field.
     function sameGym(resource) {
       return isSignedIn() && hasGym()
         && resource != null
+        && 'gymId' in resource.data
         && resource.data.gymId == gymOf(request.auth.uid);
     }
 
@@ -75,15 +85,21 @@ service cloud.firestore {
 
     // Write guard (create + update). For creates (resource == null) the new
     // document MUST carry the caller's bound gymId — opaque legacy creates
-    // are not allowed. For updates, the document must already be in the
-    // caller's gym, or be a legacy record being tagged to the caller's gym;
-    // the resulting document must always carry the caller's gymId, so an
-    // existing gymId can never be changed.
+    // are not allowed. For updates the document must ALREADY be in the
+    // caller's gym, and the resulting document must carry the same gymId, so
+    // an existing gymId can never be changed.
+    //
+    // Note the absence of any `legacy(resource)` escape hatch: a pre-tenancy
+    // untagged document can no longer be adopted by whichever tenant acts
+    // first. Client-driven adoption is the "first-come-first-served" claim
+    // hazard, so untagged records are left untouched here and handled only by
+    // the audited Admin migration. They stay READABLE (see canReadTenant) so
+    // no existing data disappears before that migration runs.
     function canWriteTenant(resource) {
-      return 'gymId' in request.resource.data
+      return hasGym()
+        && 'gymId' in request.resource.data
         && request.resource.data.gymId == gymOf(request.auth.uid)
-        && hasGym()
-        && (resource == null || sameGym(resource) || legacy(resource));
+        && (resource == null || sameGym(resource));
     }
 
     // Delete guard: only scoped, own-gym records can be removed.
@@ -94,13 +110,40 @@ service cloud.firestore {
     // A user may only bind gymId once, only on their own profile, and only to
     // a gym whose owner-of-record is themselves (pre-provisioned in the gyms
     // collection — never client-created). After it is set it is frozen.
+    //
+    // The bind is additionally pinned so it can never INTRODUCE a new role.
+    // Owner-of-record status authorises binding, not self-granting: the bind
+    // may establish role 'owner', may omit the role entirely (a pre-seeded
+    // profile that already carries one), or may only re-state the role the
+    // profile already has. Any other value — 'superadmin', 'trainer', or a
+    // misspelling like 'OWNER' — is denied, so being the owner-of-record of a
+    // gym is not a launchpad for self-assigning an arbitrary role.
     function canBindGymId(uid) {
       return isSignedIn()
         && request.auth.uid == uid
         && (resource == null || !('gymId' in resource.data))
         && 'gymId' in request.resource.data
+        && (!('role' in request.resource.data)
+          || request.resource.data.role == 'owner'
+          || (resource != null && 'role' in resource.data
+            && request.resource.data.role == resource.data.role))
         && exists(/databases/$(database)/documents/gyms/$(request.resource.data.gymId))
         && get(/databases/$(database)/documents/gyms/$(request.resource.data.gymId)).data.ownerUid == request.auth.uid;
+    }
+
+    // Role is WRITE-ONCE: once a profile carries a role it can never be
+    // changed, by anyone — not by an admin, not even by the owner of the gym.
+    // This closes the privilege-escalation path where an existing staff
+    // account rewrites its own `role` field to `owner`. Combined with
+    // `allow delete: if false` and gymId being frozen by canBindGymId, an
+    // account's authority is fully determined at creation time.
+    //
+    // A profile that has no role yet (legacy or partially-written) may still
+    // receive one, so onboarding is unaffected.
+    function roleWriteOnce() {
+      return !(resource != null && 'role' in resource.data)
+        || ('role' in request.resource.data
+            && request.resource.data.role == resource.data.role);
     }
 
     // True when a pending (to-be-written) document carries the caller's gymId.
@@ -138,6 +181,8 @@ service cloud.firestore {
 
     match /gyms/{gymId} {
       allow read: if isSignedIn()
+        && resource != null
+        && 'ownerUid' in resource.data
         && (resource.data.ownerUid == request.auth.uid || (hasGym() && gymOf(request.auth.uid) == gymId));
       allow create: if isSignedIn()
         && request.resource.data.ownerUid == request.auth.uid
@@ -160,6 +205,7 @@ service cloud.firestore {
       allow read: if isSignedIn()
         && hasGym()
         && resource != null
+        && 'gymId' in resource.data
         && resource.data.gymId == gymOf(request.auth.uid);
       allow create, update: if isOwner()
         && 'gymId' in request.resource.data
@@ -174,22 +220,69 @@ service cloud.firestore {
       // own gym. Cross-gym profiles are never readable (tenant isolation).
       allow read: if isSignedIn()
         && (request.auth.uid == uid || inCallerGym(uid));
-      // Self-registration on first login (one-time gymId bind allowed), or
-      // admin/owner managing staff within their own gym (which can never move
-      // a user's gymId — a bound gymId stays frozen).
+      // Self-registration on first login (one-time owner bind allowed), or
+      // admin/owner managing staff within their own gym. Two invariants hold
+      // on every write:
+      //   * `roleWriteOnce()` — role is fixed at creation and never changes.
+      //   * `sameGymForRequest()` — a bound gymId stays frozen, so a user can
+      //     never be moved to another gym.
+      // The application never mutates an existing users/{uid} document after
+      // creation, so these invariants cost no legitimate functionality.
       allow create, update: if isSignedIn()
+        && roleWriteOnce()
         && (
           canBindGymId(uid)
           || (isRole('admin') && inCallerGym(uid) && sameGymForRequest())
           || (isOwner() && inCallerGym(uid) && sameGymForRequest())
         );
-      allow delete: if isOwner() && inCallerGym(uid);
+      // Profiles are never client-deletable. Deleting the binding owner
+      // profile would orphan the tenant, and deleting a staff profile is a
+      // privilege-revocation path with no compensating audit trail here.
+      // Account removal is an Admin/console operation, not a client one.
+      allow delete: if false;
     }
 
     // ---------- Members ---------------------------------------------------
+    // Privilege separation on member fields. Roles that hold
+    // PERMISSIONS['members.write'] (owner, admin, front-desk) may write a
+    // member document freely. A trainer — a staff role the application does
+    // NOT grant 'members.write' to — may still write a member document, but
+    // only where it neither INTRODUCES nor ALTERS a financially significant
+    // field.
+    //
+    // This is deliberately field-level rather than a blanket trainer denial:
+    //   * setting a fitness goal / target weight is a real trainer capability
+    //     (src/services/weightRecords.js -> updateDocById('members', …,
+    //     { fitnessGoal, targetWeight })) and touches none of these fields;
+    //   * the renewal write path does write membershipPlanId/joinDate/status,
+    //     but a trainer can never reach it: createDoc('payments', …) runs
+    //     first and is finance-gated (owner/admin), so the request fails
+    //     before the member document is touched.
+    //
+    // A trainer may therefore add a previously-absent significant field
+    // (backfilling an empty slot) but may never change one that already
+    // carries a value, which is where the financial exposure lives.
+    function trainerMayWriteField(f) {
+      return resource == null
+        // create: a financially significant field may not be introduced
+        ? !(f in request.resource.data)
+        // update: a field that already exists may not be altered
+        : (!(f in request.resource.data) || !(f in resource.data));
+    }
+
+    function memberWriteWithinRole() {
+      return isOwner() || isRole('admin') || isRole('front-desk')
+        || (isRole('trainer')
+          && trainerMayWriteField('membershipPlanId')
+          && trainerMayWriteField('isPT')
+          && trainerMayWriteField('ptSurchargeOverride')
+          && trainerMayWriteField('joinDate')
+          && trainerMayWriteField('status'));
+    }
+
     match /members/{id} {
       allow read: if isStaff() && canReadTenant(resource);
-      allow create, update: if isStaff() && canWriteTenant(resource);
+      allow create, update: if isStaff() && memberWriteWithinRole() && canWriteTenant(resource);
       allow delete: if (isRole('admin') || isOwner()) && canDeleteTenant(resource);
     }
 
@@ -258,9 +351,40 @@ service cloud.firestore {
     }
 
     // ---------- Bookings ---------------------------------------------------
+    // Booking ownership is resolved SERVER-SIDE from the referenced member
+    // document. The denormalised `gymId` inside a booking payload is entirely
+    // attacker-controlled, so trusting it would let any staff account mint a
+    // booking inside another gym just by writing that gym's id. Every
+    // referenced member must exist and belong to the caller's own gym.
+    function memberInCallerGym(id) {
+      return id is string
+        && id.size() > 0
+        && exists(/databases/$(database)/documents/members/$(id))
+        && get(/databases/$(database)/documents/members/$(id)).data.gymId == gymOf(request.auth.uid);
+    }
+
+    // The referenced class is validated only when that class document actually
+    // exists. Requiring existence unconditionally would deny the legitimate
+    // staff booking flow for any class not stored as a `classes/{id}` document,
+    // breaking a capability the application ships today. When the document IS
+    // present it must belong to the caller's gym; a present-but-untagged class
+    // denies, so a foreign class can never be referenced.
+    function classInCallerGym(id) {
+      return id is string
+        && id.size() > 0
+        && (!exists(/databases/$(database)/documents/classes/$(id))
+          || get(/databases/$(database)/documents/classes/$(id)).data.gymId == gymOf(request.auth.uid));
+    }
+
+    // Staff roles (owner/admin/trainer/front-desk) retain booking CRUD, which
+    // matches the application's 'Manage bookings' affordance for every staff
+    // role that can open the Classes page. Only the tenant boundary above is
+    // tightened.
     match /bookings/{id} {
       allow read: if isStaff() && canReadTenant(resource);
-      allow create, update: if isStaff() && canWriteTenant(resource);
+      allow create, update: if isStaff() && canWriteTenant(resource)
+        && memberInCallerGym(request.resource.data.memberId)
+        && classInCallerGym(request.resource.data.classId);
       allow delete: if isStaff() && canDeleteTenant(resource);
     }
 
@@ -271,13 +395,51 @@ service cloud.firestore {
       allow update, delete: if false;
     }
 
-    // ---------- App settings (owner only) ----------------------------------
-    // NOTE: settings/app remains a global, owner-managed singleton for now.
-    // Relocation to per-gym settings (gyms/{gymId}/settings) is deferred to the
-    // owner-auth/settings phase so this screen keeps working unchanged.
+    // ---------- Legacy global app settings (settings/app) -------------------
+    // `settings/app` is a PRE-MIGRATION singleton that carries a `gymId`
+    // field identifying the single tenant that owns it. It is being retired
+    // in favour of the per-gym document at gyms/{gymId}/settings/app.
+    //
+    // Interim posture — deliberately stricter than the previous global
+    // `allow read: if isSignedIn()`: the singleton is isolated by its OWN
+    // gymId, so only the owning gym can read or update it. Another gym's
+    // owner can neither read it nor overwrite it. A collection-wide read is
+    // denied because `resource` is null for a query.
+    //
+    // create and delete are denied outright: every new settings document must
+    // be created under gyms/{gymId}/settings/app, and a client must never be
+    // able to remove the shared document other tenants still read from.
+    //
+    // This block is replaced by `if false` once every active gym has a
+    // validated per-gym settings document (deployment gate S4 of the Phase 1
+    // plan). That retirement is intentionally NOT performed here because the
+    // production data migration has not run; flipping it now would break the
+    // live app, since no gyms/{gymId}/settings/app documents exist yet.
     match /settings/{doc} {
-      allow read: if isSignedIn();
-      allow create, update, delete: if isOwner();
+      allow read: if isSignedIn()
+        && hasGym()
+        && resource != null
+        && 'gymId' in resource.data
+        && resource.data.gymId == gymOf(request.auth.uid);
+      allow update: if isOwner()
+        && hasGym()
+        && resource != null
+        && 'gymId' in resource.data
+        && resource.data.gymId == gymOf(request.auth.uid)
+        && 'gymId' in request.resource.data
+        && request.resource.data.gymId == gymOf(request.auth.uid);
+      allow create, delete: if false;
+    }
+
+    // ---------- Migration state (reserved, no client access) ----------------
+    // tenancy/{document=**} holds the migration / restore ledger (for example
+    // tenancy/migrationState). It is written only by trusted infrastructure
+    // (Admin SDK with owner-level credentials, or a named backup/restore
+    // service identity) using rules-bypassed access; clients have no path to
+    // it. The explicit deny also closes off any future client code that might
+    // try to claim tenancy ownership of unscoped documents.
+    match /tenancy/{document=**} {
+      allow read, write: if false;
     }
   }
 }
