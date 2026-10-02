@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react'
 import { CalendarDays, Clock, Pencil, Plus, Trash2, Users } from 'lucide-react'
 import { useCollection } from '@/hooks/useFirestore'
 import { createDoc, removeDoc, updateDocById } from '@/services/firestore'
+import { DEMO_GYM_ID, getGymId } from '@/services/ownerContext'
 import { logAudit } from '@/services/audit'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/context/ToastContext'
@@ -92,6 +93,22 @@ export default function Classes() {
 
   const handleAddBooking = async () => {
     if (!bookingFor || !selectedMember) return
+
+    // Defense-in-depth only: firestore.rules resolves both references server-side
+    // and remains the authoritative boundary. This rejects an obviously invalid
+    // selection before the write so staff see a readable message instead of a raw
+    // PERMISSION_DENIED. The gym id is resolved with the same fallback createDoc
+    // stamps onto the document, so demo mode stays consistent with the write path.
+    const activeGymId = getGymId() || DEMO_GYM_ID
+    if (memberMap[selectedMember]?.gymId !== activeGymId) {
+      toast.error('That member does not belong to this gym')
+      return
+    }
+    if (bookingFor.gymId !== activeGymId) {
+      toast.error('That class does not belong to this gym')
+      return
+    }
+
     setSubmitting(true)
     try {
       await createDoc('bookings', {
