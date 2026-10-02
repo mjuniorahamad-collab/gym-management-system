@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { CheckCircle2, ClipboardCheck, QrCode, Search, UserCheck } from 'lucide-react'
 import { useCollection } from '@/hooks/useFirestore'
 import { useToday } from '@/hooks/useToday'
@@ -65,14 +65,25 @@ export default function Attendance() {
 
   const canWrite = can('attendance.write')
 
+  // checkedInToday is derived from the realtime subscription, so a check-in that
+  // has been accepted but not yet echoed back is invisible to it. Two check-ins
+  // issued back to back - a double click, or Enter pressed twice in the QR field
+  // while the first write is still in flight - would both pass the duplicate
+  // check and both be written. This set is updated synchronously, so the second
+  // call sees it before any re-render, and it holds only in-flight writes: a
+  // member who checks out is free to check in again, as before.
+  const checkInsInFlight = useRef(new Set())
+
   // Returns whether the member was actually checked in, so the QR path can keep
   // the scanned ID in the field when the write fails.
   const handleCheckIn = async (memberId) => {
     if (!memberId || !canWrite) return false
+    if (checkInsInFlight.current.has(memberId)) return false
     if (checkedInToday.has(memberId)) {
       toast.info('Already checked in today')
       return false
     }
+    checkInsInFlight.current.add(memberId)
     setSubmitting(true)
     try {
       // Stamped at write time, not read from render state: a front-desk tab left
@@ -93,6 +104,7 @@ export default function Attendance() {
       toast.error(e.message || 'Check-in failed')
       return false
     } finally {
+      checkInsInFlight.current.delete(memberId)
       setSubmitting(false)
     }
   }
