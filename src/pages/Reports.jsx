@@ -25,7 +25,7 @@ export default function Reports() {
   const plans = useCollection('membershipPlans')
 
   const loading =
-    members.loading || payments.loading || expenses.loading || attendance.loading
+    members.loading || payments.loading || expenses.loading || attendance.loading || plans.loading
 
   const series = useMemo(() => {
     const months = lastNMonths(6)
