@@ -1,7 +1,16 @@
 import { createContext, useCallback, useContext, useMemo } from 'react'
 import toast, { Toaster } from 'react-hot-toast'
 
-const ToastContext = createContext({ toast })
+// The default must expose the same shape as the provider value. It previously
+// only carried `toast`, so any component rendered outside a ToastProvider (a
+// test, an isolated story) crashed on `toast.error is not a function` the
+// moment it tried to report a failure.
+const ToastContext = createContext({
+  toast,
+  success: (message) => toast.success(message),
+  error: (message) => toast.error(message),
+  info: (message) => toast(message),
+})
 
 export function ToastProvider({ children }) {
   const success = useCallback((message) => toast.success(message), [])

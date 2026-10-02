@@ -51,6 +51,7 @@ export default function MemberDetail() {
 
   const [member, setMember] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(null)
   const [editOpen, setEditOpen] = useState(false)
   const [payOpen, setPayOpen] = useState(false)
   const [renewOpen, setRenewOpen] = useState(false)
@@ -82,9 +83,18 @@ export default function MemberDetail() {
   const weightRecords = useCollection('weightRecords')
 
   const reload = async () => {
-    const data = await getById('members', id)
-    setMember(data)
-    setLoading(false)
+    try {
+      const data = await getById('members', id)
+      setMember(data)
+      setLoadError(null)
+    } catch (e) {
+      // reload() is fired from 12 places and is not awaited by them, so it must
+      // never reject: an unhandled rejection here left the page spinner up
+      // forever and reported a read failure as silence.
+      setLoadError(e?.message || 'Could not load this member')
+    } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => {
@@ -330,9 +340,14 @@ export default function MemberDetail() {
   }
 
   const handlePhoto = async (url) => {
-    await updateDocById('members', id, { photoUrl: url })
-    await logAudit({ action: 'update', entity: 'members', entityId: id, details: { photo: true } })
-    reload()
+    try {
+      await updateDocById('members', id, { photoUrl: url })
+      await logAudit({ action: 'update', entity: 'members', entityId: id, details: { photo: true } })
+      toast.success('Photo updated')
+      reload()
+    } catch (e) {
+      toast.error(e?.message || 'Could not update photo')
+    }
   }
 
   const handlePayment = async (values) => {
@@ -456,6 +471,29 @@ export default function MemberDetail() {
 
   if (loading) return <Spinner label="Loading member…" />
   if (!member) {
+    if (loadError) {
+      return (
+        <EmptyState
+          title="Could not load this member"
+          description={loadError}
+          action={
+            <div className="flex items-center gap-2">
+              <Button
+                onClick={() => {
+                  setLoading(true)
+                  reload()
+                }}
+              >
+                Try again
+              </Button>
+              <Link to="/members">
+                <Button variant="outline">Back to members</Button>
+              </Link>
+            </div>
+          }
+        />
+      )
+    }
     return (
       <EmptyState
         title="Member not found"

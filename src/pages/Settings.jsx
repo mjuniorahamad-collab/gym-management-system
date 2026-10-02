@@ -127,10 +127,16 @@ export default function Settings() {
     }
   }
 
+  // updateSettings() handles its own success/error toasts and resolves to a
+  // boolean. try/finally only guarantees the button can never be left spinning
+  // if that contract ever changes.
   const onSubmit = async (values) => {
     setSaving(true)
-    await updateSettings(values)
-    setSaving(false)
+    try {
+      await updateSettings(values)
+    } finally {
+      setSaving(false)
+    }
   }
 
   const handleLogo = async (e) => {

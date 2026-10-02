@@ -142,6 +142,7 @@ export default function Members() {
         // Every membership period is a first-class record. When a new member
         // starts on a plan, create their origin period so dues, history and
         // renewals all account through the same ledger from day one.
+        let originPeriodFailed = false
         const originPlan = planMap[payload.membershipPlanId]
         if (originPlan) {
           const start = payload.joinDate || toDateInputValue()
@@ -183,11 +184,21 @@ export default function Members() {
           } catch (periodError) {
             // Member creation must not fail because period creation was not
             // permitted (e.g. front-desk role); finance roles can backfill.
+            // This is not an edge case though - firestore.rules does not grant
+            // memberships create to front-desk, so every member added by that
+            // role lands here. Say so, or staff believe the member has a
+            // priced membership record when in fact none was written.
             console.error('Could not create origin membership period:', periodError)
+            originPeriodFailed = true
           }
         }
 
         toast.success('Member added')
+        if (originPeriodFailed) {
+          toast.info(
+            'Member added, but their first membership period could not be created (your role may not allow it). Ask an owner or admin to backfill it from Settings › Rebuild membership periods.'
+          )
+        }
 
         // Optional, non-blocking: if this gym has a WhatsApp group invite
         // link, offer to invite the newly added member. Member creation is
