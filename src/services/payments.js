@@ -13,13 +13,17 @@ import { safePaymentAmount } from '@/utils/payments'
  * impossible.
  *
  * Returns the list of period snapshots that were written.
+ *
+ * `payments` may be supplied by a caller that has already read the collection
+ * in the same operation, to avoid a second identical full read. It must be the
+ * complete, unfiltered collection - the ledger filters by memberId itself.
  */
-export async function refreshMembershipSnapshots(memberId) {
+export async function refreshMembershipSnapshots(memberId, { payments: paymentsOverride } = {}) {
   if (!memberId) return []
   const [member, plans, payments, memberships] = await Promise.all([
     getById('members', memberId),
     listAll('membershipPlans'),
-    listAll('payments'),
+    paymentsOverride ? Promise.resolve(paymentsOverride) : listAll('payments'),
     listAll('memberships'),
   ])
 

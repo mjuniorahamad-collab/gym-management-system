@@ -121,7 +121,15 @@ export async function deleteMembershipPeriod({ periodId, memberId }) {
   }
 
   await removeDoc('memberships', periodId)
-  await refreshMembershipSnapshots(memberId)
+  // `allPayments` was read above to find the reallocated payments, and those
+  // payments have since been unlinked. Reflect that in the in-memory copy so it
+  // is identical to what a fresh read would return, then hand it over instead
+  // of reading the whole collection a second time in the same operation.
+  const unlinkedIds = new Set(affected.map((p) => p.id))
+  const paymentsAfterUnlink = allPayments.map((p) =>
+    unlinkedIds.has(p.id) ? { ...p, membershipId: '' } : p
+  )
+  await refreshMembershipSnapshots(memberId, { payments: paymentsAfterUnlink })
 
   await logAudit({
     action: 'delete',
