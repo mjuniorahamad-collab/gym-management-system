@@ -39,7 +39,7 @@ import { PageHeader } from '@/components/layout/PageHeader'
 import { formatCurrency, formatDate, formatDateTime, formatNumber } from '@/utils/formatters'
 import { lastNMonths, monthKey, parseDate, addDays } from '@/utils/dateHelpers'
 import { getCurrentMembershipExpiry, getDaysRemaining, getExpiryBucket, matchesExpiryFilter } from '@/utils/membership'
-import { computeOutstandingDues, computeMemberLedger } from '@/utils/dues'
+import { computeMemberFinanceRollups } from '@/utils/dues'
 
 const MAX_EXPIRING_ROWS = 50
 
@@ -118,36 +118,27 @@ export default function Dashboard() {
     [members.items]
   )
 
-  const dues = useMemo(
+  // One ledger pass feeds both the dues card and the origin-period banner.
+  // These used to be two separate memos calling computeMemberLedger with
+  // identical arguments - and computeMemberLedger re-filters the whole payments
+  // array per member, so the second memo doubled the dominant cost on every
+  // payment, membership, member, plan or PT-surcharge change.
+  const { dues, pendingOriginPeriods } = useMemo(
     () =>
       canFinance
-        ? computeOutstandingDues({
+        ? computeMemberFinanceRollups({
             members: members.items,
             plans: plans.items,
             payments: payments.items,
             memberships: memberships.items,
             ptSurcharge,
           })
-        : { rows: [], totalDue: 0, count: 0 },
+        : { dues: { rows: [], totalDue: 0, count: 0 }, pendingOriginPeriods: 0 },
     [canFinance, members.items, plans.items, payments.items, memberships.items, ptSurcharge]
   )
 
-  // Members with an undocumented origin period (pre-records history).
-  const pendingOriginPeriods = useMemo(() => {
-    if (!canFinance) return 0
-    let count = 0
-    for (const member of members.items) {
-      const ledger = computeMemberLedger({
-        member,
-        plans: plans.items,
-        payments: payments.items,
-        memberships: memberships.items,
-        ptSurcharge,
-      })
-      if (ledger.periods.some((p) => p.implicit)) count += 1
-    }
-    return count
-  }, [canFinance, members.items, plans.items, payments.items, memberships.items, ptSurcharge])
+  // Members with an undocumented origin period (pre-records history), counted by
+  // the rollup above.
 
   const expiringRows = useMemo(() => {
     const rows = []

@@ -12,7 +12,26 @@ vi.mock('@/services/firestore', () => ({
 
 vi.mock('@/services/audit', () => ({ logAudit: vi.fn(async () => {}) }))
 
-vi.mock('@/utils/dues', () => ({ computeMemberLedger: vi.fn(() => ({ periods: [] })) }))
+// countPendingOriginPeriods now delegates to computeMemberFinanceRollups, which
+// owns the counting. The rollup is mirrored here on top of the stubbed ledger
+// engine so this file keeps asserting the same counting behaviour, while the
+// real rollup's results are covered against real data in financeRollups.test.js.
+const { duesMock } = vi.hoisted(() => {
+  const computeMemberLedger = vi.fn(() => ({ periods: [] }))
+  const computeMemberFinanceRollups = vi.fn(
+    ({ members = [], plans = [], payments = [], memberships = [], ptSurcharge = 0 }) => {
+      let pendingOriginPeriods = 0
+      for (const member of members) {
+        const ledger = computeMemberLedger({ member, plans, payments, memberships, ptSurcharge })
+        if (ledger.periods.some((p) => p.implicit)) pendingOriginPeriods += 1
+      }
+      return { dues: { rows: [], totalDue: 0, count: 0 }, pendingOriginPeriods }
+    }
+  )
+  return { duesMock: { computeMemberLedger, computeMemberFinanceRollups } }
+})
+
+vi.mock('@/utils/dues', () => duesMock)
 
 /** Reads a source file with comments stripped, so these guards assert on
  *  executable code rather than on prose that merely names a removed symbol. */

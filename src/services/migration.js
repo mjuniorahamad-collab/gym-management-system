@@ -1,6 +1,6 @@
 import { createDoc, listAll } from './firestore'
 import { logAudit } from './audit'
-import { computeMemberLedger } from '@/utils/dues'
+import { computeMemberFinanceRollups, computeMemberLedger } from '@/utils/dues'
 import { toDateInputValue } from '@/utils/dateHelpers'
 
 /**
@@ -8,14 +8,21 @@ import { toDateInputValue } from '@/utils/dateHelpers'
  * implicitly by the finance ledger because their earliest payment predates
  * their oldest membership record)? Used by the Dashboard banner and the
  * Settings action so the owner can see and resolve pending cleanup.
+ *
+ * Delegates to the same single-pass rollup the dashboard uses, so the count
+ * cannot drift from the one shown on the banner. ptSurcharge stays optional and
+ * defaults to 0, which is exactly what this function always used - it only
+ * affects an implicit period's PRICE, never whether one is reconstructed.
  */
-export function countPendingOriginPeriods({ members = [], plans = [], payments = [], memberships = [] } = {}) {
-  let count = 0
-  for (const member of members) {
-    const ledger = computeMemberLedger({ member, plans, payments, memberships })
-    if (ledger.periods.some((p) => p.implicit)) count += 1
-  }
-  return count
+export function countPendingOriginPeriods({
+  members = [],
+  plans = [],
+  payments = [],
+  memberships = [],
+  ptSurcharge = 0,
+} = {}) {
+  return computeMemberFinanceRollups({ members, plans, payments, memberships, ptSurcharge })
+    .pendingOriginPeriods
 }
 
 function isoOrNull(date) {

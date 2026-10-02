@@ -268,32 +268,44 @@ export function computeMemberLedger({
 }
 
 /**
- * Compute the outstanding membership dues across all members.
+ * ONE pass over the members producing every all-members finance figure the
+ * dashboard needs, so no member's ledger is computed twice for two different
+ * roll-ups.
  *
- * Every member is evaluated through computeMemberLedger — the SAME engine
- * used by Member Detail, Renewal, Payment Form and receipts — so the
- * dashboard can never disagree with the rest of the app. Rows aggregate
- * open periods only and carry `targetMembershipId` pointing at the oldest
- * unpaid recorded period. Members with no remaining due are excluded.
+ * The dashboard previously called computeOutstandingDues() and then looped over
+ * every member AGAIN calling computeMemberLedger() with byte-identical
+ * arguments, purely to count undocumented origin periods. Since
+ * computeMemberLedger filters the full payments array once per member, that
+ * duplicated the dominant cost on every change to payments, memberships,
+ * members, plans or the PT surcharge.
  *
- * Returns { rows, totalDue, count }. Rows are sorted by due descending,
- * then by member name.
+ * The two figures are derived from the same per-member ledger but are NOT the
+ * same set of rows: dues keeps only members with a plan and a remaining due,
+ * while the origin-period count keeps every member carrying an implicit period.
+ * Both original behaviours are preserved exactly, including the plan-bearing
+ * requirement of an implicit period (see below).
+ *
+ * Note an implicit origin period always requires a plan (computeMemberLedger
+ * only reconstructs one when a plan resolves, and returns no periods at all for
+ * a member with neither a plan nor recorded documents), so a planless member
+ * contributes to neither figure. That is unchanged here - it is recorded
+ * because it is the reason the two figures cannot be collapsed into each other.
+ *
+ * Returns { dues: { rows, totalDue, count }, pendingOriginPeriods }.
  */
-export function computeOutstandingDues({
+export function computeMemberFinanceRollups({
   members = [],
   plans = [],
   payments = [],
   memberships = [],
   ptSurcharge = 0,
-  _ptSurchargeOverride,
 } = {}) {
   const planMap = Object.fromEntries(plans.map((p) => [p.id, p]))
 
   const rows = []
-  for (const member of members) {
-    const plan = planMap[member?.membershipPlanId]
-    if (!plan) continue
+  let pendingOriginPeriods = 0
 
+  for (const member of members) {
     const ledger = computeMemberLedger({
       member,
       plans,
@@ -301,6 +313,12 @@ export function computeOutstandingDues({
       memberships,
       ptSurcharge,
     })
+
+    // Counted for every member, independent of whether a plan is assigned.
+    if (ledger.periods.some((p) => p.implicit)) pendingOriginPeriods += 1
+
+    const plan = planMap[member?.membershipPlanId]
+    if (!plan) continue
     if (ledger.totals.due <= 0) continue
 
     rows.push({
@@ -320,5 +338,37 @@ export function computeOutstandingDues({
   })
 
   const totalDue = rows.reduce((sum, r) => sum + r.dueAmount, 0)
-  return { rows, totalDue, count: rows.length }
+  return { dues: { rows, totalDue, count: rows.length }, pendingOriginPeriods }
+}
+
+/**
+ * Compute the outstanding membership dues across all members.
+ *
+ * Every member is evaluated through computeMemberLedger — the SAME engine
+ * used by Member Detail, Renewal, Payment Form and receipts — so the
+ * dashboard can never disagree with the rest of the app. Rows aggregate
+ * open periods only and carry `targetMembershipId` pointing at the oldest
+ * unpaid recorded period. Members with no remaining due are excluded.
+ *
+ * Returns { rows, totalDue, count }. Rows are sorted by due descending,
+ * then by member name.
+ *
+ * Thin wrapper over computeMemberFinanceRollups so this figure and the
+ * dashboard's origin-period count share a single ledger pass.
+ */
+export function computeOutstandingDues({
+  members = [],
+  plans = [],
+  payments = [],
+  memberships = [],
+  ptSurcharge = 0,
+  _ptSurchargeOverride,
+} = {}) {
+  return computeMemberFinanceRollups({
+    members,
+    plans,
+    payments,
+    memberships,
+    ptSurcharge,
+  }).dues
 }
