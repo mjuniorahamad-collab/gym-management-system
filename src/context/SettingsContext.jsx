@@ -3,14 +3,22 @@ import { doc, getDoc, onSnapshot, setDoc, updateDoc } from 'firebase/firestore'
 import { db, isFirebaseConfigured } from '@/firebase'
 import { useAuth } from './AuthContext'
 import { useToast } from './ToastContext'
+import { DEFAULT_GYM_TIMEZONE, resolveGymTimezone } from '@/utils/gymTime'
 
 export const DEFAULT_SETTINGS = {
   gymName: 'Himalye Wonders Gym',
-  tagline: 'Strength • Discipline • Growth',
+  tagline: 'Strength • Discipline • Growing',
   currency: 'INR',
   dateFormat: 'MMM D, YYYY',
   receiptPrefix: 'HWG',
   logoUrl: '',
+  // Canonical timezone for every calendar-day decision: attendance day
+  // boundaries, membership expiry, reports, billing months and freeze
+  // arithmetic. Stored per gym at `gyms/{gymId}/settings/app.timezone` and
+  // seeded here for gyms created from now on. Gyms predating this field have no
+  // value, so every reader resolves through `resolveGymTimezone`, which falls
+  // back to this same default rather than to the browser's timezone.
+  timezone: DEFAULT_GYM_TIMEZONE,
 }
 
 const SETTINGS_DOC = 'app'
@@ -154,9 +162,14 @@ export function SettingsProvider({ children }) {
     [toast, gymId]
   )
 
+  // `timezone` is resolved once here so no caller has to remember to normalise
+  // it, and so an unresolvable stored value can never reach a day-boundary
+  // calculation. Consumers take this and pass it to the gymTime helpers.
+  const timezone = resolveGymTimezone(settings.timezone)
+
   const value = useMemo(
-    () => ({ settings, loading, error, updateSettings }),
-    [settings, loading, error, updateSettings]
+    () => ({ settings, timezone, loading, error, updateSettings }),
+    [settings, timezone, loading, error, updateSettings]
   )
 
   return <SettingsContext.Provider value={value}>{children}</SettingsContext.Provider>

@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { isValidTimezone } from '@/utils/gymTime'
 
 const email = z.string().min(1, 'Email is required').email('Enter a valid email')
 const phone = z
@@ -182,6 +183,9 @@ export const settingsSchema = z.object({
   currency: z.string().min(1, 'Select a currency'),
   dateFormat: z.string().min(1, 'Select a date format'),
   receiptPrefix: z.string().min(1, 'Receipt prefix is required').max(8),
+  timezone: z
+    .string()
+    .refine(isValidTimezone, { message: 'Select a valid timezone' }),
 })
 
 export const whatsAppLinkSchema = z

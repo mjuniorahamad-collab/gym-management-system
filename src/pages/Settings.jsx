@@ -19,6 +19,7 @@ import { Button } from '@/components/ui/Button'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { CURRENCIES, DATE_FORMATS } from '@/utils/constants'
 import { formatCurrency } from '@/utils/formatters'
+import { COMMON_GYM_TIMEZONES, resolveGymTimezone } from '@/utils/gymTime'
 
 export default function Settings() {
   const { settings, updateSettings, error: settingsError } = useSettings()
@@ -52,6 +53,10 @@ export default function Settings() {
       currency: settings.currency,
       dateFormat: settings.dateFormat,
       receiptPrefix: settings.receiptPrefix,
+      // A gym created before the timezone field existed has no stored value;
+      // show the same default every reader falls back to, so saving cannot
+      // silently change the gym's day boundaries.
+      timezone: resolveGymTimezone(settings.timezone),
     })
   }, [settings, reset])
 
@@ -386,6 +391,19 @@ setUploading(true)
                 </FormField>
                 <FormField label="Receipt prefix" error={errors.receiptPrefix?.message}>
                   <Input error={errors.receiptPrefix} {...register('receiptPrefix')} />
+                </FormField>
+                <FormField
+                  label="Gym timezone"
+                  error={errors.timezone?.message}
+                  hint="Used for attendance days, membership expiry, reports and billing months. Attendance is recorded in this zone regardless of a staff device's own clock."
+                >
+                  <Select error={errors.timezone} {...register('timezone')}>
+                    {COMMON_GYM_TIMEZONES.map((tz) => (
+                      <option key={tz} value={tz}>
+                        {tz}
+                      </option>
+                    ))}
+                  </Select>
                 </FormField>
               </div>
               <div className="flex justify-end pt-2">
