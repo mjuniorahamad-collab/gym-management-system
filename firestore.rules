@@ -379,23 +379,35 @@ service cloud.firestore {
         && get(/databases/$(database)/documents/members/$(id)).data.gymId == gymOf(request.auth.uid);
     }
 
-    // The referenced class is validated only when that class document actually
-    // exists. Requiring existence unconditionally would deny the legitimate
-    // staff booking flow for any class not stored as a `classes/{id}` document,
-    // breaking a capability the application ships today. When the document IS
-    // present it must belong to the caller's gym; a present-but-untagged class
-    // denies, so a foreign class can never be referenced.
+    // The referenced class must exist AND belong to the caller's gym. The
+    // application always persists a `classes/{id}` document before booking
+    // against it — the booking form derives classId from a class already
+    // materialised in the page state (src/pages/Classes.jsx) — so requiring
+    // existence is satisfiable by the real client. A present-but-untagged
+    // class denies, so a foreign or pre-tenancy class can never be referenced.
+    //
+    // Note this is an integrity constraint, not a confidentiality one: the
+    // `classes` read rule already exposes every class in the caller's own gym
+    // to any staff account, so a booking can never disclose a class document
+    // the caller could not already read.
     function classInCallerGym(id) {
       return id is string
         && id.size() > 0
-        && (!exists(/databases/$(database)/documents/classes/$(id))
-          || get(/databases/$(database)/documents/classes/$(id)).data.gymId == gymOf(request.auth.uid));
+        && exists(/databases/$(database)/documents/classes/$(id))
+        && get(/databases/$(database)/documents/classes/$(id)).data.gymId == gymOf(request.auth.uid);
     }
 
     // Staff roles (owner/admin/trainer/front-desk) retain booking CRUD, which
     // matches the application's 'Manage bookings' affordance for every staff
-    // role that can open the Classes page. Only the tenant boundary above is
-    // tightened.
+    // role that can open the Classes page. Only the reference constraints above
+    // are tightened; no role was added or removed.
+    //
+    // `allow update` re-validates both references on every write, so an existing
+    // booking cannot be repointed at another tenant's member or class. It is not
+    // reachable from current application code (src/pages/Classes.jsx only ever
+    // deletes a booking) and is specified defensively. Note that once a class is
+    // deleted its bookings become orphans that can still be read and deleted but
+    // not updated; that is the accepted data-integrity state, not a regression.
     match /bookings/{id} {
       allow read: if isStaff() && canReadTenant(resource);
       allow create, update: if isStaff() && canWriteTenant(resource)

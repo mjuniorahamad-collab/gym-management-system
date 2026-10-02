@@ -405,7 +405,8 @@ describe('REM settings tenant isolation', () => {
 })
 
 // ===========================================================================
-// Bookings: the tenant boundary is enforced from the referenced member
+// Bookings: the tenant boundary is enforced from the referenced member,
+// and the referenced class must be an existing document in the same gym
 // ===========================================================================
 describe('REM booking tenant isolation', () => {
   let env
@@ -435,6 +436,7 @@ describe('REM booking tenant isolation', () => {
       await fs.doc('members/rem-member-untagged').set({ name: 'Untagged Member' })
       await fs.doc('classes/rem-class-a').set({ name: 'A Class', gymId: GYM_A })
       await fs.doc('classes/rem-class-b').set({ name: 'B Class', gymId: GYM_B })
+      await fs.doc('classes/rem-class-untagged').set({ name: 'Untagged Class' })
       await fs.doc('bookings/rem-booking-b').set({
         classId: 'rem-class-b',
         memberId: 'rem-member-b',
@@ -491,8 +493,34 @@ describe('REM booking tenant isolation', () => {
     await assertFails(client(env, A.owner).collection('bookings').add(ownBooking({ classId: 'rem-class-b' })))
   })
 
-  it('a booking still works when the class document does not exist', async () => {
-    await assertSucceeds(client(env, A.owner).collection('bookings').add(ownBooking({ classId: 'rem-absent-class' })))
+  it('a booking cannot reference a class document that does not exist', async () => {
+    await assertFails(client(env, A.owner).collection('bookings').add(ownBooking({ classId: 'rem-absent-class' })))
+  })
+
+  it('a booking cannot reference an untagged (pre-tenancy) class', async () => {
+    await assertFails(
+      client(env, A.owner).collection('bookings').add(ownBooking({ classId: 'rem-class-untagged' }))
+    )
+  })
+
+  it('a booking cannot be created with no class reference at all', async () => {
+    await assertFails(
+      client(env, A.owner)
+        .collection('bookings')
+        .add({ classId: '', memberId: 'rem-member-a', status: 'booked', date: TODAY, gymId: GYM_A })
+    )
+    await assertFails(
+      client(env, A.owner)
+        .collection('bookings')
+        .add({ memberId: 'rem-member-a', status: 'booked', date: TODAY, gymId: GYM_A })
+    )
+  })
+
+  it('a booking created in own gym cannot then be repointed at a foreign class', async () => {
+    const created = await client(env, A.owner).collection('bookings').add(ownBooking())
+    await assertFails(client(env, A.owner).doc(`bookings/${created.id}`).update({ classId: 'rem-class-b' }))
+    await assertFails(client(env, A.owner).doc(`bookings/${created.id}`).update({ classId: 'rem-absent-class' }))
+    await assertFails(client(env, A.owner).doc(`bookings/${created.id}`).update({ memberId: 'rem-member-b' }))
   })
 
   it('a booking cannot be created with no member reference at all', async () => {

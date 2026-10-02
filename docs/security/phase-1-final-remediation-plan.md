@@ -511,15 +511,21 @@ Read-only unless stated.
 
 ## 17. Implementation Deviations (recorded during implementation)
 
-Added after the implementation commits `12bc9b5`, `17c416c` and `2b0c387` on `security-remediation/phase-1`. These are the places where the delivered code knowingly differs from the plan text, with the reason each was accepted.
+Added after the implementation commits `12bc9b5`, `17c416c`, `2b0c387` and `ba013ec` on `security-remediation/phase-1`, and after the booking class-existence commits that followed. These are the places where the delivered code knowingly differs from the plan text, with the reason each was accepted.
 
-### 17.1 Booking class reference is validated only when the class exists
+### 17.1 Booking class reference — RESOLVED: strict existence check is now implemented
 
-§6.1 required a strict tenant check on **both** the referenced member and the referenced class. The delivered `classInCallerGym()` returns true when the class document does not exist.
+**Superseded by the commit that adds `exists()` to `classInCallerGym()`.** This entry previously recorded a deviation in which the referenced class was validated only when the class document happened to exist. That deviation is **withdrawn**; `firestore.rules` now requires a non-empty string `classId`, that `classes/{classId}` exists, and that its `gymId` equals the caller's gym — the mechanism §6 originally specified.
 
-- **Why:** the Phase 0.5A evidence fixtures never seed a `classes/{id}` document (they use `sec-class-a`), so a strict `get(...).data` check fails every F1–F4 booking case and the app has no way to satisfy both.
-- **Residual risk:** a booking may reference a class id that does not exist, provided the referenced member belongs to the caller's gym. The member boundary — the actual cross-tenant data leak — is enforced strictly.
-- **Revisit when:** class persistence is verified in a real environment. If classes are always written before bookings, this becomes a strict check with no fixture change.
+**Why the original deviation was wrong.** It was introduced because the frozen Phase 0.5A fixtures never seed a `classes/{id}` document, so a strict check fails the F1–F4 booking cases. That is a fixture-completeness artifact, not an application fact. Source evidence establishes that the real client never books against an absent class:
+
+- `Classes.jsx` derives `classId` from a class already materialised in page state (`useCollection('classes')`), so the referenced `classes/{id}` document exists at booking-create time by construction.
+- `seedService.js` creates the class documents first and books against the ids those writes returned.
+- The class write is a single, non-transactional `addDoc`, so — exactly as §6.1 concluded — `get()` and not `getAfter()` remains the correct primitive. Batched semantics are still not used anywhere.
+
+**Classification of the constraint.** Requiring class existence is **data-integrity hardening, not a confidentiality boundary.** `classes` is readable by any staff account in its own gym (`firestore.rules:364`), so a booking cannot disclose a class document its author could not already read. The cross-tenant boundary that actually mattered was the referenced **member**, and it was already enforced strictly by `memberInCallerGym()`. The strict class check closes a dangling-reference hole; it does not close a data leak.
+
+**Accepted residual.** `Classes.jsx` deletes a class document without cascading to its bookings, so **orphan bookings referencing a since-deleted class are an expected data-integrity state.** They remain readable and deletable, but can no longer be updated. This is deliberate and consistent with the pre-existing strict-member behaviour, where deleting a member likewise leaves bookings that can be read and deleted but not updated. Cascade deletion was considered and rejected as out of scope for this phase.
 
 ### 17.2 Trainer member writes are field-restricted rather than removed
 
@@ -543,17 +549,38 @@ Removing the client-side `ensureGymTenancy` also removed `ensureMemberNumberCoun
 - **Delivered:** `counters` read is `isStaff() && ((resource == null && hasGym()) || canReadTenant(resource))`. Confirmed against the emulator that a missing counter discloses nothing, that the self-initialising transaction succeeds and continues its sequence, that cross-gym reads and writes still fail, and that unbound, profile-less and anonymous callers are still denied.
 - **Alternative rejected:** seeding every counter in the §5 Admin migration, which would make each future gym provisioning depend on remembering that step.
 
-### 17.5 Verification status at this checkpoint
+### 17.5 Verification status after the booking class-existence change
 
 - `npm test` — 30 files, 404 tests passing.
 - `npm run lint` — 0 errors, 12 pre-existing `react-refresh` warnings.
 - `npm run build` — succeeds (existing >500 kB chunk warning only).
-- `npm run test:rules` — 524 tests, 509 passing, 15 failing. All 15 are the documented known set in the frozen Phase 0.5A file: `C6/C7` (mutually exclusive with `C2`) plus the `E8` / `F9` / `J1`×10 / `J5`×2 emulator query-semantic artifacts. The frozen file is unmodified (SHA-256 `6DEDEA4CE32646C59B0A79957C703A657F5D7B5CB46208D75BC5A2A3B768BD54`).
-- Still blocked exactly as in §15: Storage inventory, backup/restore rehearsal, production migration, and Functions verification.
+- `npm run test:rules` — **527 tests, 507 passing, 20 failing.** The frozen Phase 0.5A file is unmodified (SHA-256 `6DEDEA4CE32646C59B0A79957C703A657F5D7B5CB46208D75BC5A2A3B768BD54`).
+
+The 20 failures fall into **two distinct classes**, and the distinction is the point of this section:
+
+**Class 1 — the 15 pre-existing emulator-semantic failures (unchanged).** `C6/C7`, `E8`, `F9`, `J1`×10, `J5`×2. These were classified before the booking work and remain exactly as they were. The deployed Firestore rules were byte-identical to the local rules, and these cases are query-evaluation semantics of the emulator, not product behaviour. **No rules change was made for them, and none should be.** Do not treat them as regressions.
+
+**Class 2 — the 5 new failures caused by the intentional strict class-existence rule.** `F1–F4` (one per staff role: owner, admin, trainer, frontDesk) and `F12`. These are **fixture-dependent, not product regressions**: all five assert that a booking can be created against `sec-class-a`, an id for which the frozen fixture seeds **no** `classes/{id}` document at all. The assertion encodes an incomplete fixture, not a capability the application provides — the real client cannot reach this state (§17.1).
+
+- The frozen evidence file was **not** edited to seed `classes/sec-class-a`. Doing so would have made the suite green by rewriting the signed baseline rather than by fixing anything, which §10 forbids.
+- These 5 are therefore **accepted and documented**, and the count is tracked, not suppressed. No test was deleted, weakened, skipped, or annotated away.
+- Were the fixture ever re-issued under a new evidence baseline, the correct fix is to seed the class document in the fixture — not to relax the rule.
+- Still blocked exactly as in §15: Storage inventory, backup/restore rehearsal, production migration, and Functions verification. Nothing in this entry unblocks any of those gates, and no Storage, backup, migration or deployment action was taken.
+
+### 17.6 Plan §6 item C — app-side reference validation was missing, and is now implemented
+
+§6 specified three layers: **A** the rule-side boundary, **B** client-supplied ownership fields (rejected), and **C** defense-in-depth validation in `Classes.jsx` that the selected member and class belong to the active gym, surfacing a clear error. The earlier implementation commits delivered A but **omitted C entirely** — the booking handler performed no such check and reported only the raw Firestore error message.
+
+- **Delivered:** `handleAddBooking` now resolves the active gym and rejects, with an explicit user-facing message, when the selected member or the selected class does not belong to it. It returns before `createDoc`, so no booking write is attempted.
+- **Correctness note:** the active gym is resolved with the same `getGymId() || DEMO_GYM_ID` fallback that `createDoc` stamps onto every document, so demo/offline mode stays consistent with the write path.
+- **Status:** this remains **defense-in-depth only.** The Firestore rules are and remain the sole authoritative security boundary; §6 says so explicitly. No role, no permission constant and no rule was changed by this entry, and none of the trainer booking capability was affected.
+- **Interaction with §17.1:** the app-side check now rejects a mismatched class before the rule does, so staff get a readable error instead of a bare `PERMISSION_DENIED`.
 
 ---
 
 ## Confirmations
+
+These confirmations record the state at **plan-authoring time** (§16 and the original block here). They describe the audit checkpoint, not the current implementation branch, and are deliberately left unedited so the checkpoint stays auditable. For what was and was not done during implementation, read §17 above together with the commit history on `security-remediation/phase-1`.
 
 - no source code modified
 - no rules modified
