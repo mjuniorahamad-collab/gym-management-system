@@ -65,11 +65,13 @@ export default function Attendance() {
 
   const canWrite = can('attendance.write')
 
+  // Returns whether the member was actually checked in, so the QR path can keep
+  // the scanned ID in the field when the write fails.
   const handleCheckIn = async (memberId) => {
-    if (!memberId || !canWrite) return
+    if (!memberId || !canWrite) return false
     if (checkedInToday.has(memberId)) {
       toast.info('Already checked in today')
-      return
+      return false
     }
     setSubmitting(true)
     try {
@@ -86,8 +88,10 @@ export default function Attendance() {
       })
       await logAudit({ action: 'create', entity: 'attendance', entityId: memberId, details: { checkIn: true } })
       toast.success(`${memberMap[memberId]?.name} checked in`)
+      return true
     } catch (e) {
       toast.error(e.message || 'Check-in failed')
+      return false
     } finally {
       setSubmitting(false)
     }
@@ -113,20 +117,17 @@ export default function Attendance() {
       toast.error('Unknown member ID')
       return
     }
-    // Keep the scanned ID when the check-in is rejected as a duplicate, or if
-    // it fails outright - otherwise staff have to re-scan a member they already
-    // scanned correctly.
+    // Keep the scanned ID when the check-in is rejected as a duplicate, or if the
+    // write fails - otherwise staff have to re-scan a member they already scanned
+    // correctly. The field is cleared only once the write is confirmed; a
+    // try/catch here could never restore it, because handleCheckIn reports its own
+    // failures and does not rethrow.
     if (checkedInToday.has(member.id)) {
       toast.info('Already checked in today')
       return
     }
-    const previous = qrCode
-    setQrCode('')
-    try {
-      await handleCheckIn(member.id)
-    } catch {
-      setQrCode(previous)
-    }
+    const ok = await handleCheckIn(member.id)
+    if (ok) setQrCode('')
   }
 
   if (loading) return <Spinner label="Loading attendance…" />

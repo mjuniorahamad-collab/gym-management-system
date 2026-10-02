@@ -171,4 +171,58 @@ describe('Attendance check-in/check-out', () => {
     await waitFor(() => expect(toastMocks.error).toHaveBeenCalledWith('Permission denied'))
     expect(toastMocks.success).not.toHaveBeenCalled()
   })
+
+  // handleCheckIn reports its own failures and does not rethrow, so clearing the
+  // field up-front (with a try/catch around the call) silently discarded the
+  // scanned ID on every failed write and staff had to re-scan.
+  it('keeps the scanned ID in the field when the check-in write fails', async () => {
+    mocks.createDoc.mockRejectedValue(new Error('Permission denied'))
+    renderPage()
+
+    const input = screen.getByPlaceholderText('Scan or paste member ID…')
+    fireEvent.change(input, { target: { value: 'm1' } })
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' })
+
+    await waitFor(() => expect(toastMocks.error).toHaveBeenCalledWith('Permission denied'))
+    expect(input.value).toBe('m1')
+  })
+
+  it('clears the scanned ID once the check-in write is confirmed', async () => {
+    renderPage()
+
+    const input = screen.getByPlaceholderText('Scan or paste member ID…')
+    fireEvent.change(input, { target: { value: 'm1' } })
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' })
+
+    await waitFor(() => expect(toastMocks.success).toHaveBeenCalledWith('Zaid checked in'))
+    expect(input.value).toBe('')
+  })
+
+  it('keeps the scanned ID and writes nothing when the member is already checked in', async () => {
+    const now = new Date().toISOString()
+    collections.attendance = [
+      { id: 'att-1', memberId: 'm1', date: now, checkIn: now, checkOut: '', source: 'manual' },
+    ]
+    renderPage()
+
+    const input = screen.getByPlaceholderText('Scan or paste member ID…')
+    fireEvent.change(input, { target: { value: 'm1' } })
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' })
+
+    await waitFor(() => expect(toastMocks.info).toHaveBeenCalledWith('Already checked in today'))
+    expect(mocks.createDoc).not.toHaveBeenCalled()
+    expect(input.value).toBe('m1')
+  })
+
+  it('keeps the scanned ID when the member ID is not recognised', async () => {
+    renderPage()
+
+    const input = screen.getByPlaceholderText('Scan or paste member ID…')
+    fireEvent.change(input, { target: { value: 'nope' } })
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' })
+
+    await waitFor(() => expect(toastMocks.error).toHaveBeenCalledWith('Unknown member ID'))
+    expect(mocks.createDoc).not.toHaveBeenCalled()
+    expect(input.value).toBe('nope')
+  })
 })
