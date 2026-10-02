@@ -5,7 +5,7 @@ import { Building2, Database, Dumbbell, Loader2, MessageCircle, ShieldCheck, Upl
 import { settingsSchema, ptSurchargeSchema } from '@/schemas/validationSchemas'
 import { useSettings, DEFAULT_SETTINGS } from '@/context/SettingsContext'
 import { useToast } from '@/context/ToastContext'
-import { uploadFile, logoPath, isStorageReady } from '@/services/storage'
+import { uploadFile, deleteFile, logoPath, isStorageReady } from '@/services/storage'
 import { getPtSurcharge, setPtSurcharge as persistPtSurcharge } from '@/services/pt'
 import { getWhatsAppLink, setWhatsAppLink } from '@/services/whatsappGroup'
 import { loadSampleData } from '@/services/seedService'
@@ -155,14 +155,32 @@ export default function Settings() {
       toast.error('Firebase Storage is not configured')
       return
     }
-    setUploading(true)
-    try {
-      const url = await uploadFile(file, logoPath(`logo-${Date.now()}.${file.name.split('.').pop()}`))
-      await updateSettings({ logoUrl: url })
-      toast.success('Logo uploaded')
-    } catch (err) {
-      toast.error(err.message || 'Upload failed')
-    } finally {
+setUploading(true)
+        const path = logoPath(`logo-${Date.now()}.${file.name.split('.').pop()}`)
+        try {
+          const url = await uploadFile(file, path)
+          // updateSettings reports its own failure and returns false rather than
+          // throwing, so its result has to be honoured. Ignoring it showed
+          // "Logo uploaded" next to the error it had just raised, telling the
+          // operator the new logo was live when the settings document still
+          // pointed at the old one.
+          const saved = await updateSettings({ logoUrl: url })
+          if (saved) {
+            toast.success('Logo uploaded')
+            return
+          }
+          // The object is referenced by nothing at this point, so leaving it
+          // behind would strand a file nothing can ever clean up. Best effort:
+          // the settings write has already reported its own error, and a failed
+          // cleanup must not replace it with a second confusing one.
+          try {
+            await deleteFile(path)
+          } catch {
+            // Nothing actionable here - the settings error is the real problem.
+          }
+        } catch (err) {
+          toast.error(err.message || 'Upload failed')
+        } finally {
       setUploading(false)
       if (logoRef.current) logoRef.current.value = ''
     }
