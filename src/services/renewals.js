@@ -2,6 +2,7 @@ import { parseDate, toDateInputValue } from '@/utils/dateHelpers'
 import { getMembershipPeriod, getRenewalPaymentSummary } from '@/utils/renewal'
 import { createDoc, updateDocById } from './firestore'
 import { logAudit } from './audit'
+import { nextReceiptNo } from './receipts'
 
 function requireValidPlan(plan) {
   if (!plan || !plan.id) throw new Error('Select a valid membership plan')
@@ -90,7 +91,9 @@ export async function renewMembership({
   const summary = getRenewalPaymentSummary({ planPrice: price, paidAmount: paid })
   const startDate = toDateInputValue(period.startDate)
   const expiryDate = toDateInputValue(period.expiryDate)
-  const receiptNo = `${receiptPrefix}-${Date.now().toString().slice(-6)}`
+  // Same per-gym counter as payments.js, so a renewal receipt can never collide
+  // with a payment receipt or another renewal.
+  const receiptNo = await nextReceiptNo(receiptPrefix)
 
   const membershipData = {
     memberId: member.id,

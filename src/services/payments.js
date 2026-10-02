@@ -2,6 +2,7 @@ import { createDoc, getById, listAll, removeDoc, updateDocById } from './firesto
 import { logAudit } from './audit'
 import { computeMemberLedger } from '@/utils/dues'
 import { safePaymentAmount } from '@/utils/payments'
+import { nextReceiptNo } from './receipts'
 
 /**
  * Recompute every membership-period snapshot (amountPaid / amountDue /
@@ -72,7 +73,11 @@ export async function recordPayment({
   type = 'membership',
 }) {
   const amount = safePaymentAmount(values.amount)
-  const receiptNo = `${receiptPrefix}-${Date.now().toString().slice(-6)}`
+  // Receipt numbers came from `Date.now().toString().slice(-6)`, whose value
+  // space is 1e6 ms — so two payments roughly 16m40s apart with the same
+  // sub-second offset minted the SAME receipt number. The per-gym counter
+  // transaction makes duplicates impossible and keeps receipts in issue order.
+  const receiptNo = await nextReceiptNo(receiptPrefix)
 
   let membershipId = values.membershipId || ''
   if (membershipId) {

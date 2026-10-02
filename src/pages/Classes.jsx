@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { CalendarDays, Clock, Pencil, Plus, Trash2, Users } from 'lucide-react'
 import { useCollection } from '@/hooks/useFirestore'
-import { createDoc, removeDoc, updateDocById } from '@/services/firestore'
+import { createDoc, removeDoc, updateDocById, upsertDoc } from '@/services/firestore'
 import { DEMO_GYM_ID, getGymId } from '@/services/ownerContext'
 import { logAudit } from '@/services/audit'
 import { useAuth } from '@/context/AuthContext'
@@ -54,6 +54,14 @@ export default function Classes() {
 
   const bookingsForClass = (classId) =>
     bookings.filter((b) => b.classId === classId && b.status === 'booked')
+
+  // Classes are weekly-recurring by `dayOfWeek`, so one booking covers every
+  // occurrence and a member can never legitimately be booked into the same
+  // class twice. Keying the document on (classId, memberId) therefore cannot
+  // collapse two distinct business events, and it removes the double-submit
+  // that previously wrote two documents for one booking and inflated the
+  // capacity count used to decide a class was full.
+  const bookingKey = (classId, memberId) => `${classId}__${memberId}`
 
   const handleSubmit = async (values) => {
     setSubmitting(true)
@@ -111,13 +119,19 @@ export default function Classes() {
 
     setSubmitting(true)
     try {
-      await createDoc('bookings', {
+      const existing = bookingsForClass(bookingFor.id).find((b) => b.memberId === selectedMember)
+      if (existing) {
+        toast.error(`${memberMap[selectedMember]?.name || 'That member'} is already booked into this class`)
+        return
+      }
+      const id = bookingKey(bookingFor.id, selectedMember)
+      await upsertDoc('bookings', id, {
         classId: bookingFor.id,
         memberId: selectedMember,
         date: new Date().toISOString(),
         status: 'booked',
       })
-      await logAudit({ action: 'create', entity: 'bookings', entityId: bookingFor.id, details: { memberId: selectedMember } })
+      await logAudit({ action: 'create', entity: 'bookings', entityId: id, details: { memberId: selectedMember } })
       toast.success('Member booked')
       setSelectedMember('')
     } catch (e) {
