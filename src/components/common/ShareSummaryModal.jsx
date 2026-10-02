@@ -37,11 +37,22 @@ export function ShareSummaryModal({ open, onClose, member, plan, expiry, ptCharg
   }
 
   const handleCopy = async () => {
+    // navigator.clipboard is only exposed in a secure context. On plain http://
+    // - which is how a gym on a LAN address is commonly reached - it is absent
+    // entirely, and the previous `navigator.clipboard?.writeText(summary)`
+    // short-circuited to undefined and reported success without copying
+    // anything. Check the API exists before claiming the copy worked.
+    const clipboard = navigator?.clipboard
+    if (!clipboard || typeof clipboard.writeText !== 'function') {
+      toast.error('Copying is not supported in this browser. Select the summary text to copy it manually.')
+      return
+    }
     try {
-      await navigator.clipboard?.writeText(summary)
+      await clipboard.writeText(summary)
       toast.success('Summary copied to clipboard')
     } catch {
-      toast.error('Could not copy summary to clipboard')
+      // A real rejection: permission denied, document not focused, etc.
+      toast.error('Could not copy the summary. Select the summary text to copy it manually.')
     }
   }
 

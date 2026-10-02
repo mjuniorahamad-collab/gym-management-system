@@ -1,12 +1,16 @@
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { ShareSummaryModal } from '@/components/common/ShareSummaryModal'
 
+// Hoisted so the assertions can observe which toast actually fired. Previously
+// the factory minted fresh vi.fn()s on every render, which made it impossible to
+// prove that copy reported success without copying anything.
+const { toastMocks } = vi.hoisted(() => ({
+  toastMocks: { success: vi.fn(), error: vi.fn() },
+}))
+
 vi.mock('@/context/ToastContext', () => ({
-  useToast: () => ({
-    success: vi.fn(),
-    error: vi.fn(),
-  }),
+  useToast: () => toastMocks,
 }))
 
 const member = {
@@ -44,9 +48,15 @@ function renderModal(props = {}) {
 }
 
 describe('ShareSummaryModal', () => {
+  const realNavigator = global.navigator
+
   beforeEach(() => {
-    vi.restoreAllMocks()
+    vi.clearAllMocks()
     window.open = vi.fn()
+  })
+
+  afterEach(() => {
+    global.navigator = realNavigator
   })
 
   it('shows the customer-facing summary in the preview', () => {
@@ -172,5 +182,88 @@ describe('ShareSummaryModal', () => {
       />
     )
     expect(document.getElementById('print-member-summary')).toBeNull()
+  })
+})
+
+describe('ShareSummaryModal copy reporting', () => {
+  const realNavigator = global.navigator
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
+  afterEach(() => {
+    global.navigator = realNavigator
+  })
+
+  const clickCopy = async () => {
+    render(
+      <ShareSummaryModal
+        open
+        onClose={() => {}}
+        member={member}
+        plan={plan}
+        expiry={new Date(2026, 8, 30)}
+        ptCharge={ptCharge}
+        ledger={ledger}
+        settings={settings}
+        whatsAppLink=""
+      />
+    )
+    fireEvent.click(screen.getByRole('button', { name: /Copy Summary/i }))
+  }
+
+  it('reports success only when the clipboard write actually resolved', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    global.navigator = { clipboard: { writeText } }
+
+    await clickCopy()
+
+    await waitFor(() => expect(toastMocks.success).toHaveBeenCalledWith('Summary copied to clipboard'))
+    expect(writeText).toHaveBeenCalledTimes(1)
+    expect(toastMocks.error).not.toHaveBeenCalled()
+  })
+
+  it('reports failure, not success, when the clipboard write is rejected', async () => {
+    // Permission denied, or the document is not focused.
+    const writeText = vi.fn().mockRejectedValue(new Error('NotAllowedError'))
+    global.navigator = { clipboard: { writeText } }
+
+    await clickCopy()
+
+    await waitFor(() => expect(toastMocks.error).toHaveBeenCalledTimes(1))
+    expect(toastMocks.success).not.toHaveBeenCalled()
+  })
+
+  // navigator.clipboard is only exposed in a secure context. On plain http:// -
+  // how a gym on a LAN address is commonly reached - it is undefined, and
+  // `navigator.clipboard?.writeText(...)` resolved to undefined, so the modal
+  // reported a successful copy that never happened.
+  it('does not claim success when the Clipboard API is unavailable', async () => {
+    global.navigator = {}
+
+    await clickCopy()
+
+    await waitFor(() => expect(toastMocks.error).toHaveBeenCalledTimes(1))
+    expect(toastMocks.error.mock.calls[0][0]).toMatch(/not supported/i)
+    expect(toastMocks.success).not.toHaveBeenCalled()
+  })
+
+  it('does not claim success when clipboard exists but has no writeText', async () => {
+    global.navigator = { clipboard: {} }
+
+    await clickCopy()
+
+    await waitFor(() => expect(toastMocks.error).toHaveBeenCalledTimes(1))
+    expect(toastMocks.success).not.toHaveBeenCalled()
+  })
+
+  it('tells the user how to copy manually when the API is unavailable', async () => {
+    global.navigator = {}
+
+    await clickCopy()
+
+    await waitFor(() => expect(toastMocks.error).toHaveBeenCalled())
+    expect(toastMocks.error.mock.calls[0][0]).toMatch(/manually/i)
   })
 })
