@@ -56,11 +56,15 @@ export default function Expenses() {
   const summary = useMemo(() => {
     const current = monthKey(new Date())
     const total = expenses.reduce((s, e) => s + (Number(e.amount) || 0), 0)
-    const thisMonth = filtered
+    // Deliberately NOT `filtered`: these cards summarise the books, so the
+    // figure must not change because someone typed in the search box or picked
+    // a category. It also disagreed with the "Total expenses" card above it,
+    // which already used the unfiltered list.
+    const thisMonth = expenses
       .filter((e) => monthKey(parseDate(e.date)) === current)
       .reduce((s, e) => s + (Number(e.amount) || 0), 0)
     return { total, thisMonth }
-  }, [expenses, filtered])
+  }, [expenses])
 
   const handleSubmit = async (values) => {
     setSubmitting(true)

@@ -30,6 +30,7 @@ export default function Settings() {
   const [migrating, setMigrating] = useState(false)
   const [migrateConfirm, setMigrateConfirm] = useState(false)
   const [ptSurcharge, setPtSurcharge] = useState('')
+  const [ptLoadError, setPtLoadError] = useState('')
   const [ptSaving, setPtSaving] = useState(false)
   const [ptError, setPtError] = useState('')
   const [whatsAppLink, setWhatsAppLinkLocal] = useState('')
@@ -58,11 +59,18 @@ export default function Settings() {
     let active = true
     getPtSurcharge()
       .then((value) => {
-        if (active) setPtSurcharge(value === 0 ? '' : String(value))
+        if (!active) return
+        setPtSurcharge(value === 0 ? '' : String(value))
+        setPtLoadError('')
       })
-      .catch(() => {
-        // Kept empty on read failure; surfaced when saving.
-        if (active) setPtSurcharge('')
+      .catch((e) => {
+        if (!active) return
+        // An unread surcharge is indistinguishable from a blank field, and
+        // ptSurchargeSchema coerces '' to 0. Saving would therefore silently
+        // disable PT pricing for this gym and report success. Block the save
+        // until the real value has been read instead.
+        setPtSurcharge('')
+        setPtLoadError(e?.message || 'Could not read the current PT surcharge')
       })
     return () => {
       active = false
@@ -86,6 +94,7 @@ export default function Settings() {
 
   const handlePtSave = async () => {
     setPtError('')
+    if (ptLoadError) return
     setPtSaving(true)
     try {
       const parsed = ptSurchargeSchema.parse(ptSurcharge)
@@ -224,8 +233,12 @@ export default function Settings() {
             <div className="mt-4 grid gap-4 sm:grid-cols-2">
               <FormField
                 label={`PT surcharge (${settings.currency})`}
-                error={ptError}
-                hint="Enter 0 to disable PT pricing for this gym"
+                error={ptLoadError || ptError}
+                hint={
+                  ptLoadError
+                    ? undefined
+                    : 'Enter 0 to disable PT pricing for this gym'
+                }
               >
                 <Input
                   type="number"
@@ -233,11 +246,24 @@ export default function Settings() {
                   step="0.01"
                   placeholder="0.00"
                   value={ptSurcharge}
-                  onChange={(e) => { setPtSurcharge(e.target.value); setPtError('') }}
+                  disabled={Boolean(ptLoadError)}
+                  onChange={(e) => {
+                    setPtSurcharge(e.target.value)
+                    setPtError('')
+                  }}
                 />
               </FormField>
               <div className="flex items-end">
-                <Button onClick={handlePtSave} loading={ptSaving}>
+                <Button
+                  onClick={handlePtSave}
+                  loading={ptSaving}
+                  disabled={Boolean(ptLoadError)}
+                  title={
+                    ptLoadError
+                      ? 'Saving is disabled until the current surcharge can be read'
+                      : undefined
+                  }
+                >
                   Save PT surcharge
                 </Button>
               </div>

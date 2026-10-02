@@ -1,10 +1,26 @@
 import { formatDate } from '@/utils/formatters'
 
+/**
+ * Spreadsheet formula injection (OWASP CSV Injection).
+ *
+ * A cell whose text starts with = + - @ or a control character is evaluated as
+ * a FORMULA by Excel, LibreOffice and Google Sheets rather than shown as text.
+ * Member names, expense titles and notes are free-text user input, so a member
+ * named "=HYPERLINK(...)" would execute in the spreadsheet of any staff member
+ * who opened the export. Prefixing with an apostrophe forces literal text.
+ *
+ * Numbers are passed through untouched so negative and decimal amounts stay
+ * numeric instead of becoming text.
+ */
+const FORMULA_TRIGGER = /^[=+\-@\t\r]/
+
 function escapeCsv(value) {
   if (value == null) return ''
+  if (typeof value === 'number') return String(value)
   const s = String(value)
-  if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`
-  return s
+  const safe = FORMULA_TRIGGER.test(s) ? `'${s}` : s
+  if (/[",\n]/.test(safe)) return `"${safe.replace(/"/g, '""')}"`
+  return safe
 }
 
 export function toCsv(rows) {

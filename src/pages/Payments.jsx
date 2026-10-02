@@ -77,11 +77,15 @@ export default function Payments() {
   const summary = useMemo(() => {
     const current = monthKey(new Date())
     const total = payments.reduce((s, p) => s + (Number(p.amount) || 0), 0)
-    const thisMonth = filtered
+    // Deliberately NOT `filtered`: these cards summarise the books, so the
+    // figure must not change because someone typed in the search box or picked
+    // a payment method. It also disagreed with the "Total collected" card
+    // directly above it, which already used the unfiltered list.
+    const thisMonth = payments
       .filter((p) => monthKey(parseDate(p.date)) === current)
       .reduce((s, p) => s + (Number(p.amount) || 0), 0)
     return { total, thisMonth }
-  }, [payments, filtered])
+  }, [payments])
 
   const canWrite = can('finance.write')
 
@@ -255,7 +259,11 @@ export default function Payments() {
         payment={receipt}
         member={receipt ? memberMap[receipt.memberId] : null}
         plan={receipt ? planForReceipt(receipt, memberMap, planMap) : null}
-        summary={receipt ? receiptSummary(receipt, { members, plans, payments, memberships }) : null}
+        summary={
+        receipt
+          ? receiptSummary(receipt, { members, plans, payments, memberships, ptSurcharge })
+          : null
+      }
         settings={settings}
       />
 
@@ -284,10 +292,15 @@ function planForReceipt(payment, memberMap, planMap) {
  * screen: the payment's own period (or the member's totals when the payment
  * is unallocated), never the member's CURRENT plan price.
  */
-function receiptSummary(receipt, { members, plans, payments, memberships }) {
+function receiptSummary(receipt, { members, plans, payments, memberships, ptSurcharge }) {
   const member = members.find((m) => m.id === receipt.memberId)
   if (!member) return null
-  const ledger = computeMemberLedger({ member, plans, payments, memberships })
+  // ptSurcharge matters for the unallocated fallback below. An undocumented
+  // (implicit) period is reconstructed at plan + PT surcharge, so omitting it
+  // printed a receipt showing the bare plan price and therefore a LOWER total
+  // than the PT member was actually charged. Allocated receipts are unaffected
+  // because a stored period carries its own price snapshot.
+  const ledger = computeMemberLedger({ member, plans, payments, memberships, ptSurcharge })
 
   if (receipt.membershipId) {
     const period = ledger.periods.find((p) => p.id === receipt.membershipId)
