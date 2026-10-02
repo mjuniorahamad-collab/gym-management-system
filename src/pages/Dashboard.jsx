@@ -571,6 +571,7 @@ export default function Dashboard() {
         members={members.items}
         plans={plans.items}
         payments={payments.items}
+        memberships={memberships.items}
         submitting={submitting}
         onSubmit={handleRecordPayment}
         initial={
