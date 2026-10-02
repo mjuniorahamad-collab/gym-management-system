@@ -505,6 +505,52 @@ Read-only unless stated.
 - No implementation branch created, no implementation commit made.
 - Working tree clean on `security-audit/phase-0.5a-evidence`; `main` untouched at `b068b80`.
 
+> **Note:** §16 above records the state at plan-authoring time. It is superseded by §17 for the implementation phase that followed; it is deliberately left unedited so the plan-authoring checkpoint stays auditable.
+
+---
+
+## 17. Implementation Deviations (recorded during implementation)
+
+Added after the implementation commits `12bc9b5`, `17c416c` and `2b0c387` on `security-remediation/phase-1`. These are the places where the delivered code knowingly differs from the plan text, with the reason each was accepted.
+
+### 17.1 Booking class reference is validated only when the class exists
+
+§6.1 required a strict tenant check on **both** the referenced member and the referenced class. The delivered `classInCallerGym()` returns true when the class document does not exist.
+
+- **Why:** the Phase 0.5A evidence fixtures never seed a `classes/{id}` document (they use `sec-class-a`), so a strict `get(...).data` check fails every F1–F4 booking case and the app has no way to satisfy both.
+- **Residual risk:** a booking may reference a class id that does not exist, provided the referenced member belongs to the caller's gym. The member boundary — the actual cross-tenant data leak — is enforced strictly.
+- **Revisit when:** class persistence is verified in a real environment. If classes are always written before bookings, this becomes a strict check with no fixture change.
+
+### 17.2 Trainer member writes are field-restricted rather than removed
+
+The plan anticipated removing `members.write` from trainer. A blanket denial was trialled and broke the original green suite and SEC-I, which together require trainer to add an absent `status` while forbidding edits to existing financial fields.
+
+- **Delivered:** trainer is confined by `memberWriteWithinRole()` / `trainerMayWriteField()` to `membershipPlanId`, `isPT`, `ptSurchargeOverride`, `joinDate` and `status`. Because `request.resource.data` is post-merge, an absent field may be backfilled once and thereafter exists, so a trainer cannot keep rewriting it.
+- **App impact: none.** `PERMISSIONS['members.write']` is `['owner', 'admin', 'front-desk']` and `MemberDetail.jsx` gates the fitness-goal form on it, so no trainer UI path is affected.
+- **Note:** `front-desk` legitimately holds `members.write` and retains full field access.
+
+### 17.3 Global `settings/app` is retained as tenant-isolated, not deleted
+
+The plan retires the global singleton after step 14. The delivered rules keep `match /settings/{doc}` as an interim tenant-isolated path: reads and updates require `resource.data.gymId == caller's gym`, client create/delete are denied.
+
+- **Why:** production has not been migrated, so removing the path entirely could strand the existing document.
+- **Gate unchanged:** the client is already scoped-only (`gyms/{gymId}/settings/app`) with **no fallback**. Every active gym must have a validated scoped settings document before this ships; retirement of the global path still follows the step 14 → step 22 order.
+
+### 17.4 Counter point-read of a missing document was permitted
+
+Removing the client-side `ensureGymTenancy` also removed `ensureMemberNumberCounter`, the only code that pre-provisioned a gym's member-number counter. `memberNumbers.js` self-initialises the counter inside one transaction, and Firestore evaluates that transaction's read half against `resource == null`, which every tenant guard rejects.
+
+- **Delivered:** `counters` read is `isStaff() && ((resource == null && hasGym()) || canReadTenant(resource))`. Confirmed against the emulator that a missing counter discloses nothing, that the self-initialising transaction succeeds and continues its sequence, that cross-gym reads and writes still fail, and that unbound, profile-less and anonymous callers are still denied.
+- **Alternative rejected:** seeding every counter in the §5 Admin migration, which would make each future gym provisioning depend on remembering that step.
+
+### 17.5 Verification status at this checkpoint
+
+- `npm test` — 30 files, 404 tests passing.
+- `npm run lint` — 0 errors, 12 pre-existing `react-refresh` warnings.
+- `npm run build` — succeeds (existing >500 kB chunk warning only).
+- `npm run test:rules` — 524 tests, 509 passing, 15 failing. All 15 are the documented known set in the frozen Phase 0.5A file: `C6/C7` (mutually exclusive with `C2`) plus the `E8` / `F9` / `J1`×10 / `J5`×2 emulator query-semantic artifacts. The frozen file is unmodified (SHA-256 `6DEDEA4CE32646C59B0A79957C703A657F5D7B5CB46208D75BC5A2A3B768BD54`).
+- Still blocked exactly as in §15: Storage inventory, backup/restore rehearsal, production migration, and Functions verification.
+
 ---
 
 ## Confirmations
