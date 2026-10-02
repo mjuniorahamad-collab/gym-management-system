@@ -146,6 +146,11 @@ export const classSchema = z.object({
   trainerId: z.string().optional().or(z.literal('')),
   capacity: z.coerce.number().int().min(1, 'Capacity must be at least 1').max(500),
   active: z.boolean().default(true),
+}).refine((v) => v.endTime > v.startTime, {
+  // Without this a class could be saved as 18:00-07:00 and then displayed to
+  // members as an 11-hour session. HH:MM strings compare chronologically.
+  message: 'End time must be after start time',
+  path: ['endTime'],
 })
 
 export const weightRecordSchema = z

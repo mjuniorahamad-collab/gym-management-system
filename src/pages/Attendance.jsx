@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { CheckCircle2, ClipboardCheck, QrCode, Search, UserCheck } from 'lucide-react'
 import { useCollection } from '@/hooks/useFirestore'
+import { useToday } from '@/hooks/useToday'
 import { createDoc, updateDocById } from '@/services/firestore'
 import { logAudit } from '@/services/audit'
 import { useAuth } from '@/context/AuthContext'
@@ -27,8 +28,7 @@ export default function Attendance() {
   const [qrCode, setQrCode] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  const todayStart = new Date().toDateString()
-  const todayISO = new Date().toISOString()
+  const todayStart = useToday()
 
   const memberMap = useMemo(() => Object.fromEntries(members.map((m) => [m.id, m])), [members])
 
@@ -51,8 +51,15 @@ export default function Attendance() {
   const filteredMembers = useMemo(() => {
     const q = search.trim().toLowerCase()
     if (!q) return members.slice(0, 8)
+    // Guarded: a legacy or partially written member document without a name
+    // would otherwise throw here and take the whole quick check-in card down.
     return members
-      .filter((m) => m.name.toLowerCase().includes(q) || String(m.phone).includes(q))
+      .filter(
+        (m) =>
+          String(m.name || '').toLowerCase().includes(q) ||
+          String(m.phone || '').includes(q) ||
+          String(m.memberNo || '').toLowerCase().includes(q)
+      )
       .slice(0, 8)
   }, [members, search])
 
@@ -66,10 +73,14 @@ export default function Attendance() {
     }
     setSubmitting(true)
     try {
+      // Stamped at write time, not read from render state: a front-desk tab left
+      // open across midnight would otherwise record the check-in against the
+      // previous day, corrupting the attendance history it is reporting on.
+      const now = new Date().toISOString()
       await createDoc('attendance', {
         memberId,
-        date: todayISO,
-        checkIn: todayISO,
+        date: now,
+        checkIn: now,
         checkOut: '',
         source: 'manual',
       })
@@ -85,7 +96,7 @@ export default function Attendance() {
   const handleCheckOut = async (entry) => {
     setSubmitting(true)
     try {
-      await updateDocById('attendance', entry.id, { checkOut: todayISO })
+      await updateDocById('attendance', entry.id, { checkOut: new Date().toISOString() })
       toast.success('Checked out')
     } catch (e) {
       toast.error(e.message || 'Check-out failed')
@@ -102,8 +113,20 @@ export default function Attendance() {
       toast.error('Unknown member ID')
       return
     }
-    await handleCheckIn(member.id)
+    // Keep the scanned ID when the check-in is rejected as a duplicate, or if
+    // it fails outright - otherwise staff have to re-scan a member they already
+    // scanned correctly.
+    if (checkedInToday.has(member.id)) {
+      toast.info('Already checked in today')
+      return
+    }
+    const previous = qrCode
     setQrCode('')
+    try {
+      await handleCheckIn(member.id)
+    } catch {
+      setQrCode(previous)
+    }
   }
 
   if (loading) return <Spinner label="Loading attendance…" />

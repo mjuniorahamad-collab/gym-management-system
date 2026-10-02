@@ -47,7 +47,14 @@ export default function Expenses() {
     return [...expenses]
       .filter((e) => {
         if (category !== 'all' && e.category !== category) return false
-        if (q && !e.title.toLowerCase().includes(q) && !e.category.toLowerCase().includes(q)) return false
+        // Guarded: a legacy or partially written expense without a title or
+        // category would otherwise throw here and take the whole page down.
+        if (
+          q &&
+          !String(e.title || '').toLowerCase().includes(q) &&
+          !String(e.category || '').toLowerCase().includes(q)
+        )
+          return false
         return true
       })
       .sort((a, b) => String(b.date).localeCompare(String(a.date)))
