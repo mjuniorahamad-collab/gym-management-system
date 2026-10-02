@@ -1,10 +1,22 @@
-import { useEffect } from 'react'
+import { useEffect, useId, useRef } from 'react'
 import clsx from 'clsx'
 import { X } from 'lucide-react'
 
 export function Modal({ open, onClose, title, subtitle, children, footer, size = 'md' }) {
+  const panelRef = useRef(null)
+  const previouslyFocused = useRef(null)
+  const titleId = useId()
+
   useEffect(() => {
     if (!open) return
+
+    previouslyFocused.current = document.activeElement
+
+    // Move focus into the dialog. Without this, keyboard and screen-reader
+    // users stay on the trigger behind the overlay and tab through the page
+    // underneath an aria-modal dialog.
+    panelRef.current?.focus()
+
     const onKey = (e) => {
       if (e.key === 'Escape') onClose?.()
     }
@@ -13,6 +25,11 @@ export function Modal({ open, onClose, title, subtitle, children, footer, size =
     return () => {
       document.removeEventListener('keydown', onKey)
       document.body.style.overflow = ''
+      // Return focus to whatever opened the dialog.
+      const target = previouslyFocused.current
+      if (target && typeof target.focus === 'function' && document.contains(target)) {
+        target.focus()
+      }
     }
   }, [open, onClose])
 
@@ -28,17 +45,25 @@ export function Modal({ open, onClose, title, subtitle, children, footer, size =
         aria-hidden="true"
       />
       <div
+        ref={panelRef}
         role="dialog"
         aria-modal="true"
+        aria-labelledby={title ? titleId : undefined}
+        tabIndex={-1}
         className={clsx(
           'relative z-10 w-full overflow-hidden rounded-xl bg-white shadow-2xl dark:bg-slate-900',
           'animate-scale-in border border-slate-200 dark:border-slate-700',
+          'focus:outline-none',
           sizes[size]
         )}
       >
         <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-5 py-4 dark:border-slate-800">
           <div>
-            {title && <h3 className="text-base font-semibold text-slate-900 dark:text-slate-100">{title}</h3>}
+            {title && (
+              <h3 id={titleId} className="text-base font-semibold text-slate-900 dark:text-slate-100">
+                {title}
+              </h3>
+            )}
             {subtitle && <p className="mt-0.5 text-sm text-slate-500 dark:text-slate-400">{subtitle}</p>}
           </div>
           <button
