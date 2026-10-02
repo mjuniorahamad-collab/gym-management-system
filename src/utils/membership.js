@@ -1,4 +1,5 @@
-import { addDays, daysUntil, parseDate } from './dateHelpers'
+import { addDays, parseDate } from './dateHelpers'
+import { gymDaysUntil } from './gymTime'
 
 /**
  * Derive a member's membership expiry date from the existing data model:
@@ -14,9 +15,18 @@ export function getMembershipExpiry(member, plan) {
   return addDays(start, duration)
 }
 
-/** Signed whole days until `expiry` (0 = today, negative = expired). */
-export function getDaysRemaining(expiry) {
-  return daysUntil(expiry)
+/**
+ * Signed whole days until `expiry` (0 = today, negative = expired), counted in
+ * the gym's timezone.
+ *
+ * The previous implementation divided two device-local midnights by a fixed
+ * 24h. Across a spring-forward that lands on -0, which `=== 0` matches, so a
+ * membership that expired the previous day was reported as "due today" and the
+ * expiring-soon list on the dashboard told a member to renew a plan they had
+ * already lost.
+ */
+export function getDaysRemaining(expiry, timezone) {
+  return gymDaysUntil(expiry, timezone)
 }
 
 /**

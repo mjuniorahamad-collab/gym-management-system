@@ -235,7 +235,10 @@ export function daysBetween(fromDateOnly, toDateOnly) {
 export function gymDaysUntil(expiryDateOnly, timezone = DEFAULT_GYM_TIMEZONE, now = new Date()) {
   if (!expiryDateOnly) return null
   const today = gymDayKey(now, timezone)
-  const expiry = String(expiryDateOnly).slice(0, 10)
+  // Normalise through gymDayKey rather than slicing the string: callers pass a
+  // Date (getMembershipExpiry returns one), a Firestore Timestamp or an instant
+  // string, and `String(date).slice(0, 10)` would silently yield "Mon Jan 05".
+  const expiry = gymDayKey(expiryDateOnly, timezone)
   if (!today || !expiry) return null
   return daysBetween(today, expiry) - 1
 }

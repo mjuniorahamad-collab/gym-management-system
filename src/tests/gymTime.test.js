@@ -196,4 +196,27 @@ describe('calendar-day arithmetic', () => {
     expect(gymDaysUntil('', KOLKATA, new Date())).toBeNull()
     expect(gymDaysUntil(null, KOLKATA, new Date())).toBeNull()
   })
+
+  /**
+   * getMembershipExpiry() returns a Date, and Firestore hands back Timestamps.
+   * Normalising with `String(x).slice(0, 10)` turns a Date into "Mon Jan 05"
+   * and silently returns NaN for every membership on the dashboard.
+   */
+  it('accepts Date and Timestamp-like expiry values, not just date strings', () => {
+    const now = new Date('2026-01-15T06:00:00.000Z') // 11:30 IST, 15 Jan
+    expect(gymDaysUntil(new Date('2026-01-18T00:00:00Z'), KOLKATA, now)).toBe(3)
+    expect(gymDaysUntil({ toDate: () => new Date('2026-01-18T00:00:00Z') }, KOLKATA, now)).toBe(3)
+    expect(gymDaysUntil('2026-01-18', KOLKATA, now)).toBe(3)
+    // 18:29Z is 23:59 IST on the 15th, so it is still "today" in the gym and the
+    // expiry is 0 days away even though UTC has nearly turned midnight.
+    expect(gymDaysUntil('2026-01-15T18:29:00Z', KOLKATA, now)).toBe(0)
+    // 18:30Z is 00:00 IST on the 16th, so the same instant is a day away.
+    expect(gymDaysUntil('2026-01-15T18:30:00Z', KOLKATA, now)).toBe(1)
+  })
+
+  it('returns null rather than NaN for an unparseable expiry', () => {
+    const now = new Date('2026-01-15T06:00:00.000Z')
+    expect(gymDaysUntil('not-a-date', KOLKATA, now)).toBeNull()
+    expect(gymDaysUntil(new Date('nonsense'), KOLKATA, now)).toBeNull()
+  })
 })

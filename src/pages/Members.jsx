@@ -24,11 +24,11 @@ import { EmptyState } from '@/components/ui/EmptyState'
 import { Pagination } from '@/components/ui/Pagination'
 import { TableSkeleton } from '@/components/ui/Skeleton'
 import { formatDate } from '@/utils/formatters'
-import { addDays, toDateInputValue } from '@/utils/dateHelpers'
+import { addDaysToKey, gymTodayKey } from '@/utils/gymTime'
 
 export default function Members() {
   const { can } = useAuth()
-  const { settings } = useSettings()
+  const { settings, timezone } = useSettings()
   const toast = useToast()
 
   const [search, setSearch] = useState('')
@@ -145,12 +145,10 @@ export default function Members() {
         let originPeriodFailed = false
         const originPlan = planMap[payload.membershipPlanId]
         if (originPlan) {
-          const start = payload.joinDate || toDateInputValue()
+          const start = payload.joinDate || gymTodayKey(timezone)
           const duration = Number(originPlan.durationDays)
           const expiry =
-            Number.isFinite(duration) && duration > 0
-              ? toDateInputValue(addDays(new Date(`${start}T12:00:00`), duration))
-              : ''
+            Number.isFinite(duration) && duration > 0 ? addDaysToKey(start, duration) : ''
           const originCharge = getMembershipCharge({
             plan: originPlan,
             isPT: Boolean(payload.isPT),

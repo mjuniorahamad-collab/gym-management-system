@@ -38,8 +38,7 @@ import { Spinner } from '@/components/ui/Spinner'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { formatCurrency, formatDate, formatDateTime } from '@/utils/formatters'
-import { daysUntil } from '@/utils/dateHelpers'
-import { getCurrentMembershipExpiry } from '@/utils/membership'
+import { getCurrentMembershipExpiry, getDaysRemaining } from '@/utils/membership'
 import { computeMemberLedger } from '@/utils/dues'
 import { PAYMENT_STATUS_LABELS } from '@/utils/renewal'
 import { ptSurchargeSchema } from '@/schemas/validationSchemas'
@@ -47,7 +46,7 @@ import { ptSurchargeSchema } from '@/schemas/validationSchemas'
 export default function MemberDetail() {
   const { id } = useParams()
   const { can } = useAuth()
-  const { settings } = useSettings()
+  const { settings, timezone } = useSettings()
   const toast = useToast()
 
   const [member, setMember] = useState(null)
@@ -162,7 +161,7 @@ export default function MemberDetail() {
     [member, plan, memberships.items]
   )
 
-  const daysLeft = expiry ? daysUntil(expiry) : null
+  const daysLeft = expiry ? getDaysRemaining(expiry, timezone) : null
 
   const memberMemberships = useMemo(
     () =>

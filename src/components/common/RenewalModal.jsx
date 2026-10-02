@@ -42,7 +42,7 @@ function defaultsFor(currentPlan) {
 
 export function RenewalModal({ open, onClose, member, currentPlan, currentExpiry, plans, payments = [], memberships = [], onRenewed, ptSurcharge = 0 }) {
   const toast = useToast()
-  const { settings } = useSettings()
+  const { settings, timezone } = useSettings()
   const {
     register,
     handleSubmit,
@@ -175,9 +175,10 @@ export function RenewalModal({ open, onClose, member, currentPlan, currentExpiry
         note: values.note,
         receiptPrefix: settings.receiptPrefix,
         effectivePrice: charge.total,
-        isPT: Boolean(member?.isPT),
-        ptSurcharge: charge.addon,
-      })
+isPT: Boolean(member?.isPT),
+    ptSurcharge: charge.addon,
+    timezone,
+  })
 
       if (collectAmt > 0 && targetMembershipId) {
         await recordPayment({

@@ -147,7 +147,7 @@ export default function Dashboard() {
       const plan = planMap[member.membershipPlanId]
       const expiry = getCurrentMembershipExpiry(member, plan, memberships.items)
       if (!expiry) continue
-      const days = getDaysRemaining(expiry)
+      const days = getDaysRemaining(expiry, timezone)
       if (days === null || !matchesExpiryFilter(days, 'all')) continue
       rows.push({ member, plan, expiry, days })
     }
@@ -157,7 +157,7 @@ export default function Dashboard() {
       return String(a.member.name || '').localeCompare(String(b.member.name || ''))
     })
     return rows
-  }, [members.items, planMap, memberships.items])
+  }, [members.items, planMap, memberships.items, timezone])
 
   const filteredExpiring = useMemo(() => {
     const list =

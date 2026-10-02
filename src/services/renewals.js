@@ -1,4 +1,5 @@
 import { parseDate, toDateInputValue } from '@/utils/dateHelpers'
+import { gymTodayKey } from '@/utils/gymTime'
 import { getMembershipPeriod, getRenewalPaymentSummary } from '@/utils/renewal'
 import { createDoc, updateDocById } from './firestore'
 import { logAudit } from './audit'
@@ -53,13 +54,17 @@ export async function renewMembership({
   effectivePrice,
   isPT = false,
   ptSurcharge = 0,
+  timezone,
 }) {
   if (!member || !member.id) throw new Error('A valid member is required to renew')
   const { price: basePrice } = requireValidPlan(plan)
   const paid = requirePaidAmount(paidAmount)
   // Payment date = when money was actually received. It is stored on the
   // payment and NEVER overwritten by the membership effective start date.
-  const paymentDate = requireDate(date || toDateInputValue(new Date()))
+  // Defaults to today in the GYM's timezone, not the staff device's, so a
+  // renewal taken after midnight at the desk is not filed under the previous
+  // day by a laptop whose clock is on another zone.
+  const paymentDate = requireDate(date || gymTodayKey(timezone))
   if (!method) throw new Error('Select a payment method')
 
   // The amount charged for this period. Normally the plan price; when a PT
