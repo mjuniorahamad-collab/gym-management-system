@@ -38,7 +38,7 @@ import { TableSkeleton } from '@/components/ui/Skeleton'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { formatCurrency, formatDate, formatDateTime, formatNumber } from '@/utils/formatters'
 import { lastNMonths, monthKey, parseDate, addDays } from '@/utils/dateHelpers'
-import { getDaysRemaining, getExpiryBucket, getMembershipExpiry, matchesExpiryFilter } from '@/utils/membership'
+import { getCurrentMembershipExpiry, getDaysRemaining, getExpiryBucket, matchesExpiryFilter } from '@/utils/membership'
 import { computeOutstandingDues, computeMemberLedger } from '@/utils/dues'
 
 const MAX_EXPIRING_ROWS = 50
@@ -153,7 +153,7 @@ export default function Dashboard() {
     const rows = []
     for (const member of members.items) {
       const plan = planMap[member.membershipPlanId]
-      const expiry = getMembershipExpiry(member, plan)
+      const expiry = getCurrentMembershipExpiry(member, plan, memberships.items)
       if (!expiry) continue
       const days = getDaysRemaining(expiry)
       if (days === null || !matchesExpiryFilter(days, 'all')) continue
@@ -165,7 +165,7 @@ export default function Dashboard() {
       return String(a.member.name || '').localeCompare(String(b.member.name || ''))
     })
     return rows
-  }, [members.items, planMap])
+  }, [members.items, planMap, memberships.items])
 
   const filteredExpiring = useMemo(() => {
     const list =

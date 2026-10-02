@@ -19,6 +19,34 @@ export function getDaysRemaining(expiry) {
   return daysUntil(expiry)
 }
 
+/**
+ * The member's CURRENT membership expiry, preferring recorded history.
+ *
+ * `getMembershipExpiry()` derives expiry from `member.joinDate`, which is only
+ * a fallback: renewals keep it current, but editing or deleting a membership
+ * period does NOT, because a period is its own record. So a member whose period
+ * dates were corrected in the app kept showing the stale joinDate-derived
+ * expiry on the member page and on the dashboard.
+ *
+ * When the member has recorded membership periods, the newest one is
+ * authoritative. Ordering matches the ledger in utils/dues.js (oldest to newest
+ * by startDate), so the expiry shown always belongs to the same period the
+ * ledger treats as current. Members with no recorded periods fall back to the
+ * joinDate derivation.
+ */
+export function getCurrentMembershipExpiry(member, plan, memberships) {
+  if (Array.isArray(memberships)) {
+    const own = memberships
+      .filter((m) => m && String(m.memberId) === String(member?.id))
+      .sort((a, b) => String(a.startDate || '').localeCompare(String(b.startDate || '')))
+    for (let i = own.length - 1; i >= 0; i -= 1) {
+      const expiry = parseDate(own[i].expiryDate)
+      if (expiry) return expiry
+    }
+  }
+  return getMembershipExpiry(member, plan)
+}
+
 export function getExpiryBucket(days) {
   if (days === null || days === undefined || Number.isNaN(days)) return null
   if (days < 0) return 'expired'

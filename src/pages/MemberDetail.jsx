@@ -38,7 +38,8 @@ import { Spinner } from '@/components/ui/Spinner'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { formatCurrency, formatDate, formatDateTime } from '@/utils/formatters'
-import { addDays, daysUntil, parseDate } from '@/utils/dateHelpers'
+import { daysUntil } from '@/utils/dateHelpers'
+import { getCurrentMembershipExpiry } from '@/utils/membership'
 import { computeMemberLedger } from '@/utils/dues'
 import { PAYMENT_STATUS_LABELS } from '@/utils/renewal'
 import { ptSurchargeSchema } from '@/schemas/validationSchemas'
@@ -152,10 +153,14 @@ export default function MemberDetail() {
     [attendance.items, id]
   )
 
-  const expiry = useMemo(() => {
-    if (!member?.joinDate || !plan) return null
-    return addDays(parseDate(member.joinDate) || new Date(), plan.durationDays || 0)
-  }, [member, plan])
+  // Resolved from recorded membership periods first, so correcting a period's
+  // dates is reflected here instead of the stale joinDate-derived value. This
+  // also replaced a local copy of the derivation that fabricated an expiry from
+  // the current time when joinDate was unparseable.
+  const expiry = useMemo(
+    () => getCurrentMembershipExpiry(member, plan, memberships.items),
+    [member, plan, memberships.items]
+  )
 
   const daysLeft = expiry ? daysUntil(expiry) : null
 
