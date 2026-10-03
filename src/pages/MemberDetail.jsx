@@ -157,8 +157,8 @@ export default function MemberDetail() {
   // also replaced a local copy of the derivation that fabricated an expiry from
   // the current time when joinDate was unparseable.
   const expiry = useMemo(
-    () => getCurrentMembershipExpiry(member, plan, memberships.items),
-    [member, plan, memberships.items]
+    () => getCurrentMembershipExpiry(member, plan, memberships.items, { timezone }),
+    [member, plan, memberships.items, timezone]
   )
 
   const daysLeft = expiry ? getDaysRemaining(expiry, timezone) : null

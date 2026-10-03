@@ -145,7 +145,7 @@ export default function Dashboard() {
     const rows = []
     for (const member of members.items) {
       const plan = planMap[member.membershipPlanId]
-      const expiry = getCurrentMembershipExpiry(member, plan, memberships.items)
+      const expiry = getCurrentMembershipExpiry(member, plan, memberships.items, { timezone })
       if (!expiry) continue
       const days = getDaysRemaining(expiry, timezone)
       if (days === null || !matchesExpiryFilter(days, 'all')) continue

@@ -50,9 +50,23 @@ describe('getMembershipExpiry', () => {
     expect(getMembershipExpiry({ joinDate: '2026-08-01' }, { durationDays: -5 })).toBeNull()
   })
 
-  it('adds plan duration to the join date', () => {
-    const expiry = getMembershipExpiry({ joinDate: '2026-08-01' }, MONTHLY)
-    expect(expiry.toDateString()).toBe(new Date(2026, 7, 31).toDateString())
+  it('adds plan duration to the join date as a date-only key', () => {
+    expect(getMembershipExpiry({ joinDate: '2026-08-01' }, MONTHLY)).toBe('2026-08-31')
+  })
+
+  it('does not shift the expiry across a timezone boundary', () => {
+    // The previous implementation parsed the join date into a local Date and
+    // returned it. Reinterpreting that instant in an eastern gym timezone moved
+    // the displayed expiry a day forward.
+    expect(getMembershipExpiry({ joinDate: '2026-08-01' }, MONTHLY)).toBe('2026-08-31')
+  })
+
+  it('handles a leap day join date', () => {
+    expect(getMembershipExpiry({ joinDate: '2024-02-28' }, { durationDays: 1 })).toBe('2024-02-29')
+  })
+
+  it('treats a zero-duration plan as expiring on the join date', () => {
+    expect(getMembershipExpiry({ joinDate: '2026-08-01' }, { durationDays: 0 })).toBe('2026-08-01')
   })
 })
 

@@ -1,18 +1,35 @@
-import { addDays, parseDate } from './dateHelpers'
-import { gymDaysUntil } from './gymTime'
+import { addDaysToKey, gymDaysUntil } from './gymTime'
+import {
+  displayExpiry,
+  periodDayKey,
+  periodsForMember,
+  resolvePeriodState,
+} from './membershipPeriods'
 
 /**
  * Derive a member's membership expiry date from the existing data model:
- * `joinDate` (member) + `durationDays` (membership plan). Returns null when
- * either is missing or the date is invalid.
+ * `joinDate` (member) + `durationDays` (membership plan). Returns a `YYYY-MM-DD`
+ * key, or null when either input is missing or invalid.
+ *
+ * ## Why a key and not a Date
+ *
+ * This used to return a local-midnight `Date`. That is an instant, and an
+ * instant has no calendar meaning: reinterpreting it in the gym's timezone can
+ * move it a day. A device at UTC-5 parsing '2026-03-15' produced local noon,
+ * which is 17:00Z, which is 06:00 the NEXT day in Pacific/Auckland. The stored
+ * expiry was correct and the display was a day late.
+ *
+ * A date-only value is a calendar date, so it survives every conversion
+ * unchanged. `addDaysToKey` does the arithmetic in UTC, which is DST-proof, and
+ * `getDaysRemaining`/`formatExpiryDate` both understand the key form.
  */
 export function getMembershipExpiry(member, plan) {
   if (!member || !plan) return null
-  const start = parseDate(member.joinDate)
+  const start = periodDayKey(member.joinDate)
   if (!start) return null
   const duration = Number(plan.durationDays)
   if (!Number.isFinite(duration) || duration < 0) return null
-  return addDays(start, duration)
+  return addDaysToKey(start, duration)
 }
 
 /**
@@ -30,31 +47,55 @@ export function getDaysRemaining(expiry, timezone) {
 }
 
 /**
- * The member's CURRENT membership expiry, preferring recorded history.
+ * The member's CURRENT membership expiry, as a `YYYY-MM-DD` key or null.
  *
- * `getMembershipExpiry()` derives expiry from `member.joinDate`, which is only
- * a fallback: renewals keep it current, but editing or deleting a membership
- * period does NOT, because a period is its own record. So a member whose period
- * dates were corrected in the app kept showing the stale joinDate-derived
- * expiry on the member page and on the dashboard.
+ * Period selection is delegated to `utils/membershipPeriods.js` so there is
+ * exactly one definition of "the current period" in the codebase. This function
+ * only supplies the joinDate fallback for members who have no period documents
+ * at all, because only the caller knows the plan.
  *
- * When the member has recorded membership periods, the newest one is
- * authoritative. Ordering matches the ledger in utils/dues.js (oldest to newest
- * by startDate), so the expiry shown always belongs to the same period the
- * ledger treats as current. Members with no recorded periods fall back to the
- * joinDate derivation.
+ * ## Why the fallback still exists
+ *
+ * Legacy members predate period records. `getMembershipExpiry` keeps them
+ * displayable instead of blank. It is a fallback, never an override: as soon as
+ * one real period document exists, the periods decide.
+ *
+ * ## Why the previous "newest period by startDate" rule was wrong
+ *
+ * It made a prepaid future period outrank the period actually running. A member
+ * whose current period ended in 5 days but who had also prepaid one starting in
+ * 60 was reported as expiring in ~240 days, failed the dashboard's
+ * `matchesExpiryFilter(days, 'all')` check, and vanished from the expiring list
+ * - the one screen whose purpose is to prompt that renewal.
  */
-export function getCurrentMembershipExpiry(member, plan, memberships) {
+export function getCurrentMembershipExpiry(member, plan, memberships, options = {}) {
+  if (!member || !member.id) return null
   if (Array.isArray(memberships)) {
-    const own = memberships
-      .filter((m) => m && String(m.memberId) === String(member?.id))
-      .sort((a, b) => String(a.startDate || '').localeCompare(String(b.startDate || '')))
-    for (let i = own.length - 1; i >= 0; i -= 1) {
-      const expiry = parseDate(own[i].expiryDate)
-      if (expiry) return expiry
-    }
+    const own = periodsForMember(memberships, member.id)
+    const state = resolvePeriodState(own, options)
+    const expiry = displayExpiry(state)
+    if (expiry) return expiry
   }
   return getMembershipExpiry(member, plan)
+}
+
+/**
+ * Whether the member currently holds a membership period covering today.
+ *
+ * This is the derived replacement for the stored `member.status` field. It reads
+ * the authoritative period documents, so it cannot drift from them the way a
+ * stored flag does after a period is edited, deleted, or backdated.
+ *
+ * A member with no period documents is NOT current. The origin-period backfill
+ * in `services/migration.js` is what turns legacy joinDate-only members into
+ * real periods; until it has run for them, they have no documented membership
+ * and this reports false. That is the safe direction - it never grants access
+ * that the records do not support.
+ */
+export function isMemberCurrent(member, memberships, options = {}) {
+  if (!member || !member.id) return false
+  const own = periodsForMember(Array.isArray(memberships) ? memberships : [], member.id)
+  return Boolean(resolvePeriodState(own, options).current)
 }
 
 export function getExpiryBucket(days) {
@@ -121,7 +162,24 @@ export function normalizeWhatsAppNumber(phone) {
   return { ok: true, number: digits, error: null }
 }
 
+/**
+ * Render an expiry for display, as "9 March 2026".
+ *
+ * A `YYYY-MM-DD` key is formatted at local NOON rather than passed to
+ * `new Date(key)`. The latter parses as UTC midnight, which is the previous day
+ * for any device west of UTC - so a member's expiry read one day early on their
+ * own screen while the stored value was correct.
+ */
 export function formatExpiryDate(date) {
+  const key = periodDayKey(date)
+  if (key) {
+    const [y, m, d] = key.split('-').map(Number)
+    return new Date(y, m - 1, d, 12).toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
+    })
+  }
   const d = date instanceof Date ? date : new Date(date)
   if (Number.isNaN(d.getTime())) return ''
   return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })
