@@ -32,6 +32,10 @@ const { mocks, state } = vi.hoisted(() => ({
     updateDocById: vi.fn(),
     logAudit: vi.fn(),
     getGymId: vi.fn(() => 'gym-1'),
+    // The post-commit projection request. Mocked so a renewal can assert the
+    // ORDER of operations without a live Functions backend; the real client is
+    // covered in projectionClient.test.js.
+    requestReprojection: vi.fn(async () => ({ ok: true, status: 'ok' })),
   },
   state: { docs: new Map(), autoCounter: 0, retries: 0 },
 }))
@@ -46,6 +50,7 @@ vi.mock('firebase/firestore', () => ({
 vi.mock('@/firebase', () => ({ db: {}, isFirebaseConfigured: true }))
 vi.mock('@/services/ownerContext', () => ({ getGymId: mocks.getGymId, DEMO_GYM_ID: 'demo' }))
 vi.mock('@/services/audit', () => ({ logAudit: mocks.logAudit }))
+vi.mock('@/services/projection', () => ({ requestReprojection: mocks.requestReprojection }))
 
 // The sequential writes must never be reached once a gym is established. If a
 // change routes a renewal back through them, these throw instead of quietly
@@ -223,13 +228,51 @@ describe('renewMembership transaction', () => {
     expect(state.docs.get('members/m2').joinDate).toBe('2026-02-01')
   })
 
-  it('still advances the plan and activates the member', async () => {
-    const { renewMembership } = await load()
-    await renewMembership(renewal())
-    const stored = state.docs.get('members/m1')
-    expect(stored.membershipPlanId).toBe('plan-90')
-    expect(stored.status).toBe('active')
-  })
+  /**
+ * The defect this replaces.
+ *
+ * The renewal used to write `status: 'active'` to the member INSIDE the payment
+ * transaction. That put a cache field into the same atomic unit as the money:
+ *
+ * - the payment could only commit if the projection field was permitted, so a
+ *   rules change on a cache field could start refusing real payments;
+ * - 'active' was asserted regardless of whether the new period had even
+ *   started, so a renewal booked for next month labelled the member active;
+ * - any error deriving the field was, by construction, an error in taking money.
+ *
+ * Status is now derived server-side from the periods and requested after the
+ * commit. The authoritative transaction must leave it completely alone.
+ */
+it('advances the plan but never writes the projection inside the transaction', async () => {
+  const { renewMembership } = await load()
+  // A stale cached value, standing in for whatever drift the document already had.
+  state.docs.set('members/m1', { ...state.docs.get('members/m1'), status: 'expired' })
+
+  await renewMembership(renewal())
+
+  const stored = state.docs.get('members/m1')
+  expect(stored.membershipPlanId).toBe('plan-90')
+  // Untouched: the transaction has no opinion about a member's status.
+  expect(stored.status).toBe('expired')
+  // And it never invented the other projection fields either.
+  expect(stored.effectiveExpiry).toBeUndefined()
+  expect(stored.membershipStart).toBeUndefined()
+  expect(stored.freezeUntil).toBeUndefined()
+})
+
+/**
+ * The freshness sequence the whole design rests on: the authoritative write
+ * commits first, and only then is the projection recompute requested.
+ */
+it('requests a reprojection after the commit, not inside it', async () => {
+  const { renewMembership } = await load()
+  const result = await renewMembership(renewal())
+
+  expect(mocks.requestReprojection).toHaveBeenCalledWith('m1')
+  // The result tells the caller whether `status` can now be trusted.
+  expect(result).toHaveProperty('projectionFresh')
+  expect(typeof result.projectionFresh).toBe('boolean')
+})
 
   it('increments the counter once per renewal and never reuses a number', async () => {
     const { renewMembership } = await load()

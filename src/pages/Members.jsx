@@ -4,10 +4,12 @@ import { Eye, Pencil, Plus, Trash2, UserPlus } from 'lucide-react'
 import { usePaginatedCollection, useCollection } from '@/hooks/useFirestore'
 import { createDoc, removeDoc, updateDocById } from '@/services/firestore'
 import { logAudit } from '@/services/audit'
+import { requestReprojection } from '@/services/projection'
 import { getWhatsAppLink, openWhatsAppGroupInvite } from '@/services/whatsappGroup'
 import { getPtSurcharge } from '@/services/pt'
 import { getMembershipCharge } from '@/utils/pt'
 import { exportMembersToCsv } from '@/services/export'
+import { MEMBER_STATUS_FILTERS } from '@/utils/constants'
 import { useAuth } from '@/context/AuthContext'
 import { useSettings } from '@/context/SettingsContext'
 import { useToast } from '@/context/ToastContext'
@@ -18,7 +20,7 @@ import { PageHeader } from '@/components/layout/PageHeader'
 import { SearchInput } from '@/components/ui/SearchInput'
 import { Select } from '@/components/ui/Select'
 import { Button } from '@/components/ui/Button'
-import { Badge, StatusBadge } from '@/components/ui/Badge'
+import { Badge, FrozenBadge, StatusBadge } from '@/components/ui/Badge'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Pagination } from '@/components/ui/Pagination'
@@ -179,6 +181,10 @@ export default function Members() {
               entityId: null,
               details: { member: payload.name, originPeriod: true, price: originCharge.total },
             })
+            // The origin period is authoritative, so the member's projection is
+            // now stale. Ask the server to derive it rather than writing status
+            // from this form — a new member must not be hand-labelled 'active'.
+            await requestReprojection(id)
           } catch (periodError) {
             // Member creation must not fail because period creation was not
             // permitted (e.g. front-desk role); finance roles can backfill.
@@ -262,9 +268,11 @@ export default function Members() {
         />
         <Select value={status} onChange={(e) => setStatus(e.target.value)} className="w-40">
           <option value="all">All statuses</option>
-          <option value="active">Active</option>
-          <option value="expired">Expired</option>
-          <option value="frozen">Frozen</option>
+          {MEMBER_STATUS_FILTERS.map((s) => (
+            <option key={s.value} value={s.value}>
+              {s.label}
+            </option>
+          ))}
         </Select>
         <div className="ml-auto">
           <CSVExportButton
@@ -343,7 +351,14 @@ export default function Members() {
                         )}
                       </td>
                       <td className="td">
-                        <StatusBadge status={member.status} />
+                        {/* Currency and freezing are orthogonal, so they are two
+                            badges rather than one status: a member can be
+                            "Expiring Soon" AND frozen, and showing only one of
+                            those would hide the other. */}
+                        <div className="flex flex-wrap items-center gap-1">
+                          <StatusBadge status={member.status} />
+                          <FrozenBadge isFrozen={member.isFrozen} freezeUntil={member.freezeUntil} />
+                        </div>
                       </td>
                       <td className="td hidden whitespace-nowrap sm:table-cell">
                         {formatDate(member.joinDate)}

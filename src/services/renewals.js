@@ -1,11 +1,13 @@
 import { parseDate, toDateInputValue } from '@/utils/dateHelpers'
 import { collection, doc, runTransaction } from 'firebase/firestore'
 import { gymTodayKey } from '@/utils/gymTime'
+import { deriveMemberProjection } from '@/utils/memberProjection'
 import { getMembershipPeriod, getRenewalPaymentSummary } from '@/utils/renewal'
 import { freezeTailCharge, tailRequiresAttention } from '@/utils/freezeTails'
 import { createDoc, isReady, updateDocById } from './firestore'
 import { db } from '@/firebase'
 import { logAudit } from './audit'
+import { requestReprojection } from './projection'
 import { getGymId } from './ownerContext'
 import { fallbackReceiptNo, mintReceiptNoInTransaction, nextReceiptNo, prepareReceiptFloor } from './receipts'
 
@@ -207,10 +209,18 @@ export async function renewMembership({
     paymentStatus: summary.status,
   }
 
-  // The member projection. `joinDate` is deliberately absent: see the note
-  // above. `status` stays a maintained projection because Reports counts
-  // active members from it, even though authority now lives in the periods.
-  const memberPatch = { membershipPlanId: plan.id, status: 'active' }
+  // What the renewal writes to the member document. Both fields are FACTS about
+  // the member, not projections: the plan they now hold, and (for a member who
+  // never had one) when they joined.
+  //
+  // `status` is NOT here. It used to be, hard-coded to 'active', inside the
+  // payment transaction — which meant a cache field was part of the atomic unit
+  // that took money. Now it is derived server-side from the periods this same
+  // renewal created, and this function asks for that recompute after the commit.
+  // Writing 'active' here would also have been wrong on its own terms: a renewal
+  // can be recorded for a plan whose period does not start until next month, and
+  // 'active' was being asserted regardless.
+  const memberPatch = { membershipPlanId: plan.id }
   if (!parseDate(member.joinDate)) memberPatch.joinDate = startDate
 
   const auditEntries = (membershipId, paymentId) => [
@@ -276,6 +286,28 @@ export async function renewMembership({
     paymentId = await createDoc('payments', { ...paymentData, membershipId, receiptNo })
     await updateDocById('memberships', membershipId, { paymentId, receiptNo })
     await updateDocById('members', member.id, memberPatch)
+
+    // Demo mode has no server to recompute the projection, so nothing will ever
+    // set `status` for this renewed member and the offline UI would show a blank
+    // status forever. It is derived here with the SAME pure engine the server
+    // uses — not a second rule, and not a hand-written 'active'.
+    //
+    // This is not a trust-boundary exception. The mock store is a local array in
+    // this browser tab; there is no other tenant to protect and no cache to keep
+    // honest. The moment the app talks to a real Firestore, this branch does not
+    // execute and `status` is server-owned.
+    const demoDerived = deriveMemberProjection({
+      memberId: member.id,
+      memberships: [{ ...membershipData, id: membershipId }],
+      freezes: [],
+      timezone: timezone || undefined,
+      today: gymTodayKey(timezone || undefined),
+    })
+    await updateDocById('members', member.id, {
+      status: demoDerived.status ?? undefined,
+      membershipStart: demoDerived.membershipStart ?? undefined,
+      effectiveExpiry: demoDerived.effectiveExpiry ?? undefined,
+    })
   } else {
     // Refs are created up front so the payment's id can be stored on the period
     // inside a single transaction. Firestore allocates the id client-side when
@@ -328,6 +360,17 @@ export async function renewMembership({
     await logAudit(entry)
   }
 
+  // The projection is recomputed AFTER the commit, never inside the transaction.
+  //
+  // It used to be the other way round: `status: 'active'` was written to the
+  // member inside the same transaction as the payment. That coupled a cache to a
+  // money movement — the projection could only be as correct as the transaction,
+  // the transaction could only commit if the cache field was permitted, and any
+  // bug in deriving the field was a bug in taking money. The cache now follows
+  // the ledger, never the reverse. A failure here leaves a stale status, which
+  // the nightly sweep repairs; it does not un-take the payment.
+  const reprojection = await requestReprojection(member.id)
+
   return {
     membership: { id: membershipId, ...membershipData, paymentId, receiptNo },
     payment: { id: paymentId, ...paymentData, membershipId, receiptNo },
@@ -335,5 +378,8 @@ export async function renewMembership({
     // re-deriving it.
     freezeTail: { days: tail.days, amount: tail.amount },
     totals: { periodPrice: summary.price, tailAmount: summary.tailAmount, total: summary.total },
+    // Whether the member's cached status is now known-good. `false` means the
+    // UI should not treat `status` as freshly derived.
+    projectionFresh: reprojection.ok,
   }
 }

@@ -1,5 +1,6 @@
 import { createDoc, listAll } from './firestore'
 import { logAudit } from './audit'
+import { requestReprojection } from './projection'
 import { computeMemberFinanceRollups, computeMemberLedger } from '@/utils/dues'
 import { toDateInputValue } from '@/utils/dateHelpers'
 
@@ -57,6 +58,7 @@ export async function ensureOriginPeriods() {
     if (!planMap[member.membershipPlanId]) continue
 
     const ledger = computeMemberLedger({ member, plans, payments, memberships })
+    let touched = false
     for (const period of ledger.periods.filter((p) => p.implicit)) {
       await createDoc('memberships', {
         memberId: member.id,
@@ -74,7 +76,12 @@ export async function ensureOriginPeriods() {
         migratedFromLegacy: true,
       })
       created += 1
+      touched = true
     }
+    // Reconstructed periods change which period is current, so this member's
+    // projection is stale. One request per member rather than per period: the
+    // server reads every period for the member anyway.
+    if (touched) await requestReprojection(member.id)
   }
 
   await logAudit({

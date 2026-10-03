@@ -47,7 +47,17 @@ export const memberSchema = z.object({
   emergencyPhone: z.string().optional().or(z.literal('')),
   notes: z.string().optional().or(z.literal('')),
   membershipPlanId: z.string().optional().or(z.literal('')),
-  status: z.enum(['active', 'expired', 'frozen']),
+  // `status` is deliberately ABSENT.
+  //
+  // It used to be a required enum the form submitted, which meant staff could
+  // hand-assign a member's cached status to any of active/expired/frozen and the
+  // app would store it — decoupling the projection from the membership periods
+  // that actually decide it, with no record of who overrode what.
+  //
+  // Status is now an OUTPUT of the projection engine, written by the server and
+  // displayed read-only. A member is made current by creating or renewing a
+  // membership period, which is a fact with an audit trail; it is not made
+  // current by picking a dropdown.
   joinDate: z.string().optional().or(z.literal('')),
   ptSurchargeOverride: z
     .union([z.literal(''), ptSurchargeSchema])

@@ -71,9 +71,36 @@ export const FITNESS_GOALS = [
   'Other',
 ]
 
+/**
+ * Membership statuses, derived by the projection engine and never set by a user.
+ *
+ * There is deliberately NO editable list here: `active`, `expiring` and `expired`
+ * are all outputs of `deriveMemberProjection`, and letting staff pick one would
+ * let a cached field be hand-assigned away from what the periods actually say.
+ * `frozen` is an orthogonal FLAG (`isFrozen` / `freezeUntil`), not a status —
+ * a frozen member is still active or expiring underneath.
+ *
+ * `expiring` is not a new state invented for this work: it is what the engine
+ * has always emitted for a current period within `EXPIRING_WITHIN_DAYS`, and what
+ * `matchesExpiryFilter(days, 'all')` has always admitted. It simply had no UI,
+ * so members about to lapse looked identical to members with months left.
+ */
 export const MEMBER_STATUSES = [
   { value: 'active', label: 'Active' },
+  { value: 'expiring', label: 'Expiring Soon' },
   { value: 'expired', label: 'Expired' },
+]
+
+/** Statuses that mean the member can currently use the gym. `expiring` is included. */
+export const CURRENT_MEMBER_STATUSES = ['active', 'expiring']
+
+/**
+ * Staff-FACING filter options. `frozen` appears because staff search by it, and
+ * the list query cannot express "isFrozen" without reading it from the member
+ * document — so it stays available as a filter while never being a status.
+ */
+export const MEMBER_STATUS_FILTERS = [
+  ...MEMBER_STATUSES,
   { value: 'frozen', label: 'Frozen' },
 ]
 

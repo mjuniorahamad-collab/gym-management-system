@@ -21,7 +21,6 @@ const EMPTY = {
   emergencyPhone: '',
   notes: '',
   membershipPlanId: '',
-  status: 'active',
   joinDate: '',
 }
 
@@ -108,13 +107,6 @@ export function MemberForm({ open, onClose, initial, plans, submitting, onSubmit
                   {p.name}
                 </option>
               ))}
-            </Select>
-          </FormField>
-          <FormField label="Status" error={errors.status?.message}>
-            <Select error={errors.status} {...register('status')}>
-              <option value="active">Active</option>
-              <option value="expired">Expired</option>
-              <option value="frozen">Frozen</option>
             </Select>
           </FormField>
         </div>

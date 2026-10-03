@@ -1,6 +1,7 @@
 import { getById, listAll, removeDoc, updateDocById } from './firestore'
 import { logAudit } from './audit'
 import { refreshMembershipSnapshots } from './payments'
+import { requestReprojection } from './projection'
 import { getMembershipCharge, getEffectivePtSurcharge } from '@/utils/pt'
 
 /**
@@ -52,6 +53,11 @@ export async function applyPTInclusivePriceToPeriod({
   await updateDocById('memberships', periodId, patch)
   await refreshMembershipSnapshots(memberId)
 
+  // The period changed, so the member's projection is now stale. The browser
+  // never writes it; it asks the server to. Never awaited-thrown — see
+  // services/projection.js.
+  await requestReprojection(memberId)
+
   await logAudit({
     action: 'update',
     entity: 'memberships',
@@ -84,6 +90,7 @@ export async function editMembershipPeriod({ periodId, memberId, patch }) {
 
   await updateDocById('memberships', periodId, safe)
   await refreshMembershipSnapshots(memberId)
+  await requestReprojection(memberId)
 
   await logAudit({
     action: 'update',
@@ -130,6 +137,9 @@ export async function deleteMembershipPeriod({ periodId, memberId }) {
     unlinkedIds.has(p.id) ? { ...p, membershipId: '' } : p
   )
   await refreshMembershipSnapshots(memberId, { payments: paymentsAfterUnlink })
+  // Deleting a period can leave the member with NO current period, which is a
+  // different projection than a wrong one — and the one most likely to go stale.
+  await requestReprojection(memberId)
 
   await logAudit({
     action: 'delete',
