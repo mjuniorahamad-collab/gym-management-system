@@ -1,5 +1,5 @@
-import { useMemo } from 'react'
-import { DollarSign, TrendingDown, TrendingUp, Users } from 'lucide-react'
+import { useMemo, useState } from 'react'
+import { CalendarRange, DollarSign, TrendingDown, TrendingUp, Users } from 'lucide-react'
 import { useCollection } from '@/hooks/useFirestore'
 import { exportPaymentsToCsv, exportExpensesToCsv, exportMembersToCsv } from '@/services/export'
 import { useSettings } from '@/context/SettingsContext'
@@ -12,11 +12,33 @@ import { Card, CardBody, CardHeader } from '@/components/ui/Card'
 import { CSVExportButton } from '@/components/common/CSVExportButton'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { Spinner } from '@/components/ui/Spinner'
+import { Input } from '@/components/ui/Input'
+import { Button } from '@/components/ui/Button'
 import { formatCurrency, formatNumber } from '@/utils/formatters'
-import { addDays, lastNMonths, monthKey, parseDate } from '@/utils/dateHelpers'
+import { addDaysToKey, resolveGymTimezone } from '@/utils/gymTime'
+import {
+  averageDailyCheckIns,
+  defaultReportRange,
+  expensesByCategory,
+  monthlyCashFlow,
+  monthlyNewMembers,
+  normalizeReportRange,
+  rangeDayCount,
+  rangeTotals,
+  revenueByPlan,
+} from '@/utils/reportRange'
+
+const PRESETS = [
+  { label: 'This month', kind: 'month' },
+  { label: 'Last 30 days', kind: 'days', days: 29 },
+  { label: 'Last 90 days', kind: 'days', days: 89 },
+  { label: 'Last 6 months', kind: 'months' },
+  { label: 'Year to date', kind: 'ytd' },
+]
 
 export default function Reports() {
-  const { settings } = useSettings()
+  const { settings, timezone } = useSettings()
+  const tz = resolveGymTimezone(timezone)
 
   const members = useCollection('members')
   const payments = useCollection('payments')
@@ -27,85 +49,87 @@ export default function Reports() {
   const loading =
     members.loading || payments.loading || expenses.loading || attendance.loading || plans.loading
 
-  const series = useMemo(() => {
-    const months = lastNMonths(6)
-    return months.map((key) => {
-      const label = new Date(key.split('-')[0], Number(key.split('-')[1]) - 1, 1).toLocaleDateString(
-        'en-US',
-        { month: 'short' }
-      )
-      const income = payments.items
-        .filter((p) => monthKey(parseDate(p.date)) === key)
-        .reduce((s, p) => s + (Number(p.amount) || 0), 0)
-      const expense = expenses.items
-        .filter((e) => monthKey(parseDate(e.date)) === key)
-        .reduce((s, e) => s + (Number(e.amount) || 0), 0)
-      return { label, income, expense }
-    })
-  }, [payments.items, expenses.items])
+  // Initialise from the current gym-local day. Held in state so a half-typed
+  // range (start moved past end) does not blank the report mid-edit.
+  const [range, setRange] = useState(() => defaultReportRange(tz))
+  const [draft, setDraft] = useState(() => {
+    const initial = defaultReportRange(tz)
+    return { from: initial?.from || '', to: initial?.to || '' }
+  })
+  const [rangeError, setRangeError] = useState('')
 
-  const totals = useMemo(() => {
-    const key = monthKey(new Date())
-    const revenue = payments.items.reduce((s, p) => s + (Number(p.amount) || 0), 0)
-    const costs = expenses.items.reduce((s, e) => s + (Number(e.amount) || 0), 0)
-    const monthRevenue = payments.items
-      .filter((p) => monthKey(parseDate(p.date)) === key)
-      .reduce((s, p) => s + (Number(p.amount) || 0), 0)
-    const monthCosts = expenses.items
-      .filter((e) => monthKey(parseDate(e.date)) === key)
-      .reduce((s, e) => s + (Number(e.amount) || 0), 0)
-    const active = members.items.filter((m) => m.status === 'active').length
-    return { revenue, costs, monthRevenue, monthCosts, active }
-  }, [payments.items, expenses.items, members.items])
+  const applyRange = (next) => {
+    const normalized = normalizeReportRange(next.from, next.to)
+    if (!normalized) {
+      setRangeError('Enter a valid range whose end is on or after its start.')
+      return
+    }
+    setRangeError('')
+    setRange(normalized)
+    setDraft({ from: normalized.from, to: normalized.to })
+  }
 
-  const membersTrend = useMemo(() => {
-    const months = lastNMonths(6)
-    return months.map((key) => ({
-      label: new Date(key.split('-')[0], Number(key.split('-')[1]) - 1, 1).toLocaleDateString(
-        'en-US',
-        { month: 'short' }
+  const applyPresetTo = (preset) => {
+    const now = new Date()
+    // Today in the gym's zone, as a YYYY-MM-DD key. Reused as the range end so
+    // a preset never straddles two days for a device in another zone.
+    const todayKey = defaultReportRange(tz, now).to
+
+    if (preset.kind === 'ytd') {
+      applyRange({ from: `${todayKey.slice(0, 4)}-01-01`, to: todayKey })
+      return
+    }
+    if (preset.kind === 'month') {
+      applyRange({ from: `${todayKey.slice(0, 7)}-01`, to: todayKey })
+      return
+    }
+    if (preset.kind === 'months') {
+      applyRange(defaultReportRange(tz, now))
+      return
+    }
+    if (preset.kind === 'days') {
+      applyRange({ from: addDaysToKey(todayKey, -preset.days), to: todayKey })
+    }
+  }
+
+  const series = useMemo(
+    () => monthlyCashFlow(payments.items, expenses.items, range, tz),
+    [payments.items, expenses.items, range, tz]
+  )
+
+  const totals = useMemo(
+    () =>
+      rangeTotals(
+        { payments: payments.items, expenses: expenses.items, members: members.items },
+        range,
+        tz
       ),
-      newMembers: members.items.filter((m) => monthKey(parseDate(m.joinDate)) === key).length,
-    }))
-  }, [members.items])
+    [payments.items, expenses.items, members.items, range, tz]
+  )
 
-  const expensePie = useMemo(() => {
-    const sixMonthsAgo = addDays(new Date(), -180)
-    const map = {}
-    for (const e of expenses.items) {
-      const d = parseDate(e.date)
-      if (!d || d < sixMonthsAgo) continue
-      const cat = e.category || 'Other'
-      map[cat] = (map[cat] || 0) + (Number(e.amount) || 0)
-    }
-    return Object.entries(map)
-      .map(([name, value]) => ({ name, value }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 6)
-  }, [expenses.items])
+  const membersTrend = useMemo(
+    () => monthlyNewMembers(members.items, range, tz),
+    [members.items, range, tz]
+  )
 
-  const planRevenue = useMemo(() => {
-    const map = {}
-    for (const p of payments.items) {
-      const plan = plans.items.find((pl) => pl.id === p.planId)
-      const name = plan?.name || (p.type === 'membership' ? 'Membership' : 'Other')
-      map[name] = (map[name] || 0) + (Number(p.amount) || 0)
-    }
-    return Object.entries(map)
-      .map(([name, value]) => ({ name, value }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 5)
-  }, [payments.items, plans.items])
+  const expensePie = useMemo(
+    () => expensesByCategory(expenses.items, range, tz),
+    [expenses.items, range, tz]
+  )
 
-  const avgDailyCheckIns = useMemo(() => {
-    if (attendance.items.length === 0) return 0
-    const days = new Set(
-      attendance.items.map((a) => parseDate(a.date)?.toDateString()).filter(Boolean)
-    ).size
-    return Math.round((attendance.items.length / Math.max(days, 1)) * 10) / 10
-  }, [attendance.items])
+  const planRevenue = useMemo(
+    () => revenueByPlan(payments.items, plans.items, range, tz),
+    [payments.items, plans.items, range, tz]
+  )
+
+  const avgDailyCheckIns = useMemo(
+    () => averageDailyCheckIns(attendance.items, range, tz),
+    [attendance.items, range, tz]
+  )
 
   const maxPlanValue = Math.max(...planRevenue.map((p) => p.value), 1)
+  const dayCount = rangeDayCount(range)
+  const rangeLabel = range ? `${range.from} to ${range.to}` : ''
 
   if (loading) return <Spinner label="Preparing reports…" />
 
@@ -113,7 +137,7 @@ export default function Reports() {
     <div className="space-y-5">
       <PageHeader
         title="Reports"
-        subtitle="Business performance at a glance"
+        subtitle="Business performance over a date range you choose"
         actions={
           <>
             <CSVExportButton
@@ -124,28 +148,117 @@ export default function Reports() {
               label="Payments CSV"
               onExport={() => exportPaymentsToCsv(payments.items, settings)}
             />
-            <CSVExportButton label="Expenses CSV" onExport={() => exportExpensesToCsv(expenses.items)} />
+            <CSVExportButton
+              label="Expenses CSV"
+              onExport={() => exportExpensesToCsv(expenses.items)}
+            />
           </>
         }
       />
 
+      <Card>
+        <CardHeader
+          title="Date range"
+          subtitle={`All figures below cover these ${dayCount} calendar days in ${tz}${
+            rangeError ? '' : rangeLabel ? ` (${rangeLabel})` : ''
+          }`}
+        />
+        <CardBody className="space-y-4">
+          <div className="flex flex-wrap items-end gap-3">
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300" htmlFor="report-from">
+                From
+              </label>
+              <Input
+                id="report-from"
+                type="date"
+                value={draft.from}
+                max={draft.to || undefined}
+                onChange={(e) => setDraft((d) => ({ ...d, from: e.target.value }))}
+                className="w-44"
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300" htmlFor="report-to">
+                To
+              </label>
+              <Input
+                id="report-to"
+                type="date"
+                value={draft.to}
+                min={draft.from || undefined}
+                onChange={(e) => setDraft((d) => ({ ...d, to: e.target.value }))}
+                className="w-44"
+              />
+            </div>
+            <Button type="button" onClick={() => applyRange(draft)}>
+              Apply range
+            </Button>
+          </div>
+
+          <div className="flex flex-wrap gap-2">
+            {PRESETS.map((preset) => (
+              <Button
+                key={preset.label}
+                type="button"
+                variant="secondary"
+                size="sm"
+                onClick={() => applyPresetTo(preset)}
+              >
+                {preset.label}
+              </Button>
+            ))}
+          </div>
+
+          {rangeError ? (
+            <p role="alert" className="text-sm font-medium text-rose-600 dark:text-rose-400">
+              {rangeError}
+            </p>
+          ) : null}
+        </CardBody>
+      </Card>
+
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <StatCard title="Total revenue" value={formatCurrency(totals.revenue, settings.currency)} icon={DollarSign} tone="emerald" />
-        <StatCard title="Total expenses" value={formatCurrency(totals.costs, settings.currency)} icon={TrendingDown} tone="rose" />
-        <StatCard title="Net (this month)" value={formatCurrency(totals.monthRevenue - totals.monthCosts, settings.currency)} icon={TrendingUp} tone="indigo" sub={`${formatCurrency(totals.monthRevenue, settings.currency)} in · ${formatCurrency(totals.monthCosts, settings.currency)} out`} />
-        <StatCard title="Active members" value={formatNumber(totals.active)} icon={Users} tone="sky" sub={`Avg ${avgDailyCheckIns} check-ins/day`} />
+        <StatCard
+          title="Revenue"
+          value={formatCurrency(totals.revenue, settings.currency)}
+          icon={DollarSign}
+          tone="emerald"
+          sub={`in range · ${dayCount} days`}
+        />
+        <StatCard
+          title="Expenses"
+          value={formatCurrency(totals.costs, settings.currency)}
+          icon={TrendingDown}
+          tone="rose"
+          sub="in range"
+        />
+        <StatCard
+          title="Net"
+          value={formatCurrency(totals.net, settings.currency)}
+          icon={TrendingUp}
+          tone="indigo"
+          sub={`${formatCurrency(totals.revenue, settings.currency)} in · ${formatCurrency(totals.costs, settings.currency)} out`}
+        />
+        <StatCard
+          title="Active members"
+          value={formatNumber(totals.active)}
+          icon={Users}
+          tone="sky"
+          sub={`Avg ${avgDailyCheckIns} check-ins/day`}
+        />
       </div>
 
       <div className="grid gap-5 lg:grid-cols-2">
         <Card>
-          <CardHeader title="Cash flow" subtitle="Revenue vs expenses, last 6 months" />
+          <CardHeader title="Cash flow" subtitle="Revenue vs expenses, by month in range" />
           <CardBody>
             <RevenueChart data={series} />
           </CardBody>
         </Card>
 
         <Card>
-          <CardHeader title="Member growth" subtitle="New members per month" />
+          <CardHeader title="Member growth" subtitle="New members per month in range" />
           <CardBody>
             <MembersTrendChart data={membersTrend} />
           </CardBody>
@@ -154,10 +267,10 @@ export default function Reports() {
 
       <div className="grid gap-5 lg:grid-cols-3">
         <Card>
-          <CardHeader title="Expenses by category" subtitle="Last 6 months" />
+          <CardHeader title="Expenses by category" subtitle="Within the selected range" />
           <CardBody>
             {expensePie.length === 0 ? (
-              <EmptyState title="No expense data" />
+              <EmptyState title="No expense data in this range" />
             ) : (
               <CategoryPie data={expensePie} />
             )}
@@ -165,10 +278,10 @@ export default function Reports() {
         </Card>
 
         <Card className="lg:col-span-2">
-          <CardHeader title="Revenue by plan" subtitle="Where your income comes from" />
+          <CardHeader title="Revenue by plan" subtitle="Where income comes from, within the range" />
           <CardBody className="space-y-4">
             {planRevenue.length === 0 ? (
-              <EmptyState title="No payment data yet" />
+              <EmptyState title="No payment data in this range" />
             ) : (
               planRevenue.map((item) => (
                 <div key={item.name}>
@@ -181,7 +294,7 @@ export default function Reports() {
                   <div className="h-2.5 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
                     <div
                       className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-emerald-500"
-                      style={{ width: `${(item.value / maxPlanValue) * 100}%` }}
+                      style={{ width: `${(item.value / maxPlanValue) * 100}%` } }
                     />
                   </div>
                 </div>
@@ -190,6 +303,12 @@ export default function Reports() {
           </CardBody>
         </Card>
       </div>
+
+      <p className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+        <CalendarRange className="h-3.5 w-3.5" aria-hidden="true" />
+        Figures are filtered in the browser over the loaded collection. Bounded server-side date
+        queries need a <code>gymId + date</code> composite index that is not deployed yet.
+      </p>
     </div>
   )
 }

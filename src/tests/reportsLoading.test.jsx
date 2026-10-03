@@ -1,6 +1,14 @@
 import { describe, beforeEach, expect, it, vi } from 'vitest'
 import { act, render, screen, waitFor } from '@testing-library/react'
 import Reports from '@/pages/Reports'
+import { defaultReportRange } from '@/utils/reportRange'
+import { addDaysToKey } from '@/utils/gymTime'
+
+// The page now reports over an explicit date range, so fixtures must sit inside
+// the default window rather than at hardcoded 2026 dates that drift out of it.
+const RANGE = defaultReportRange('Asia/Kolkata')
+const IN_RANGE_A = addDaysToKey(RANGE.from, 2)
+const IN_RANGE_B = addDaysToKey(RANGE.from, 3)
 
 const { mocks, authValue } = vi.hoisted(() => ({
   mocks: { subscribeCollection: vi.fn(), fetchPage: vi.fn() },
@@ -44,8 +52,8 @@ function pushSnapshot(name, items) {
 
 describe('Reports loading gate', () => {
   const PAYMENTS = [
-    { id: 'p1', memberId: 'm1', planId: 'pl1', type: 'membership', amount: 3000, date: '2026-01-10' },
-    { id: 'p2', memberId: 'm2', planId: 'pl2', type: 'membership', amount: 1500, date: '2026-01-11' },
+    { id: 'p1', memberId: 'm1', planId: 'pl1', type: 'membership', amount: 3000, date: IN_RANGE_A },
+    { id: 'p2', memberId: 'm2', planId: 'pl2', type: 'membership', amount: 1500, date: IN_RANGE_B },
   ]
 
   const PLANS = [
@@ -55,7 +63,7 @@ describe('Reports loading gate', () => {
 
   beforeEach(() => {
     collections = {
-      members: [{ id: 'm1', name: 'Javed', joinDate: '2026-01-01', status: 'active' }],
+      members: [{ id: 'm1', name: 'Javed', joinDate: IN_RANGE_A, status: 'active' }],
       payments: PAYMENTS,
       expenses: [],
       attendance: [],
