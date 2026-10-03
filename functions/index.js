@@ -8,7 +8,8 @@
  * Deploy:  npm run deploy   (runs `npm run build` first — see predeploy)
  *
  * NOTE: Email/SMS delivery is intentionally left as a TODO. Wire in a provider
- * (e.g. Resend, Twilio, Mailgun) inside `sendReminderEmail` and uncomment.
+ * (e.g. Resend, Twilio, Mailgun) as the `deliver` option in
+ * ./projection/reminders.js — there is no provider, and none is called.
  *
  * ## Module system
  *
@@ -20,6 +21,7 @@
  */
 import { onSchedule } from 'firebase-functions/v2/scheduler'
 import { firestore, storage } from './projection/admin.js'
+import { runExpiryReminderJob, REMINDER_WINDOW_DAYS } from './projection/reminders.js'
 
 /**
  * Callable: ask the trusted writer to recompute one member's projection.
@@ -28,15 +30,6 @@ import { firestore, storage } from './projection/admin.js'
 export { reprojectMember } from './projection/reproject.js'
 
 const STORAGE_BACKUP_PREFIX = 'backups'
-const REMINDER_WINDOW_DAYS = 7
-
-function daysUntil(target) {
-  const start = new Date()
-  start.setHours(0, 0, 0, 0)
-  const end = new Date(target)
-  end.setHours(0, 0, 0, 0)
-  return Math.round((end.getTime() - start.getTime()) / 86400000)
-}
 
 /**
  * Daily backup of every collection to Cloud Storage.
@@ -80,7 +73,14 @@ export const dailyBackup = onSchedule(
 
 /**
  * Flags memberships expiring within the next 7 days so staff can follow up.
- * Reads members + membershipPlans, then writes an auditLog entry per member.
+ *
+ * Rebuilt on the authoritative membership model: expiry is derived from
+ * `memberships` + `membershipFreezes` through the canonical engine, in each
+ * gym's own timezone, rather than from `joinDate + plan.durationDays` and a
+ * cached `member.status`. The eligibility window is unchanged (0..7 days
+ * inclusive). See ./projection/reminders.js for why each old input was wrong.
+ *
+ * Read-only: it no longer writes an auditLog document per reminded member.
  */
 export const membershipExpiryReminders = onSchedule(
   {
@@ -89,53 +89,10 @@ export const membershipExpiryReminders = onSchedule(
     memory: '256MiB',
   },
   async () => {
-    const db = firestore()
-    const plansSnap = await db.collection('membershipPlans').get()
-    const plans = Object.fromEntries(plansSnap.docs.map((d) => [d.id, d.data()]))
-
-    const membersSnap = await db.collection('members').get()
-    const expiring = []
-
-    for (const doc of membersSnap.docs) {
-      const member = doc.data()
-      if (member.status !== 'active' || !member.joinDate || !member.membershipPlanId) continue
-      const plan = plans[member.membershipPlanId]
-      if (!plan) continue
-
-      const start = new Date(member.joinDate)
-      const end = new Date(start.getTime() + plan.durationDays * 86400000)
-      const left = daysUntil(end)
-      if (left >= 0 && left <= REMINDER_WINDOW_DAYS) {
-        expiring.push({ member: doc.id, name: member.name, daysLeft: left })
-        await db.collection('auditLog').add({
-          action: 'expiry-reminder',
-          entity: 'members',
-          entityId: doc.id,
-          actor: { name: 'Cloud Function', role: 'system' },
-          details: { name: member.name, daysLeft: left },
-          timestamp: new Date().toISOString(),
-        })
-        // TODO: send the member an email/SMS here via your provider.
-        await sendReminderEmail(member.name, member.email, left)
-      }
-    }
-
-    console.log(`Expiring in ${REMINDER_WINDOW_DAYS} days:`, expiring)
-    return { ok: true, count: expiring.length }
+    const result = await runExpiryReminderJob(firestore())
+    console.log(
+      `Expiring within ${REMINDER_WINDOW_DAYS} days: ${result.due} (delivered ${result.delivered})`
+    )
+    return { ok: true, ...result, reminders: undefined }
   }
 )
-
-async function sendReminderEmail(name, email, daysLeft) {
-  if (!email) return
-  // TODO: integrate an email/SMS provider (Resend, Twilio, Mailgun, ...).
-  // Example (Resend):
-  //   const { Resend } = await import('resend')
-  //   const resend = new Resend(process.env.RESEND_API_KEY)
-  //   await resend.emails.send({
-  //     from: 'Himalye Wonders Gym <no-reply@yourdomain.com>',
-  //     to: [email],
-  //     subject: 'Your gym membership is expiring soon',
-  //     text: `Hi ${name}, your membership expires in ${daysLeft} days. Renew today!`,
-  //   })
-  console.log(`[placeholder] Reminder for ${name} (${email}): ${daysLeft} days left`)
-}

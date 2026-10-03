@@ -88,10 +88,31 @@ export async function seedPeriod(periodId, gymId, memberId, { startDate, expiryD
   )
 }
 
-/** Seed an authoritative freeze. `kind` is 'freeze' or 'cancellation'. */
-export async function seedFreeze(freezeId, gymId, memberId, { periodId, kind = 'freeze', ...rest }) {
+/**
+ * Seed an authoritative freeze.
+ *
+ * `startDate`/`expiryDate` are day keys, and the END key is `expiryDate` — not
+ * `endDate`. The engine's `toRange` reads `raw.startDate`/`raw.expiryDate` and
+ * returns null for anything else, so a freeze written with `endDate` is not
+ * malformed data: it is silently INVISIBLE, and the projection quietly comes out
+ * un-frozen. That failure mode cost a test run here, so the mistake is now a
+ * loud error rather than a silently wrong assertion.
+ */
+export async function seedFreeze(
+  freezeId,
+  gymId,
+  memberId,
+  { periodId, kind = 'freeze', startDate, expiryDate, ...rest }
+) {
+  for (const wrong of ['endDate', 'end', 'to']) {
+    if (wrong in rest) {
+      throw new Error(
+        `seedFreeze: freeze "${freezeId}" was given "${wrong}". A freeze ends on "expiryDate".`
+      )
+    }
+  }
   await db.doc(`membershipFreezes/${freezeId}`).set(
-    definedOnly({ memberId, gymId, periodId, kind, ...rest })
+    definedOnly({ memberId, gymId, periodId, kind, startDate, expiryDate, ...rest })
   )
 }
 
@@ -105,6 +126,18 @@ export async function seedProfile(uid, { gymId = GYM_A, role = 'front-desk' } = 
 export async function readMemberDoc(memberId) {
   const snapshot = await db.doc(`members/${memberId}`).get()
   return snapshot.exists ? snapshot.data() : null
+}
+
+/**
+ * Every document in a collection as `{ id, ...data }` rows.
+ *
+ * Used to assert that a job wrote NOTHING. A count would do, but comparing the
+ * actual rows means a test that deletes and recreates the same number of
+ * documents still fails.
+ */
+export async function readDocs(collectionName) {
+  const snapshot = await db.collection(collectionName).get()
+  return snapshot.docs.map((d) => ({ id: d.id, ...d.data() }))
 }
 
 /** Bind a member id once, so a fixture can never reference a *different* member. */
