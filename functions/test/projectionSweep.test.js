@@ -99,6 +99,7 @@ describe('repairing what is wrong, and only what is wrong', () => {
       effectiveExpiry: '2026-07-01',
       freezeUntil: null,
       status: 'active',
+      isFrozen: false,
     })
     await seedPeriod(uid('period'), GYM_A, memberId, {
       startDate: '2026-06-01',
@@ -124,12 +125,15 @@ describe('repairing what is wrong, and only what is wrong', () => {
       effectiveExpiry: '2026-07-01',
       freezeUntil: null,
       status: 'active',
+      isFrozen: false,
     })
     await seedPeriod(uid('period'), GYM_A, correct, {
       startDate: '2026-06-01',
       expiryDate: '2026-07-01',
     })
-    await seedMember(noSources, GYM_A)
+    // No periods and no freezes: every derived value is null, but `isFrozen` is
+    // still a real `false`. Seeding it here is what keeps this member "unchanged".
+    await seedMember(noSources, GYM_A, { isFrozen: false })
 
     const totals = await sweepA()
     expect(totals.scanned).toBe(3)

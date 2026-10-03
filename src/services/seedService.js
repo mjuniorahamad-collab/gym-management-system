@@ -1,4 +1,5 @@
 import { createDoc, isReady, listAll, updateDocById } from './firestore'
+import { requestReprojection } from './projection'
 import { getPtSurcharge } from './pt'
 import { getMembershipCharge } from '@/utils/pt'
 import {
@@ -59,7 +60,6 @@ async function seedCollections() {
   for (const [index, member] of sampleMembers.entries()) {
     const planId = planIds[member.planIndex]
     const joinDate = isoDaysAgo(member.joinDaysAgo)
-    const status = member.status === 'active' ? 'active' : member.status
     const isPt = Boolean(member.isPT)
     const id = await createDoc('members', {
       name: member.name,
@@ -74,12 +74,20 @@ async function seedCollections() {
       searchName: member.name.toLowerCase(),
       photoUrl: '',
       membershipPlanId: planId || '',
-      status,
       joinDate,
       memberUid: '',
       isPT: isPt,
       ptSurchargeOverride: member.ptSurchargeOverride == null ? null : member.ptSurchargeOverride,
     })
+    // `status` is deliberately not seeded.
+    //
+    // The sample data declares an intended status per member ('expired' and
+    // 'frozen' included), but a projection is not an input — it is an output of
+    // the periods written below. Seeding it here would be the client asserting a
+    // cache value, which is the exact thing this whole phase removes. The seed's
+    // origin periods are written moments later, and the server derives the real
+    // status from them; requesting that is the `requestReprojection` call at the
+    // end of this loop.
     memberIds.push(id)
 
     const plan = samplePlans[member.planIndex]
@@ -131,6 +139,12 @@ async function seedCollections() {
         receiptNo: `HWG-${1000 + memberIds.length}`,
       })
     }
+
+    // Every seeded member now has its authoritative periods, so ask the server
+    // to derive the projection. Fire-and-forget on purpose: a failed request
+    // leaves a blank status that the nightly sweep repairs, and seeding is a
+    // development convenience that must not fail because of it.
+    requestReprojection(id)
   }
 
   // Demo renewal story: Rohan Thapa renewed from "3 Months" (₹6,500 with only
@@ -169,8 +183,10 @@ async function seedCollections() {
     await updateDocById('members', rohanId, {
       membershipPlanId: monthlyPlanId,
       joinDate: renewalStart,
-      status: 'active',
     })
+    // The renewal period above is the newest one, so it is the current period and
+    // the derived status follows from it. No status written here.
+    await requestReprojection(rohanId)
   }
 
   // Expenses

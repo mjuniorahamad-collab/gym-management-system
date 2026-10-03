@@ -11,7 +11,7 @@
  *
  * It is not financial authority, membership authority, freeze authority or
  * payment authority. It cannot grant entitlement, cannot move money, and cannot
- * alter a period or a freeze. It writes four derived fields and nothing else.
+ * alter a period or a freeze. It writes five derived fields and nothing else.
  *
  * ## The rule this module exists to enforce
  *
@@ -43,13 +43,25 @@ import { deriveMemberProjection } from '../vendor/projection.mjs'
 import { PROJECTED_FIELDS, readFreezesForMember, readGymTimezone, readMember, readPeriodsForMember } from './sources.js'
 
 /**
- * The four values to store, extracted from the engine's richer result.
+ * The five values to store, extracted from the engine's richer result.
  *
- * The engine returns more than this (periodId, isFrozen, expiringWithinDays and
- * so on). Those are deliberately NOT persisted: they are derivable from the four
- * stored fields plus the authoritative documents, and storing a second copy
- * would create something to drift. Only the four queryable fields are kept,
- * because those are the ones a Firestore query cannot compute for itself.
+ * The engine returns more than this (periodId, expiringWithinDays and so on).
+ * Those are deliberately NOT persisted: they are derivable from the stored fields
+ * plus the authoritative documents, and storing a second copy would create
+ * something to drift. What IS kept is everything a Firestore query cannot compute
+ * for itself.
+ *
+ * `isFrozen` is copied straight from the engine rather than recomputed here. That
+ * is the whole point: the freeze lifecycle — cancellation, overlaps, intervals
+ * crossing the original expiry, freezes on lapsed or prepaid periods — is
+ * canonical in one algorithm (`anchoredFreezeRanges` via `deriveMemberProjection`).
+ * Re-deriving it from `freezeUntil` here would be a second algorithm that agrees
+ * with the first until the first one is exercised by an edge case, at which point
+ * the badge and the filter disagree with each other.
+ *
+ * Note what `isFrozen` is NOT: it is not financial authority and it is not part of
+ * membership currency. Nothing in the dues, tail-settlement or renewal path may
+ * read it. `status` decides currency, `isFrozen` is an orthogonal flag beside it.
  */
 export function desiredProjection(derived) {
   return {
@@ -57,6 +69,7 @@ export function desiredProjection(derived) {
     effectiveExpiry: derived.effectiveExpiry ?? null,
     freezeUntil: derived.freezeUntil ?? null,
     status: derived.status ?? null,
+    isFrozen: derived.isFrozen === true,
   }
 }
 

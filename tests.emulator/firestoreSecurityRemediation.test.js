@@ -544,12 +544,15 @@ describe('REM booking tenant isolation', () => {
 describe('REM member field privilege separation', () => {
   let env
 
+  // Client-owned financial facts. `status` was deliberately removed from this
+  // list when the member projection became server-owned: it is no longer a
+  // privilege question for a client role to answer at all. It is now covered by
+  // the projection-ownership block at the end of this file.
   const SIGNIFICANT = {
     membershipPlanId: 'plan-quarterly',
     isPT: true,
     ptSurchargeOverride: 250,
     joinDate: '2026-01-01',
-    status: 'expired',
   }
 
   beforeAll(async () => {
@@ -607,7 +610,7 @@ describe('REM member field privilege separation', () => {
     await env.withSecurityRulesDisabled(async (ctx) => {
       await ctx.firestore().doc('members/rem-m-blank').set({ name: 'Blank', gymId: GYM_A })
     })
-    await assertSucceeds(client(env, A.trainer).doc('members/rem-m-blank').update({ status: 'active' }))
+    await assertSucceeds(client(env, A.trainer).doc('members/rem-m-blank').update({ membershipPlanId: 'plan-2' }))
   })
 
   // The fitness-goal write path (src/services/weightRecords.js ->
@@ -659,6 +662,199 @@ describe('REM member field privilege separation', () => {
       await assertFails(client(env, uid).doc('members/rem-m-b').update({ status: 'frozen' }))
       await assertFails(client(env, uid).doc('members/rem-m-b').delete())
     }
+  })
+
+  // -------------------------------------------------------------------------
+  // Server-owned projection fields
+  //
+  // The field-level model above is about PRIVILEGE: who outranks whom. These
+  // four fields are not privileged, they are owned by the server, and the
+  // distinction matters. A client role cannot be trusted with `status` not
+  // because it lacks permission but because computing `status` requires reading
+  // `memberships` and `membershipFreezes` and running the canonical engine —
+  // none of which a rules expression can do. There is therefore no role
+  // predicate that would be correct here; the field is simply not the client's
+  // to write, at any privilege level.
+  //
+  // Owner and admin hold 'members.write' and are still denied. That is the
+  // point of these assertions.
+  // -------------------------------------------------------------------------
+  const PROJECTED = ['status', 'membershipStart', 'effectiveExpiry', 'freezeUntil']
+
+  // -------------------------------------------------------------------------
+  // Current-policy assertions for `members.status`, one named test per role.
+  //
+  // WHY THESE EXIST, AND WHY THE FROZEN SUITE DISAGREES
+  //
+  // tests.emulator/firestoreSecurityEmulator.test.js is byte-immutable audit
+  // evidence of the rules as they stood BEFORE the projection landed. It
+  // contains three assertions under SEC-I that read, in the old model:
+  //
+  //   "owner      may change member.status (app grants members.write)"
+  //   "admin      may change member.status (app grants members.write)"
+  //   "front-desk may change member.status (app grants members.write)"
+  //
+  // Those assertions PASS against the old rules and FAIL against the current
+  // ones. That is the intended, reviewed outcome, not a regression: they record
+  // a permission model this project has deliberately retired. Under the locked
+  // policy `members.status` is a TRUSTED DERIVED PROJECTION — the output of the
+  // canonical engine over `memberships` + `membershipFreezes` — and no client
+  // role may write it, however privileged. The frozen file is left untouched as
+  // historical evidence; these tests below are the CURRENT security contract.
+  //
+  // If a future change makes one of these four fail, the projection guard in
+  // firestore.rules has regressed. Do not "fix" it by editing the frozen file.
+  // -------------------------------------------------------------------------
+
+  it('CURRENT POLICY: owner cannot change members.status', async () => {
+    await assertFails(client(env, A.owner).doc('members/rem-m-owner').update({ status: 'expired' }))
+  })
+
+  it('CURRENT POLICY: admin cannot change members.status', async () => {
+    await assertFails(client(env, A.admin).doc('members/rem-m-owner').update({ status: 'expired' }))
+  })
+
+  it('CURRENT POLICY: front-desk cannot change members.status', async () => {
+    await assertFails(client(env, A.frontDesk).doc('members/rem-m-owner').update({ status: 'expired' }))
+  })
+
+  it('CURRENT POLICY: trainer cannot change members.status', async () => {
+    await assertFails(client(env, A.trainer).doc('members/rem-m-owner').update({ status: 'expired' }))
+  })
+
+  it('CURRENT POLICY: no role may CREATE a member carrying a status', async () => {
+    // Denial on create as well as update: a client cannot pre-seed a status at
+    // birth and let the server discover it already "set".
+    for (const uid of [A.owner, A.admin, A.frontDesk, A.trainer]) {
+      await assertFails(client(env, uid).collection('members').add({ name: 'Seeded Status', status: 'active', gymId: GYM_A }))
+    }
+  })
+
+  it('CURRENT POLICY: the members.write roles keep every other member field writable', async () => {
+    // The point of narrowing the guard is to protect the four projected fields,
+    // NOT to lock members down. Each role that holds 'members.write' must still
+    // be able to do the ordinary work the application depends on. If this fails,
+    // the projection guard has swallowed a legitimate capability.
+    const FACTS = {
+      membershipPlanId: 'plan-monthly',
+      isPT: true,
+      ptSurchargeOverride: 400,
+      joinDate: '2026-04-01',
+    }
+    for (const uid of [A.owner, A.admin, A.frontDesk]) {
+      await assertSucceeds(client(env, uid).doc('members/rem-m-owner').update(FACTS))
+    }
+    // Contact/profile details are writable by the members.write roles, and by a
+    // trainer too — but only on a member with no financial state. Every
+    // `rem-m-*` fixture carries membershipPlanId/isPT/joinDate, and the
+    // pre-existing trainer restriction keys on those existing fields (see the
+    // backfill note above: rules see the post-merge document, so a trainer is
+    // locked out of any member that already has financial facts). Asserting
+    // trainer writability against a funded member would be asserting a
+    // capability that never existed.
+    for (const uid of [A.owner, A.admin, A.frontDesk]) {
+      await assertSucceeds(client(env, uid).doc('members/rem-m-trainer').update({ phone: '9800000011' }))
+    }
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await ctx.firestore().doc('members/rem-m-plain').set({ name: 'Plain', gymId: GYM_A })
+    })
+    await assertSucceeds(client(env, A.trainer).doc('members/rem-m-plain').update({ phone: '9800000012' }))
+  })
+
+  it('denies every members.write role the projection fields, owner and admin included', async () => {
+    for (const uid of [A.owner, A.admin, A.frontDesk, A.trainer]) {
+      for (const field of PROJECTED) {
+        // Deliberately NOT the value this fixture already holds. The fixture is
+        // seeded with status: 'active', and re-sending the value the server
+        // already wrote is deliberately permitted (see "re-asserts the same
+        // value"). Asserting on 'active' here would therefore pass for the
+        // wrong reason and prove nothing about the guard.
+        const value = field === 'status' ? 'expired' : '2026-12-25'
+        await assertFails(client(env, uid).doc('members/rem-m-owner').update({ [field]: value }))
+      }
+    }
+  })
+
+  it('denies every role initializing a projection on create', async () => {
+    for (const uid of [A.owner, A.admin, A.frontDesk, A.trainer]) {
+      for (const field of PROJECTED) {
+        const value = field === 'status' ? 'active' : '2026-12-25'
+        await assertFails(
+          client(env, uid).collection('members').add({ name: 'Projected', [field]: value, gymId: GYM_A })
+        )
+      }
+    }
+  })
+
+  it('denies a projection field pre-nulled at create time', async () => {
+    await assertFails(
+      client(env, A.owner).collection('members').add({
+        name: 'Pre-nulled',
+        status: null,
+        membershipStart: null,
+        effectiveExpiry: null,
+        freezeUntil: null,
+        gymId: GYM_A,
+      })
+    )
+  })
+
+  it('still allows the ordinary member create with no projection fields', async () => {
+    // The real client path, post-migration: MemberForm submits no `status` and
+    // the server derives one.
+    await assertSucceeds(
+      client(env, A.frontDesk).collection('members').add({
+        name: 'Properly Born',
+        membershipPlanId: 'plan-quarterly',
+        isPT: false,
+        gymId: GYM_A,
+      })
+    )
+  })
+
+  it('still allows client-owned facts that resemble projection fields', async () => {
+    // `isPT`, `membershipPlanId`, `joinDate` and `ptSurchargeOverride` are
+    // member facts a staff member may record, even though the engine also
+    // derives an `isPT` from the current period. Locking them would break the PT
+    // toggle and the repricing it drives.
+    await assertSucceeds(
+      client(env, A.owner).doc('members/rem-m-owner').update({
+        isPT: true,
+        membershipPlanId: 'plan-monthly',
+        joinDate: '2026-03-01',
+        ptSurchargeOverride: 300,
+      })
+    )
+  })
+
+  it('leaves the server projection intact across a legitimate client edit', async () => {
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await ctx.firestore().doc('members/rem-m-projected').set({
+        name: 'Server Projected',
+        gymId: GYM_A,
+        status: 'expiring',
+        membershipStart: '2026-01-01',
+        effectiveExpiry: '2026-09-01',
+        freezeUntil: null,
+      })
+    })
+    await assertSucceeds(client(env, A.frontDesk).doc('members/rem-m-projected').update({ phone: '9800000001' }))
+    let stored
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      const snap = await ctx.firestore().doc('members/rem-m-projected').get()
+      stored = snap.data()
+    })
+    expect(stored.status).toBe('expiring')
+    expect(stored.effectiveExpiry).toBe('2026-09-01')
+    expect(stored.phone).toBe('9800000001')
+  })
+
+  it('denies a merge that would change a projected value', async () => {
+    // updateDoc(..., { merge: true }) exposes only the merged document to rules,
+    // so it must be held to the same invariant as a plain update.
+    await assertFails(
+      client(env, A.owner).doc('members/rem-m-projected').set({ status: 'active' }, { merge: true })
+    )
   })
 })
 

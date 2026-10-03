@@ -277,10 +277,54 @@ describe('trust and idempotency through the callable', () => {
     const after = await call(userId, { memberId })
     expect(after.changed).toBe(true)
     // Ordered by PROJECTED_FIELDS, not alphabetically.
-    expect(after.updated).toEqual(['effectiveExpiry', 'freezeUntil'])
+    expect(after.updated).toEqual(['effectiveExpiry', 'freezeUntil', 'isFrozen'])
     const stored = await readMemberDoc(memberId)
     expect(stored.freezeUntil).toBe(null)
     expect(stored.effectiveExpiry).toBe(originalExpiry)
+    // The cancellation must clear the FLAG too, not just the dates. Leaving
+    // `isFrozen: true` here would keep the badge and the Frozen filter showing a
+    // member whose freeze was explicitly voided.
+    expect(stored.isFrozen).toBe(false)
+  })
+
+  it('reports isFrozen as changed when a freeze starts or ends on its own', async () => {
+    const { userId, memberId } = await scenario()
+    const today = realToday()
+    const periodId = uid('period')
+    await db.doc(`memberships/${periodId}`).set({
+      gymId: GYM_A,
+      memberId,
+      planId: uid('plan'),
+      planName: 'Monthly',
+      startDate: shiftDay(today, -10),
+      expiryDate: shiftDay(today, 20),
+    })
+
+    // Baseline: current, not frozen. The callable deliberately returns no `fields`,
+    // so this reads the stored document rather than the response body.
+    await call(userId, { memberId })
+    expect((await readMemberDoc(memberId)).isFrozen).toBe(false)
+
+    const freezeId = uid('freeze')
+    await db.doc(`membershipFreezes/${freezeId}`).set({
+      memberId,
+      gymId: GYM_A,
+      periodId,
+      kind: 'freeze',
+      startDate: shiftDay(today, -2),
+      expiryDate: shiftDay(today, 2),
+    })
+
+    // The freeze is the ONLY reason this member's projection should change, so
+    // this is what proves the flag is derived from the freeze records rather than
+    // from the (unchanged) dates.
+    const frozen = await call(userId, { memberId })
+    const stored = await readMemberDoc(memberId)
+    expect(stored.isFrozen).toBe(true)
+    // Orthogonal to currency: a frozen member is still ACTIVE underneath.
+    expect(stored.status).toBe('active')
+    expect(frozen.updated).toContain('isFrozen')
+    expect(frozen.updated).toContain('freezeUntil')
   })
 
   it('writes no audit or financial side effect', async () => {

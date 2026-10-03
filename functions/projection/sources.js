@@ -26,14 +26,33 @@
  */
 
 /**
- * The four fields the trusted writer owns. Nothing else on the member document is
+ * The five fields the trusted writer owns. Nothing else on the member document is
  * ever written by the projection writer.
+ *
+ * `isFrozen` is here because the product needs two things a Firestore query cannot
+ * compute for itself: a Frozen badge, and a server-side Frozen filter that survives
+ * pagination. Both need a stored boolean. It is NOT an additional source of truth
+ * — it is the engine's own `isFrozen`, copied verbatim, with exactly the meaning
+ * the engine gives it: an applicable freeze interval covers the gym-local today.
+ *
+ * It is deliberately NOT derivable from `freezeUntil`. `freezeUntil` is the far
+ * end of the latest applicable freeze, so it cannot express cancellation, and it
+ * stays set after a freeze lapses. Reading "frozen" as `freezeUntil >= today`
+ * would keep showing the badge for a voided freeze and would report a member as
+ * frozen against a freeze that has not started. Recomputing it in the client from
+ * the one stored date is the second freeze algorithm this architecture exists to
+ * prevent, and it could not see cancelled or overlapping records anyway.
+ *
+ * Freeze is orthogonal to currency: `status` answers "is the membership paid up
+ * and unexpired" and `isFrozen` answers "is a freeze covering today in force".
+ * A member is legitimately `active` + frozen, or `expiring` + frozen.
  */
 export const PROJECTED_FIELDS = Object.freeze([
   'membershipStart',
   'effectiveExpiry',
   'freezeUntil',
   'status',
+  'isFrozen',
 ])
 
 /** Firestore rejects deep pagination beyond this; chunking keeps memory bounded. */

@@ -95,13 +95,21 @@ export const MEMBER_STATUSES = [
 export const CURRENT_MEMBER_STATUSES = ['active', 'expiring']
 
 /**
- * Staff-FACING filter options. `frozen` appears because staff search by it, and
- * the list query cannot express "isFrozen" without reading it from the member
- * document — so it stays available as a filter while never being a status.
+ * Staff-FACING filter options.
+ *
+ * `frozen` is a FILTER, never a status. It is a special value that `Members.jsx`
+ * translates into `where('isFrozen', '==', true)` against the stored projection.
+ * Previously it was translated into `where('status', '==', 'frozen')`, which could
+ * never match anything, because `frozen` was removed from `MEMBER_STATUSES` when
+ * freeze became a derived flag — so the filter silently returned an empty list.
+ *
+ * It is a real server-side filter rather than page-local filtering on purpose: the
+ * member list is paginated, so filtering after a page is fetched would show staff
+ * an empty page while frozen members exist further down the collection.
  */
 export const MEMBER_STATUS_FILTERS = [
   ...MEMBER_STATUSES,
-  { value: 'frozen', label: 'Frozen' },
+  { value: 'frozen', label: 'Frozen', field: 'isFrozen', op: '==', filterValue: true },
 ]
 
 export const DAYS_OF_WEEK = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']

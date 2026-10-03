@@ -254,8 +254,8 @@ service cloud.firestore {
     //   * setting a fitness goal / target weight is a real trainer capability
     //     (src/services/weightRecords.js -> updateDocById('members', …,
     //     { fitnessGoal, targetWeight })) and touches none of these fields;
-    //   * the renewal write path does write membershipPlanId/joinDate/status,
-    //     but a trainer can never reach it: createDoc('payments', …) runs
+    //   * the renewal write path does write membershipPlanId/joinDate, but a
+    //     trainer can never reach it: createDoc('payments', …) runs
     //     first and is finance-gated (owner/admin), so the request fails
     //     before the member document is touched.
     //
@@ -276,13 +276,84 @@ service cloud.firestore {
           && trainerMayWriteField('membershipPlanId')
           && trainerMayWriteField('isPT')
           && trainerMayWriteField('ptSurchargeOverride')
-          && trainerMayWriteField('joinDate')
-          && trainerMayWriteField('status'));
+          && trainerMayWriteField('joinDate'));
+    }
+
+    // ---------- Server-owned projection fields -----------------------------
+    //
+    // These five are the member projection. They are an OUTPUT of
+    // `memberships` + `membershipFreezes` as computed by the canonical engine,
+    // and they are written by exactly one writer: the trusted server writer,
+    // using the Admin SDK, which bypasses these rules entirely because it is
+    // trusted rather than because it is exempt.
+    //
+    // No role may set them. Not owners, not admins, not front-desk, not trainers.
+    // A role check would be the wrong tool: this is not a question of who is
+    // trusted, it is a question of who can compute the right answer. Only the
+    // server reads the authoritative documents and derives these values.
+    //
+    // Note what is deliberately NOT in this list: `isPT`, `membershipPlanId`,
+    // `joinDate`, `ptSurchargeOverride`. Those are member FACTS a staff member
+    // may legitimately record. `isPT` in particular shares a name with a
+    // projection field derived from the period, but it is a different value on a
+    // different document — the engine derives `isPT` from the current period and
+    // never reads the member document. Locking it here would break the PT toggle
+    // and the repricing it drives.
+    //
+    // `isFrozen` is server-owned for the same reason as the others: only the
+    // engine sees the freeze records, so only it can say whether a freeze covers
+    // gym-local today. It is orthogonal to currency - `status` decides whether the
+    // membership is paid up, `isFrozen` is a flag beside it - so `active` plus
+    // `isFrozen` is a legitimate and expected combination, and `frozen` remains
+    // absent from `status` on purpose.
+    function projectionFieldsAbsent() {
+      return !request.resource.data.keys().hasAny([
+        'membershipStart', 'effectiveExpiry', 'freezeUntil', 'status', 'isFrozen'
+      ]);
+    }
+
+    // Every field is read through get(field, null) rather than dot access.
+    // Dot access on an ABSENT field is not "null" in the rules language — it
+    // raises an evaluation error, and an evaluation error DENIES the request.
+    // Members predating the projection legitimately have none of these fields,
+    // so dot access here would lock staff out of editing exactly the documents
+    // that have had no projection written to them yet.
+    function projectionFieldsUnchanged() {
+      return request.resource.data.get('membershipStart', null) == resource.data.get('membershipStart', null)
+        && request.resource.data.get('effectiveExpiry',  null) == resource.data.get('effectiveExpiry',  null)
+        && request.resource.data.get('freezeUntil',      null) == resource.data.get('freezeUntil',      null)
+        && request.resource.data.get('status',           null) == resource.data.get('status',           null)
+        && request.resource.data.get('isFrozen',         null) == resource.data.get('isFrozen',         null);
+    }
+
+    // Compared field by field against a named list, NOT by whole-document
+    // equality and NOT by an affectedKeys() allowlist.
+    //
+    // Whole-document equality would deny every legitimate edit (name, phone,
+    // notes), which is the opposite of the intent. An allowlist of writable keys
+    // would have to be maintained by hand and would silently break the moment a
+    // new legitimate field appeared — and would grant nothing to the fields it
+    // forgot. Naming the five server-owned fields states the invariant directly:
+    // these are not yours, and everything else is.
+    //
+    // Each field is compared on update rather than merely "not present in
+    // affectedKeys", so a client cannot bypass the rule by writing a projection
+    // field with the value it already has and only later changing it — the value
+    // it must match is the server's, not a client's.
+    function clientCannotWriteProjection() {
+      return resource == null
+        ? projectionFieldsAbsent()
+        : projectionFieldsUnchanged();
     }
 
     match /members/{id} {
       allow read: if isStaff() && canReadTenant(resource);
-      allow create, update: if isStaff() && memberWriteWithinRole() && canWriteTenant(resource);
+      allow create: if isStaff() && memberWriteWithinRole()
+                    && canWriteTenant(resource)
+                    && clientCannotWriteProjection();
+      allow update: if isStaff() && memberWriteWithinRole()
+                    && canWriteTenant(resource)
+                    && clientCannotWriteProjection();
       allow delete: if (isRole('admin') || isOwner()) && canDeleteTenant(resource);
     }
 

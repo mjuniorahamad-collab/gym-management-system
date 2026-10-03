@@ -100,6 +100,17 @@ export default function Members() {
   const plans = useCollection('membershipPlans')
   const planMap = Object.fromEntries(plans.items.map((p) => [p.id, p]))
 
+// `frozen` is a projection FLAG, not a status, so it filters on `isFrozen`
+  // rather than `status`. Every entry in MEMBER_STATUS_FILTERS carries its own
+  // field/op/value, so the query is built from the selected option rather than
+  // from the raw filter string — otherwise 'frozen' would be sent to the server
+  // as `status == 'frozen'`, which cannot match anything.
+  //
+  // The filter stays server-side on purpose. The list is paginated, so filtering
+  // the loaded page in JS would report "no frozen members" whenever the first page
+  // of 20 happened to contain none, which is worse than not offering the filter.
+  const activeStatusFilter = status === 'all' ? null : MEMBER_STATUS_FILTERS.find((f) => f.value === status) ?? null
+
   const {
     items: members,
     loading,
@@ -110,7 +121,15 @@ export default function Members() {
     pageSize: 20,
     orderField: 'searchName',
     direction: 'asc',
-    filters: status !== 'all' ? [{ field: 'status', op: '==', value: status }] : [],
+    filters: activeStatusFilter
+      ? [
+          {
+            field: activeStatusFilter.field ?? 'status',
+            op: activeStatusFilter.op ?? '==',
+            value: 'filterValue' in activeStatusFilter ? activeStatusFilter.filterValue : activeStatusFilter.value,
+          },
+        ]
+      : [],
     search: search.trim() ? { field: 'searchName', value: search.trim().toLowerCase() } : null,
   })
 

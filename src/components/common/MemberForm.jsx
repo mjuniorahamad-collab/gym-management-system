@@ -9,6 +9,43 @@ import { Select } from '@/components/ui/Select'
 import { Button } from '@/components/ui/Button'
 import { toDateInputValue } from '@/utils/dateHelpers'
 
+// Fields this form may seed from a member document, and therefore may submit.
+//
+// Today the real guard is `memberSchema`: zod strips keys the schema does not
+// declare, so the projection fields below cannot reach `handleSubmit` today even
+// though `reset()` seeds them from the whole document. This list is the SECOND
+// guard, and it is local: the invariant no longer depends on the schema's shape.
+// A future `.passthrough()`, a schema that grows a field, or a resolver swapped
+// for a non-stripping one would otherwise silently reintroduce a client writer
+// for a field the server owns.
+//
+// Nothing outside this list may be seeded, so nothing outside it can be
+// submitted. `isPT` and `ptSurchargeOverride` are deliberately absent: they are
+// not registered inputs on this form (PT is toggled from the member detail page),
+// and adding them would imply this form can set them when it cannot.
+const FORM_FIELDS = [
+  'name',
+  'email',
+  'phone',
+  'gender',
+  'dob',
+  'address',
+  'fatherName',
+  'emergencyName',
+  'emergencyPhone',
+  'notes',
+  'membershipPlanId',
+  'joinDate',
+]
+
+function pickFormFields(source) {
+  const picked = {}
+  for (const key of FORM_FIELDS) {
+    if (source[key] !== undefined) picked[key] = source[key]
+  }
+  return picked
+}
+
 const EMPTY = {
   name: '',
   email: '',
@@ -38,7 +75,7 @@ export function MemberForm({ open, onClose, initial, plans, submitting, onSubmit
       initial
         ? {
             ...EMPTY,
-            ...initial,
+            ...pickFormFields(initial),
             dob: toDateInputValue(initial.dob),
             joinDate: toDateInputValue(initial.joinDate),
           }

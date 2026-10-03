@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { afterAll, beforeAll, describe, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { assertFails, assertSucceeds, initializeTestEnvironment } from '@firebase/rules-unit-testing'
 
 const PROJECT_ID = 'demo-himalye-gym'
@@ -89,7 +89,11 @@ describe('firestore rules — emulator verification (renewal write path)', () =>
   })
 
   it('lets any staff member update members (renewal links new period to member)', async () => {
-    await assertSucceeds(db(UID.trainer).doc('members/m-1').update({ status: 'active' }))
+    // A trainer editing a member's facts. `status` was removed from this
+    // assertion deliberately: it is a server-owned projection field now, and a
+    // trainer — or anyone — writing it from the client is precisely what the
+    // projection-ownership tests below exist to deny.
+    await assertSucceeds(db(UID.trainer).doc('members/m-1').update({ membershipPlanId: 'plan-2' }))
     await assertSucceeds(db(UID.frontDesk).collection('members').add(ownGymDoc({ name: 'New Member' })))
   })
 
@@ -687,5 +691,340 @@ describe('firestore rules — owner gym self-provisioning (onboarding)', () => {
     const ctx = testEnv2.authenticatedContext(uid)
     await assertSucceeds(ctx.firestore().doc(`users/${uid}`).set({ role: 'owner', gymId }))
     await ctx.cleanup()
+  })
+})
+
+// ===========================================================================
+// PROJECTION FIELD OWNERSHIP
+//
+// The member projection (`status`, `membershipStart`, `effectiveExpiry`,
+// `freezeUntil`) is an output of the canonical engine over `memberships` +
+// `membershipFreezes`. It is written by the trusted server writer via the Admin
+// SDK, which does not consult these rules at all.
+//
+// These tests assert the CLIENT side of that boundary. They are the reason the
+// field lists in firestore.rules and functions/projection/sources.js
+// (PROJECTED_FIELDS) must stay in step: if either list grows a field and the
+// other does not, a client can write a value the server believes it owns.
+// ===========================================================================
+// The per-role `members.status` denials and the "legitimate fields stay
+  // writable" guarantees are additionally covered as individually named tests
+  // in tests.emulator/firestoreSecurityRemediation.test.js, with the rationale
+  // for the three obsolete SEC-I assertions in the frozen evidence suite.
+  describe('firestore rules — projection fields are server-owned', () => {
+  // Mirrors PROJECTED_FIELDS in functions/projection/sources.js. `isFrozen` is in
+  // this list because only the engine can see the freeze records: a client that
+  // could set it could put a member in the Frozen filter and show the Frozen badge
+  // without a single membershipFreezes document behind it.
+  const PROJECTION_FIELDS = ['status', 'membershipStart', 'effectiveExpiry', 'freezeUntil', 'isFrozen']
+
+  /** A member whose projection the server has already written. */
+  const PROJECTED = {
+    status: 'expiring',
+    membershipStart: '2026-01-01',
+    effectiveExpiry: '2026-09-01',
+    freezeUntil: null,
+    isFrozen: false,
+  }
+
+  /** The client fields staff must still be able to edit. */
+  const FACTS = {
+    name: 'A Member',
+    phone: '9800000000',
+    notes: 'called about PT',
+    isPT: true,
+    membershipPlanId: 'plan-2',
+    joinDate: '2026-01-01',
+    ptSurchargeOverride: 250,
+  }
+
+  beforeAll(async () => {
+    testEnv = await initializeTestEnvironment({
+      projectId: PROJECT_ID,
+      firestore: { host: HOST, port: PORT, rules },
+    })
+    await seed()
+    await testEnv.withSecurityRulesDisabled(async (ctx) => {
+      const fs = ctx.firestore()
+      // Server-written projections, as the Admin SDK would have left them.
+      await fs.doc('members/proj-1').set({ name: 'Projected', gymId: GYM_A, ...PROJECTED })
+      await fs.doc('members/proj-2').set({ name: 'Never Projected', gymId: GYM_A })
+      // A foreign-tenant member carrying a projection, to prove tenancy and
+      // projection ownership are independent guards.
+      await fs.doc('members/proj-other').set({ name: 'Other', gymId: GYM_B, ...PROJECTED })
+    })
+  })
+
+  afterAll(async () => {
+    await testEnv.cleanup()
+  })
+
+  describe('no client may change a projected value', () => {
+    // Only roles that are otherwise ALLOWED to write this member. If a
+    // cross-tenant or unbound role appeared here, the write would be denied by
+    // tenancy even if the projection guard were deleted, and the test would
+    // still pass — proving nothing. Those cases are covered separately below,
+    // where the reason for the denial is unambiguous.
+    const STAFF = { owner: UID.owner, admin: UID.admin, frontDesk: UID.frontDesk, trainer: UID.trainer }
+
+    for (const [role, uid] of Object.entries(STAFF)) {
+      for (const field of PROJECTION_FIELDS) {
+        it(`denies ${role} changing ${field}`, async () => {
+          const value = field === 'status' ? 'active' : '2026-12-25'
+          await assertFails(db(uid).doc('members/proj-1').update({ [field]: value }))
+        })
+      }
+    }
+
+    it('denies a client setting all four at once', async () => {
+      await assertFails(
+        db(UID.owner).doc('members/proj-1').update({
+          status: 'active',
+          membershipStart: '2020-01-01',
+          effectiveExpiry: '2030-01-01',
+          freezeUntil: '2030-06-01',
+        })
+      )
+    })
+
+    it('denies a client smuggling a projection field in with legitimate edits', async () => {
+      // The realistic attack: hide the projection write inside a normal-looking
+      // profile edit so a reviewer skims past it.
+      await assertFails(db(UID.admin).doc('members/proj-1').update({ ...FACTS, status: 'active' }))
+    })
+
+    it('denies a merge that changes a projected value', async () => {
+      // updateDoc(..., { merge: true }) must not be a way around the invariant.
+      await assertFails(db(UID.admin).doc('members/proj-1').set({ status: 'active' }, { merge: true }))
+    })
+
+    it('denies a client re-asserting the SAME value in a way that also adds another', async () => {
+      // Writing a projection field with its current value is harmless in itself,
+      // and is allowed below. It must not become a carrier for a second change.
+      await assertFails(
+        db(UID.owner).doc('members/proj-1').update({ status: 'expiring', effectiveExpiry: '2030-01-01' })
+      )
+    })
+  })
+
+  describe('no client may initialize a projection on create', () => {
+    const STAFF = { owner: UID.owner, admin: UID.admin, frontDesk: UID.frontDesk, trainer: UID.trainer }
+
+    for (const [role, uid] of Object.entries(STAFF)) {
+      for (const field of PROJECTION_FIELDS) {
+        it(`denies ${role} creating a member with ${field}`, async () => {
+          const value = field === 'status' ? 'active' : '2026-12-25'
+          await assertFails(db(uid).collection('members').add(ownGymDoc({ name: 'Sneaky', [field]: value })))
+        })
+      }
+    }
+
+    it('denies creating a member whose projection is all nulls', async () => {
+      // null is not "no value" to Firestore. Handing the server a pre-nulled
+      // projection is still the client deciding the answer.
+      await assertFails(
+        db(UID.owner).collection('members').add(
+          ownGymDoc({ name: 'Pre-nulled', status: null, membershipStart: null, effectiveExpiry: null, freezeUntil: null })
+        )
+      )
+    })
+
+    it('allows creating a member with no projection fields at all', async () => {
+      // The real client path: MemberForm no longer submits `status`, and the
+      // server derives the projection afterwards.
+      await assertSucceeds(db(UID.frontDesk).collection('members').add(ownGymDoc({ name: 'Legit New' })))
+    })
+
+    it('allows creating a member with client-owned fact fields', async () => {
+      await assertSucceeds(db(UID.frontDesk).collection('members').add(ownGymDoc(FACTS)))
+    })
+  })
+
+  describe('legitimate edits still work', () => {
+    it('allows an owner to edit every client-owned fact field', async () => {
+      await assertSucceeds(db(UID.owner).doc('members/proj-1').update({ ...FACTS }))
+    })
+
+    it('allows front-desk to edit a member', async () => {
+      await assertSucceeds(db(UID.frontDesk).doc('members/proj-1').update({ phone: '9811111111' }))
+    })
+
+    it('allows re-writing a projection field with the value the server already set', async () => {
+      // Harmless, and deliberately permitted: a client that round-trips a whole
+      // document must not start failing. No projection VALUE changes, so the
+      // server's answer still stands.
+      await assertSucceeds(db(UID.owner).doc('members/proj-1').update({ ...PROJECTED }))
+    })
+
+    it('leaves the stored projection untouched after a legitimate edit', async () => {
+      await assertSucceeds(db(UID.owner).doc('members/proj-1').update({ notes: 'checked in' }))
+      let stored
+      await testEnv.withSecurityRulesDisabled(async (ctx) => {
+        const snap = await ctx.firestore().doc('members/proj-1').get()
+        stored = snap.data()
+      })
+      expect(stored.status).toBe('expiring')
+      expect(stored.effectiveExpiry).toBe('2026-09-01')
+      expect(stored.notes).toBe('checked in')
+    })
+
+    it('allows a trainer to set fitness facts on an unprojected member', async () => {
+      await assertSucceeds(db(UID.trainer).doc('members/proj-2').update({ fitnessGoal: 'build muscle' }))
+    })
+
+    it('allows a trainer to backfill an absent plan id but not a projected field', async () => {
+      await assertSucceeds(db(UID.trainer).doc('members/proj-2').update({ membershipPlanId: 'plan-3' }))
+      await assertFails(db(UID.trainer).doc('members/proj-2').update({ status: 'active' }))
+    })
+  })
+
+  describe('the projection guard does not weaken tenancy', () => {
+    it('denies a foreign-gym admin writing a projected member', async () => {
+      await assertFails(db(UID.otherGymAdmin).doc('members/proj-1').update({ status: 'active' }))
+    })
+
+    it('denies an unauthenticated client writing a projection', async () => {
+      await assertFails(db(null).doc('members/proj-1').update({ status: 'active' }))
+    })
+
+    it('denies an unbound (no-gym) admin writing a projection', async () => {
+      await assertFails(db(UID.untagged).doc('members/proj-1').update({ status: 'active' }))
+    })
+
+    it('still denies a foreign-gym admin the ordinary fact edit too', async () => {
+      // Guards against the projection rule accidentally becoming the ONLY thing
+      // being checked, which would mask a tenancy regression.
+      await assertFails(db(UID.otherGymAdmin).doc('members/proj-1').update({ phone: '9800000000' }))
+    })
+
+    it('denies creating a member in a foreign gym with a projection', async () => {
+      await assertFails(
+        db(UID.otherGymAdmin).collection('members').add({ gymId: GYM_B, name: 'X', status: 'active' })
+      )
+    })
+
+    it('denies a foreign-gym admin forging isFrozen on a projected member', async () => {
+      // Tenancy and projection ownership must both hold for the new field: an
+      // `isFrozen` forged from another tenant would put a member in the wrong
+      // gym's Frozen filter as well as inventing a freeze that never existed.
+      await assertFails(db(UID.otherGymAdmin).doc('members/proj-1').update({ isFrozen: true }))
+    })
+
+    it('denies a foreign-gym admin creating a member with isFrozen', async () => {
+      await assertFails(
+        db(UID.otherGymAdmin).collection('members').add({ gymId: GYM_B, name: 'X', isFrozen: true })
+      )
+    })
+  })
+
+  describe('isFrozen cannot be invented without a freeze record', () => {
+    it('denies every role setting isFrozen true on a member with no freeze', async () => {
+      // The whole point of storing the flag server-side: staff cannot mark a
+      // member frozen by hand. If any of these passed, the Frozen filter and the
+      // Frozen badge would both be forgeable from the client.
+      for (const uid of [UID.owner, UID.admin, UID.frontDesk, UID.trainer]) {
+        await assertFails(db(uid).doc('members/proj-2').update({ isFrozen: true }))
+      }
+    })
+
+    it('denies clearing isFrozen as well as setting it', async () => {
+      // A client that could only clear the flag could also hide a real freeze
+      // from staff. Both directions are server-owned.
+      await testEnv.withSecurityRulesDisabled(async (ctx) => {
+        await ctx.firestore().doc('members/frozen-1').set({ name: 'Really Frozen', gymId: GYM_A, ...PROJECTED, isFrozen: true })
+      })
+      for (const uid of [UID.owner, UID.admin, UID.frontDesk]) {
+        await assertFails(db(uid).doc('members/frozen-1').update({ isFrozen: false }))
+      }
+    })
+
+    it('allows an edit that reasserts isFrozen without changing it', async () => {
+      // Same harmless-restatement policy as the other four fields: re-sending the
+      // server's own value alongside a legitimate edit must not fail the save.
+      await assertSucceeds(
+        db(UID.admin).doc('members/frozen-1').update({ isFrozen: true, phone: '9800000009' })
+      )
+      await assertSucceeds(db(UID.owner).doc('members/proj-1').update({ isFrozen: false, name: 'Projected' }))
+    })
+
+    it('allows a legitimate edit on an unprojected member that omits isFrozen', async () => {
+      // The absence case matters: staff editing a member the sweep has not reached
+      // must not be blocked by a field they are not allowed to write.
+      await assertSucceeds(db(UID.owner).doc('members/proj-2').update({ phone: '9800000007' }))
+    })
+
+    it('denies forging isFrozen in the same write as a legitimate change', async () => {
+      await assertFails(db(UID.admin).doc('members/proj-1').update({ phone: '9800000008', isFrozen: true }))
+    })
+
+    it('lets the Frozen filter see only genuine server-written flags', async () => {
+      // The read side of the same guarantee: a client-written member carries no
+      // `isFrozen` at all, so `where('isFrozen', '==', true)` cannot return it.
+      // This is what keeps the staff filter a projection of real freeze records
+      // rather than of whatever a compromised client felt like submitting.
+      const results = await testEnv.authenticatedContext(UID.admin).firestore()
+        .collection('members')
+        .where('isFrozen', '==', true)
+        .get()
+
+      expect(results.docs.map((d) => d.id)).toEqual(['frozen-1'])
+      expect(results.docs[0].data().status).toBe('expiring')
+    })
+
+    it('keeps a frozen member active, since freeze is orthogonal to currency', async () => {
+      // Not a rules assertion but a contract one: `frozen` must not have crept
+      // back in as a status. If it had, this projection could no longer be
+      // active-and-frozen at the same time.
+      const snap = await db(UID.owner).doc('members/frozen-1').get()
+      const stored = snap.data()
+      expect(stored.isFrozen).toBe(true)
+      expect(stored.status).toBe('expiring')
+      expect(['active', 'expiring', 'expired', null]).toContain(stored.status)
+      expect(stored.status).not.toBe('frozen')
+    })
+
+    it('a client cannot make itself appear in the Frozen filter', async () => {
+      // The filter query is the read side of the guarantee. A client that writes
+      // its own `isFrozen` value must not thereby change what the query returns
+      // for staff, so this asserts the attempt fails AND that the admin's
+      // subsequent Frozen query still sees only the server-written member.
+      await assertFails(db(UID.frontDesk).doc('members/proj-2').update({ isFrozen: true }))
+
+      const results = await testEnv.authenticatedContext(UID.owner).firestore()
+        .collection('members')
+        .where('isFrozen', '==', true)
+        .get()
+
+      expect(results.docs.map((d) => d.id).sort()).toEqual(['frozen-1'])
+    })
+
+    })
+
+  describe('client-owned fields that look like projections', () => {
+    it('allows writing members.isPT, which is a fact and not the projected field', async () => {
+      // `isPT` shares a name with a value the engine derives from the current
+      // PERIOD. On the member document it is a separate, staff-editable pricing
+      // attribute. Locking it under the projection guard would break the PT
+      // toggle and the repricing it drives — so this test exists to stop a
+      // future "harmonisation" from silently removing a real capability.
+      await testEnv.withSecurityRulesDisabled(async (ctx) => {
+        await ctx.firestore().doc('members/pt-fact').set({ name: 'PT Fact', gymId: GYM_A })
+      })
+      // A trainer may backfill it once on a member with no financial state.
+      await assertSucceeds(db(UID.trainer).doc('members/pt-fact').update({ isPT: true }))
+      // Having done so, the trainer may no longer alter it. This is the
+      // pre-existing trainer restriction (a financially significant field that
+      // now exists may not be changed), NOT the projection guard — the value
+      // `isPT` holds here was written by a client and is being read back by the
+      // same rule family.
+      await assertFails(db(UID.trainer).doc('members/pt-fact').update({ isPT: false }))
+      // A role holding members.write may change it freely.
+      await assertSucceeds(db(UID.admin).doc('members/pt-fact').update({ isPT: false }))
+      await assertSucceeds(db(UID.owner).doc('members/pt-fact').update({ isPT: true }))
+    })
+
+    it('allows writing members.membershipPlanId and joinDate', async () => {
+      await assertSucceeds(db(UID.owner).doc('members/proj-1').update({ membershipPlanId: 'plan-9', joinDate: '2026-02-01' }))
+    })
   })
 })

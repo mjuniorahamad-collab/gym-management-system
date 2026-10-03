@@ -43,10 +43,42 @@ describe('firestore rules — renewal write path', () => {
     expect(block).toContain('allow create, update: if isFinance()')
   })
 
-  it('lets any staff member update members (renewal links the new period to the member)', () => {
+  it('lets any staff member create and update members (renewal links the new period to the member)', () => {
     const block = extractBlock(rulesText, 'members')
     expect(block).not.toBeNull()
-    expect(block).toContain('allow create, update: if isStaff()')
+    // create and update are declared separately here rather than as one
+    // `allow create, update` clause, because the projection guard needs to
+    // distinguish them: on create the rule asks whether the fields are ABSENT,
+    // on update whether they are UNCHANGED. See the projection-ownership block
+    // of firestore.rules and the emulator tests for the behaviour.
+    expect(block).toContain('allow create: if isStaff()')
+    expect(block).toContain('allow update: if isStaff()')
+    expect(block).toContain('clientCannotWriteProjection()')
+  })
+
+  // Guards the two lists that must never drift apart. PROJECTED_FIELDS is what
+  // the trusted writer persists; the rules list is what clients are denied. If
+  // the writer gains a field and the rules do not, a client can write a value
+  // the server believes it owns, and nothing else in the suite would notice.
+  it('denies clients exactly the fields the server projection owns', () => {
+    const flat = normalize(rulesText)
+    for (const field of ['membershipStart', 'effectiveExpiry', 'freezeUntil', 'status']) {
+      expect(flat, `firestore.rules does not name ${field} as server-owned`).toContain(`'${field}'`)
+    }
+    // A dot-access read of a projection field would be an evaluation ERROR on a
+    // member that predates the projection, which denies rather than evaluates.
+    // Every read must go through get(field, null).
+    expect(flat).toContain("request.resource.data.get('status', null) == resource.data.get('status', null)")
+    expect(flat).not.toMatch(/request\.resource\.data\.status\s*==\s*resource\.data\.status/)
+  })
+
+  it('does not lock isPT, which is a member fact and not the projected field', () => {
+    const flat = normalize(rulesText)
+    // The engine derives an `isPT` from the current PERIOD. On the member
+    // document `isPT` is a separate staff-editable pricing attribute. Treating
+    // it as server-owned would break the PT toggle and the repricing it drives.
+    expect(flat, 'isPT must stay out of the projection guard').not.toMatch(/projectionFieldsAbsent[\s\S]{0,400}'isPT'/)
+    expect(flat, 'isPT must stay out of the projection guard').not.toMatch(/projectionFieldsUnchanged[\s\S]{0,400}'isPT'/)
   })
 
   it('lets staff read/create/update the counters collection (member number sequence)', () => {
@@ -148,9 +180,13 @@ describe('firestore rules — renewal write path', () => {
     const block = extractBlock(rulesText, 'members')
     expect(block).not.toBeNull()
     // isPT travels on the member doc, so the member write path must still be
-    // gated by the tenancy guard to prevent cross-gym toggling.
-    expect(block).toContain('allow create, update: if isStaff()')
-    expect(block).toMatch(/canWriteTenant\(resource\)/)
+    // gated by the tenancy guard to prevent cross-gym toggling. create and
+    // update are separate clauses now; BOTH must keep the tenancy guard, or
+    // splitting them would have quietly dropped it from one of them.
+    expect(block).toContain('allow create: if isStaff()')
+    expect(block).toContain('allow update: if isStaff()')
+    expect(block).toMatch(/allow create: if isStaff\(\)[\s\S]*?canWriteTenant\(resource\)/)
+    expect(block).toMatch(/allow update: if isStaff\(\)[\s\S]*?canWriteTenant\(resource\)/)
   })
 
   it('does not allow gymId to be assigned arbitrarily (must match a provisioned gyms owner)', () => {

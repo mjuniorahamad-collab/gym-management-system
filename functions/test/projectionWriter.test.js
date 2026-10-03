@@ -76,6 +76,7 @@ describe('projection correctness, derived from authoritative sources', () => {
       effectiveExpiry: '2026-07-01',
       freezeUntil: null,
       status: 'active',
+      isFrozen: false,
     })
   })
 
@@ -209,6 +210,11 @@ describe('projection correctness, derived from authoritative sources', () => {
       effectiveExpiry: null,
       freezeUntil: null,
       status: null,
+      // A prepaid future period is not entitlement yet, and a future period is
+      // not a freeze, so a member holding one is explicitly NOT frozen. This is
+      // `false` rather than `null` because the filter `isFrozen == true` must not
+      // match them.
+      isFrozen: false,
     })
   })
 
@@ -263,6 +269,10 @@ describe('trust boundary — the member document is never an input', () => {
       effectiveExpiry: '2099-01-01',
       membershipStart: '1999-01-01',
       freezeUntil: '2099-12-31',
+      // A forged flag with no freeze record behind it. `freezeUntil` alone would
+      // make this member read as frozen for the next 73 years; `isFrozen` has to
+      // be repaired to false because the engine never saw a freeze.
+      isFrozen: true,
     })
     await seedPeriod(uid('period'), GYM_A, memberId, {
       startDate: '2026-06-01',
@@ -274,10 +284,34 @@ describe('trust boundary — the member document is never an input', () => {
     expect(result.fields.effectiveExpiry).toBe('2026-07-01')
     expect(result.fields.membershipStart).toBe('2026-06-01')
     expect(result.fields.freezeUntil).toBe(null)
+    expect(result.fields.isFrozen).toBe(false)
 
     const stored = await readMemberDoc(memberId)
     expect(stored.status).toBe('active')
     expect(stored.effectiveExpiry).toBe('2026-07-01')
+    expect(stored.isFrozen).toBe(false)
+  })
+
+  it('repairs a forged isFrozen=true when a real freeze does cover today', async () => {
+    const memberId = uid('forged-frozen')
+    await seedGym(GYM_A)
+    await seedMember(memberId, GYM_A, { isFrozen: false })
+    const periodId = uid('period')
+    await seedPeriod(periodId, GYM_A, memberId, {
+      startDate: '2026-06-01',
+      expiryDate: '2026-07-01',
+    })
+    await seedFreeze(uid('freeze'), GYM_A, memberId, {
+      periodId,
+      startDate: '2026-06-05',
+      expiryDate: '2026-06-20',
+    })
+
+    // Correct answer, wrong stored value: the sweep must write it.
+    const result = await project(memberId)
+    expect(result.changed).toBe(true)
+    expect(result.fields.isFrozen).toBe(true)
+    expect((await readMemberDoc(memberId)).isFrozen).toBe(true)
   })
 
   it('ignores authoritative documents belonging to another gym', async () => {
@@ -351,6 +385,7 @@ describe('diff-only writes and idempotency', () => {
       membershipStart: '2026-06-01',
       effectiveExpiry: '2026-07-01',
       status: 'active',
+      isFrozen: false,
     })
     await seedPeriod(uid('period'), GYM_A, memberId, {
       startDate: '2026-06-01',
@@ -382,7 +417,11 @@ describe('diff-only writes and idempotency', () => {
   it('treats an absent field and an explicit null as the same answer', async () => {
     const memberId = uid('nullish')
     await seedGym(GYM_A)
-    await seedMember(memberId, GYM_A)
+    // `isFrozen` is seeded, and it is deliberately NOT treated as null: the engine
+    // always produces a real boolean, so "absent" is a missing write rather than a
+    // correct answer. Normalising false to null here would let a forged
+    // `isFrozen: true` survive as null instead of being repaired to false.
+    await seedMember(memberId, GYM_A, { isFrozen: false })
     // A future period: the projection is legitimately all-null.
     await seedPeriod(uid('period'), GYM_A, memberId, {
       startDate: '2026-09-01',
@@ -404,9 +443,21 @@ describe('diff-only writes and idempotency', () => {
     expect((await project(memberId)).changed).toBe(false)
   })
 
+  it('backfills a member whose isFrozen was never written', () => {
+    // A document predating the fifth field, or one the sweep has not reached yet.
+    // `false` must be written because `where('isFrozen', '==', true)` already
+    // excludes absent documents, but writing it makes the member queryable and
+    // stops every future sweep from reporting the same "changed" row forever.
+    const { patch, updated } = diffProjection({}, { membershipStart: null, effectiveExpiry: null, freezeUntil: null, status: null, isFrozen: false })
+    expect(updated).toEqual(['isFrozen'])
+    expect(patch).toEqual({ isFrozen: false })
+  })
+
   it('writes only the fields that actually differ', async () => {
     const memberId = uid('partial')
     await seedGym(GYM_A)
+    // `status: 'active'` is already correct and must not be rewritten; `isFrozen` was
+    // never written at all, so it is a genuine first-time write.
     await seedMember(memberId, GYM_A, { status: 'active' })
     await seedPeriod(uid('period'), GYM_A, memberId, {
       startDate: '2026-06-01',
@@ -414,18 +465,37 @@ describe('diff-only writes and idempotency', () => {
     })
 
     const result = await project(memberId)
-    expect(result.updated.sort()).toEqual(['effectiveExpiry', 'membershipStart'])
+    expect(result.updated.sort()).toEqual(['effectiveExpiry', 'isFrozen', 'membershipStart'])
     expect(result.updated).not.toContain('status')
   })
 })
 
 describe('diffProjection in isolation', () => {
+  // A missing `isFrozen` on the engine result is coerced to false, never left
+  // undefined: an undefined patch value would be dropped by the Admin SDK and the
+  // field would never appear, which is the same as the bug being fixed.
+  it('coerces a missing isFrozen to false rather than leaving it undefined', () => {
+    expect(desiredProjection({ membershipStart: null, effectiveExpiry: null, freezeUntil: null, status: null })).toEqual({
+      membershipStart: null,
+      effectiveExpiry: null,
+      freezeUntil: null,
+      status: null,
+      isFrozen: false,
+    })
+    // A truthy-but-not-true value must not leak through either: the field is a
+    // flag, and `where('isFrozen', '==', true)` requires a real boolean.
+    expect(desiredProjection({ isFrozen: 'yes' }).isFrozen).toBe(false)
+    expect(desiredProjection({ isFrozen: 1 }).isFrozen).toBe(false)
+    expect(desiredProjection({ isFrozen: true }).isFrozen).toBe(true)
+  })
+
   it('reduces a matching pair to an empty patch', () => {
     const desired = desiredProjection({
       membershipStart: '2026-06-01',
       effectiveExpiry: '2026-07-01',
       freezeUntil: null,
       status: 'active',
+      isFrozen: false,
     })
     expect(diffProjection({ ...desired }, desired)).toEqual({ patch: {}, updated: [] })
   })
