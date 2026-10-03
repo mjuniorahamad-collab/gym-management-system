@@ -818,3 +818,147 @@ describe('REM member-number counter self-initialisation', () => {
     await assertFails(client(env, A.owner).doc('counters/rem-counter-legacy').update({ value: 1, gymId: GYM_A }))
   })
 })
+
+// ===========================================================================
+// Renewal transaction payload (real shape from src/services/renewals.js)
+//
+// `renewMembership` writes its period and its payment with raw
+// DocumentReferences inside one transaction, deliberately bypassing the
+// `createDoc` helper that stamps `gymId` on every other client write in the
+// app. That makes the payload shape itself a security-relevant invariant:
+// `canWriteTenant` denies ANY document that does not carry the caller's own
+// gymId, on a create exactly as on an update.
+//
+// Every other suite in this file writes synthetic one-field documents with an
+// explicit gymId, so none of them would notice if a refactor dropped the stamp
+// from the renewal payloads. These cases pin the real field set produced by
+// renewMembership, so that regression fails here — as ALLOWED-vs-DENIED against
+// the real rules — instead of silently breaking renewals in production while
+// every unit test and the rest of this suite stay green.
+//
+// These cases originally landed at the end of the frozen Phase 0.5A evidence
+// file, which broke its SHA-256. The evidence file is a signed artifact whose
+// failing tests ARE the deliverable, so appending to it destroys the audit
+// trail; they live here, in the additive companion, where new evidence belongs.
+//
+// The `...(gymId === undefined ? {} : { gymId })` spread is what makes the
+// unstamped variant genuinely absent the field, rather than present-and-null:
+// `canWriteTenant` tests `'gymId' in request.resource.data`, so a null value
+// would satisfy the `in` check and quietly not model the defect at all.
+// ===========================================================================
+describe('REM renewal transaction payload carries the caller gymId', () => {
+  let env
+
+  /** Mirrors `membershipData` in src/services/renewals.js. */
+  const renewalPeriod = (gymId) => ({
+    memberId: 'rem-sec-o-m',
+    planId: 'rem-sec-o-plan',
+    planName: '3 Months',
+    startDate: '2026-02-01',
+    expiryDate: '2026-05-01',
+    price: 3500,
+    basePrice: 3500,
+    ptSurcharge: 0,
+    isPT: false,
+    freezeTailDays: 0,
+    freezeTailAmount: 0,
+    freezeTailSettledFor: null,
+    totalCharged: 3500,
+    amountPaid: 3500,
+    amountDue: 0,
+    paymentStatus: 'paid',
+    paymentId: 'rem-sec-o-pay',
+    receiptNo: 'HWG-000001',
+    ...(gymId === undefined ? {} : { gymId }),
+  })
+
+  /** Mirrors `paymentData` in src/services/renewals.js. */
+  const renewalPayment = (gymId) => ({
+    memberId: 'rem-sec-o-m',
+    planId: 'rem-sec-o-plan',
+    memberName: 'A Member',
+    planName: '3 Months',
+    amount: 3500,
+    basePrice: 3500,
+    ptSurcharge: 0,
+    freezeTailDays: 0,
+    freezeTailAmount: 0,
+    isPT: false,
+    method: 'Cash',
+    date: '2026-02-01',
+    note: 'Renewal - 3 Months',
+    type: 'renewal',
+    startDate: '2026-02-01',
+    expiryDate: '2026-05-01',
+    paymentStatus: 'paid',
+    membershipId: 'rem-sec-o-ms',
+    receiptNo: 'HWG-000001',
+    ...(gymId === undefined ? {} : { gymId }),
+  })
+
+  beforeAll(async () => {
+    env = await makeEnv()
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      const fs = ctx.firestore()
+      await fs.doc(`gyms/${GYM_A}`).set({ ownerUid: A.owner, name: 'Gym A' })
+      await fs.doc(`gyms/${GYM_B}`).set({ ownerUid: B.owner, name: 'Gym B' })
+      await fs.doc(`users/${A.owner}`).set({ role: 'owner', gymId: GYM_A })
+      await fs.doc(`users/${A.admin}`).set({ role: 'admin', gymId: GYM_A })
+      await fs.doc(`users/${A.frontDesk}`).set({ role: 'front-desk', gymId: GYM_A })
+      await fs.doc(`users/${B.owner}`).set({ role: 'owner', gymId: GYM_B })
+      await fs.doc('members/rem-sec-o-m').set({ name: 'A Member', gymId: GYM_A })
+      await fs.doc('membershipPlans/rem-sec-o-plan').set({
+        name: '3 Months',
+        durationDays: 90,
+        price: 3500,
+        gymId: GYM_A,
+      })
+    })
+  })
+
+  afterAll(async () => env.cleanup())
+
+  it('owner commits the renewal period stamped with its own gymId', async () => {
+    await assertSucceeds(
+      client(env, A.owner).collection('memberships').add(renewalPeriod(GYM_A))
+    )
+  })
+
+  it('owner commits the renewal payment stamped with its own gymId', async () => {
+    await assertSucceeds(client(env, A.owner).collection('payments').add(renewalPayment(GYM_A)))
+  })
+
+  it('admin commits both — the renewal gate is isFinance, so admin qualifies', async () => {
+    const db = client(env, A.admin)
+    await assertSucceeds(db.collection('memberships').add(renewalPeriod(GYM_A)))
+    await assertSucceeds(db.collection('payments').add(renewalPayment(GYM_A)))
+  })
+
+  it('the SAME period with no gymId field at all is denied', async () => {
+    await assertFails(
+      client(env, A.owner).collection('memberships').add(renewalPeriod(undefined))
+    )
+  })
+
+  it('the SAME payment with no gymId field at all is denied', async () => {
+    await assertFails(client(env, A.owner).collection('payments').add(renewalPayment(undefined)))
+  })
+
+  it('a period stamped with the other gym is denied', async () => {
+    await assertFails(client(env, A.owner).collection('memberships').add(renewalPeriod(GYM_B)))
+  })
+
+  it('a payment stamped with the other gym is denied', async () => {
+    await assertFails(client(env, A.owner).collection('payments').add(renewalPayment(GYM_B)))
+  })
+
+  it('front-desk cannot commit the renewal period even correctly stamped', async () => {
+    await assertFails(
+      client(env, A.frontDesk).collection('memberships').add(renewalPeriod(GYM_A))
+    )
+  })
+
+  it('the other gym owner cannot commit a period into Gym A', async () => {
+    await assertFails(client(env, B.owner).collection('memberships').add(renewalPeriod(GYM_A)))
+  })
+})
