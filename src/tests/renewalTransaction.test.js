@@ -248,11 +248,146 @@ describe('renewMembership transaction', () => {
     }
   })
 
-  it('refuses to renew before tenancy is established', async () => {
+it('refuses to renew before tenancy is established', async () => {
     mocks.getGymId.mockReturnValue(null)
     const { renewMembership } = await load()
     // No gym means the per-gym receipt counter cannot be addressed, so the
     // renewal must not silently fall back to a sequential write.
     await expect(renewMembership(renewal())).rejects.toThrow()
+  })
+})
+
+/**
+ * Commit C: the preserved post-expiry portion of a freeze is settled by the next
+ * renewal.
+ *
+ * The property under test is that ONE payment carries both components while the
+ * new PERIOD keeps only its own price. If the tail leaked into `price` the ledger
+ * would bill those days again on every recompute; if it leaked only into the
+ * payment the revenue would be unattributable to anything.
+ */
+describe('renewMembership freeze-tail settlement', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    state.docs = new Map()
+    state.autoCounter = 0
+    mocks.getGymId.mockReturnValue('gym-1')
+    mocks.logAudit.mockResolvedValue(undefined)
+    mocks.getDoc.mockResolvedValue({ exists: () => false, data: () => undefined })
+    state.docs.set('members/m1', { ...member })
+    installTransactionalFirestore()
+  })
+
+  // 3500 / 90 days = 38.888..., so 10 days = 388.888... -> 388.89.
+  const tailBasis = { total: 3500, durationDays: 90 }
+  const withTail = (over = {}) =>
+    renewal({ freezeTailDays: 10, freezeTailBasis: tailBasis, freezeTailSettledFor: 'm-old', paidAmount: 3888.89, ...over })
+
+  it('charges the tail in the same payment as the period', async () => {
+    const { renewMembership } = await load()
+    await renewMembership(withTail())
+
+    const [payment] = rows('payments')
+    expect(payment.amount).toBe(3888.89)
+    expect(payment.freezeTailAmount).toBe(388.89)
+    expect(payment.freezeTailDays).toBe(10)
+  })
+
+  it('keeps the tail OUT of the period price so the ledger cannot re-bill it', async () => {
+    const { renewMembership } = await load()
+    await renewMembership(withTail())
+
+    const [period] = rows('memberships')
+    // This is the load-bearing assertion of the whole design: `price` is what
+    // dues.js keeps billing, so the extension days must never appear in it.
+    expect(period.price).toBe(3500)
+    expect(period.freezeTailAmount).toBe(388.89)
+    expect(period.totalCharged).toBe(3888.89)
+  })
+
+  it('names the period it settled, so the charge is attributable and one-off', async () => {
+    const { renewMembership } = await load()
+    await renewMembership(withTail())
+
+    const [period] = rows('memberships')
+    expect(period.freezeTailSettledFor).toBe('m-old')
+  })
+
+  it('reports both components back without asking the caller to re-derive them', async () => {
+    const { renewMembership } = await load()
+    const result = await renewMembership(withTail())
+
+    expect(result.freezeTail).toEqual({ days: 10, amount: 388.89 })
+    expect(result.totals).toEqual({ periodPrice: 3500, tailAmount: 388.89, total: 3888.89 })
+  })
+
+  it('prices the tail from the frozen period snapshot, not a repriced plan', async () => {
+    const { renewMembership } = await load()
+    // The plan now costs 7000 (doubled). The snapshot says 3500/90, so the tail
+    // must still be 10 days at the original rate.
+    await renewMembership(withTail({ plan: { ...plan, price: 7000 } }))
+
+    const [payment] = rows('payments')
+    expect(payment.freezeTailAmount).toBe(388.89)
+  })
+
+  it('falls back to the granting plan when the period has no price snapshot', async () => {
+    const { renewMembership } = await load()
+    await renewMembership(renewal({ freezeTailDays: 10, freezeTailSettledFor: 'm-old', tailPricePlan: plan, paidAmount: 3888.89 }))
+
+    const [payment] = rows('payments')
+    expect(payment.freezeTailAmount).toBe(388.89)
+  })
+
+  /**
+   * The failure mode this guards: an unpriceable tail resolving to zero would be
+   * a write-off wearing a disguise — the member gets the days, the gym gets
+   * nothing, and nothing in the data says so.
+   */
+  it('refuses the renewal when the tail exists but cannot be priced', async () => {
+    const { renewMembership } = await load()
+    // No snapshot and no granting plan: 10 days of entitlement, no way to value it.
+    await expect(renewMembership(renewal({ freezeTailDays: 10, freezeTailSettledFor: 'm-old' }))).rejects.toThrow(/freeze extension/i)
+
+    expect(rows('memberships')).toHaveLength(0)
+    expect(rows('payments')).toHaveLength(0)
+  })
+
+  it('does not withhold a renewal that has no tail at all', async () => {
+    // The unpriceable guard must be inert in the common case, including when the
+    // granting plan has been deleted - there is nothing to price.
+    const { renewMembership } = await load()
+    await expect(renewMembership(renewal({ freezeTailDays: 0, tailPricePlan: null }))).resolves.toBeTruthy()
+    expect(rows('payments')).toHaveLength(1)
+  })
+
+  it('rolls the whole renewal back when the tail pricing rejects it', async () => {
+    const { renewMembership } = await load()
+    await expect(renewMembership(withTail({ freezeTailBasis: { total: 0, durationDays: 90 } }))).rejects.toThrow()
+
+    // No period, no payment, no member update: the member must not silently
+    // become active on a renewal that never happened.
+    expect(rows('memberships')).toHaveLength(0)
+    expect(state.docs.get('members/m1').status).toBe('expired')
+  })
+
+  it('records the tail in the audit trail so the split survives the fact', async () => {
+    const { renewMembership } = await load()
+    await renewMembership(withTail())
+
+    const [paymentAudit, periodAudit] = mocks.logAudit.mock.calls.map(([e]) => e)
+    expect(paymentAudit.details.freezeTailAmount).toBe(388.89)
+    expect(periodAudit.details.freezeTailAmount).toBe(388.89)
+    expect(periodAudit.details.totalCharged).toBe(3888.89)
+  })
+
+  it('leaves a tail-free period snapshot free of settlement markers', async () => {
+    const { renewMembership } = await load()
+    await renewMembership(renewal())
+
+    const [period] = rows('memberships')
+    expect(period.freezeTailDays).toBe(0)
+    expect(period.freezeTailAmount).toBe(0)
+    expect(period.freezeTailSettledFor).toBeNull()
   })
 })

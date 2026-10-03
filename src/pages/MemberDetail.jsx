@@ -1074,10 +1074,11 @@ export default function MemberDetail() {
         onClose={() => setRenewOpen(false)}
         member={member}
         currentPlan={plan}
-        currentExpiry={expiry}
+currentExpiry={expiry}
         plans={plans.items}
         payments={payments.items}
         memberships={memberships.items}
+        freezes={freezes.items}
         onRenewed={handleRenewed}
         ptSurcharge={ptSurcharge}
       />

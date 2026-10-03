@@ -71,17 +71,35 @@ export function getMembershipPeriod({ currentExpiry, plan, effectiveStartDate } 
  * Single source of truth for a renewal period's payment figures.
  * Due is clamped so it is never negative (same convention as getPaymentSummary).
  *
- * status: 'paid'    when the plan is fully covered
- *         'partial' when a payment was taken but the plan is not fully covered
+ * ## The freeze tail is part of what is charged, but not part of the period price
+ *
+ * `tailAmount` is the preserved post-expiry portion of a freeze. The member is
+ * invoiced for it now, so it belongs in the total they are asked to pay and in
+ * the payment that records the money. It is deliberately NOT folded into the
+ * period's price: the price is what the period itself cost, and `dues.js` prices
+ * a period from its own document. Folding the tail in here would make the ledger
+ * bill those same days a second time on every later recompute.
+ *
+ * The two are reported separately so the caller can settle one amount while
+ * keeping the tail attributable:
+ *
+ *   total    = price + tailAmount   what the member is charged now
+ *   price    the period's own cost, what the ledger will keep billing
+ *
+ * status: 'paid'    when the total is fully covered
+ *         'partial' when a payment was taken but the total is not fully covered
  *         'due'     when nothing was paid yet
  */
-export function getRenewalPaymentSummary({ planPrice, paidAmount } = {}) {
+export function getRenewalPaymentSummary({ planPrice, paidAmount, tailAmount = 0 } = {}) {
   const price = Math.max(0, Number(planPrice) || 0)
+  const rawTail = Number(tailAmount)
+  const tail = Number.isFinite(rawTail) && rawTail > 0 ? rawTail : 0
+  const total = price + tail
   const rawPaid = Number(paidAmount)
   const paid = Number.isFinite(rawPaid) && rawPaid > 0 ? rawPaid : 0
-  const due = Math.max(0, price - paid)
+  const due = Math.max(0, total - paid)
   const status = due === 0 ? 'paid' : paid > 0 ? 'partial' : 'due'
-  return { price, paid, due, status }
+  return { price, tailAmount: tail, total, paid, due, status }
 }
 
 export const PAYMENT_STATUS_LABELS = {

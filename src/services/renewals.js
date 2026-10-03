@@ -2,6 +2,7 @@ import { parseDate, toDateInputValue } from '@/utils/dateHelpers'
 import { collection, doc, runTransaction } from 'firebase/firestore'
 import { gymTodayKey } from '@/utils/gymTime'
 import { getMembershipPeriod, getRenewalPaymentSummary } from '@/utils/renewal'
+import { freezeTailCharge, tailRequiresAttention } from '@/utils/freezeTails'
 import { createDoc, isReady, updateDocById } from './firestore'
 import { db } from '@/firebase'
 import { logAudit } from './audit'
@@ -85,6 +86,12 @@ export async function renewMembership({
   isPT = false,
   ptSurcharge = 0,
   timezone,
+  freezeTailDays = 0,
+  freezeTailBasis,
+  freezeTailSettledFor,
+  tailPricePlan,
+  ptSurchargeOverride,
+  currency = 'INR',
 }) {
   if (!member || !member.id) throw new Error('A valid member is required to renew')
   const { price: basePrice } = requireValidPlan(plan)
@@ -123,7 +130,25 @@ export async function renewMembership({
   const period = getMembershipPeriod({ currentExpiry, plan, effectiveStartDate })
   if (!period) throw new Error('Selected plan has an invalid duration')
 
-  const summary = getRenewalPaymentSummary({ planPrice: price, paidAmount: paid })
+  // The preserved post-expiry portion of a freeze, invoiced now rather than
+  // written off. Priced on the plan the freeze was granted against, so the new
+  // plan's price cannot reprice an old freeze.
+  const tail = freezeTailCharge({
+    tailDays: freezeTailDays,
+    basis: freezeTailBasis || null,
+    plan: tailPricePlan || null,
+    isPT,
+    ptSurcharge,
+    ptSurchargeOverride,
+    currency,
+  })
+  // A tail that exists but cannot be priced must never be silently absorbed: the
+  // member would be granted days and the gym would quietly forgo the money.
+  if (tailRequiresAttention(tail)) {
+    throw new Error(`This renewal has a ${tail.days}-day freeze extension that cannot be priced (${tail.reason}). Restore the original plan or price the extension before renewing.`)
+  }
+
+  const summary = getRenewalPaymentSummary({ planPrice: price, paidAmount: paid, tailAmount: tail.amount })
   const startDate = toDateInputValue(period.startDate)
   const expiryDate = toDateInputValue(period.expiryDate)
 
@@ -133,10 +158,22 @@ export async function renewMembership({
     planName: plan.name,
     startDate,
     expiryDate,
+    // The PERIOD's own cost. The freeze tail is deliberately excluded so the
+    // ledger keeps billing this period for what it cost and never re-bills the
+    // extension days; it is snapshotted separately below for attribution.
     price: summary.price,
     basePrice: baseSnapshot,
     ptSurcharge: addonSnapshot,
     isPT: Boolean(isPT),
+    // Why this period carries the amount it does: the days, the amount, and the
+    // total actually charged. Immutable history, like every other snapshot here.
+    freezeTailDays: tail.days,
+    freezeTailAmount: tail.amount,
+    // Names the period whose extension this renewal settled. This is what stops
+    // the tail being offered again on a later renewal, and it keeps the charge
+    // attributable to the period it was actually owed against.
+    freezeTailSettledFor: freezeTailSettledFor || null,
+    totalCharged: summary.total,
     amountPaid: summary.paid,
     amountDue: summary.due,
     paymentStatus: summary.status,
@@ -152,9 +189,14 @@ export async function renewMembership({
     planId: plan.id,
     memberName: member.name,
     planName: plan.name,
+    // What actually changed hands: the period plus the freeze extension. The
+    // payment is the money record, so the tail belongs here; the period keeps
+    // its own price so the ledger cannot bill the same days twice.
     amount: summary.paid,
     basePrice: baseSnapshot,
     ptSurcharge: addonSnapshot,
+    freezeTailDays: tail.days,
+    freezeTailAmount: tail.amount,
     isPT: Boolean(isPT),
     method,
     date: paymentDate,
@@ -176,13 +218,31 @@ export async function renewMembership({
       action: 'create',
       entity: 'payments',
       entityId: paymentId,
-      details: { member: member.name, amount: summary.paid, renewal: true, paymentDate, membershipStart: startDate },
+      details: {
+        member: member.name,
+        amount: summary.paid,
+        renewal: true,
+        paymentDate,
+        membershipStart: startDate,
+        // Recorded so the two components of one payment stay distinguishable in
+        // the audit trail after the fact.
+        freezeTailDays: tail.days,
+        freezeTailAmount: tail.amount,
+      },
     },
     {
       action: 'create',
       entity: 'memberships',
       entityId: membershipId,
-      details: { member: member.name, plan: plan.name, startDate, expiryDate },
+      details: {
+        member: member.name,
+        plan: plan.name,
+        startDate,
+        expiryDate,
+        freezeTailDays: tail.days,
+        freezeTailAmount: tail.amount,
+        totalCharged: summary.total,
+      },
     },
     {
       action: 'update',
@@ -262,5 +322,9 @@ export async function renewMembership({
   return {
     membership: { id: membershipId, ...membershipData, paymentId, receiptNo },
     payment: { id: paymentId, ...paymentData, membershipId, receiptNo },
+    // Reported so the caller can tell the member what the extension cost without
+    // re-deriving it.
+    freezeTail: { days: tail.days, amount: tail.amount },
+    totals: { periodPrice: summary.price, tailAmount: summary.tailAmount, total: summary.total },
   }
 }

@@ -284,16 +284,171 @@ describe('ledger freezeTails are informational, never a due', () => {
     expect(ledger.freezeTails[0].amount).toBe(roundCurrency((1000 / 30) * 14, 'INR'))
   })
 
-  it('reports an unpriceable tail instead of silently waiving it', () => {
-    const orphanPlan = { ...memberships[0], planId: 'p-gone' }
+  })
+
+/**
+ * A plan document is LIVE. Editing its price changes what every historical period
+ * appears to be worth, so a tail priced off the plan can be repriced after the
+ * fact. The period's own immutable snapshot is the authority instead.
+ */
+describe('a repriced plan cannot change an existing freeze tail', () => {
+  const member = { id: 'm1', name: 'Zaid', membershipPlanId: 'p1', joinDate: '2026-07-01' }
+  const period = {
+    id: 'ms-1',
+    memberId: 'm1',
+    planId: 'p1',
+    startDate: '2026-07-01',
+    expiryDate: '2026-07-31',
+    basePrice: 1000,
+    price: 1000,
+  }
+  const freezes = [{ id: 'f1', kind: 'freeze', memberId: 'm1', periodId: 'ms-1', startDate: '2026-07-20', expiryDate: '2026-08-14' }]
+
+  it('keeps the tail at the period price when the plan is doubled', () => {
+    const original = computeMemberLedger({ member, plans: [MONTHLY], memberships: [period], freezes })
+    const repriced = computeMemberLedger({
+      member,
+      plans: [{ ...MONTHLY, price: 2000 }],
+      memberships: [period],
+      freezes,
+    })
+    expect(original.freezeTails[0].amount).toBe(repriced.freezeTails[0].amount)
+  })
+
+  it('survives the granting plan being deleted entirely', () => {
+    // The snapshot is still readable, so the entitlement is still priceable and
+    // the member is never quietly written off.
+    const ledger = computeMemberLedger({ member, plans: [], memberships: [period], freezes })
+    expect(ledger.freezeTails[0]).toMatchObject({ days: 14, priceable: true, amount: 466.67 })
+  })
+
+  it('includes a PT period snapshot surcharge in the rate', () => {
+    const ptPeriod = { ...period, isPT: true, ptSurcharge: 300 }
+    const ledger = computeMemberLedger({ member, plans: [MONTHLY], memberships: [ptPeriod], freezes, ptSurcharge: 300 })
+    // (1000 + 300) / 30 * 14 = 606.666... -> 606.67
+    expect(ledger.freezeTails[0].amount).toBe(606.67)
+  })
+
+  it('does not leak a PT surcharge onto a period that was not PT', () => {
+    const ledger = computeMemberLedger({ member, plans: [MONTHLY], memberships: [period], freezes, ptSurcharge: 300 })
+    expect(ledger.freezeTails[0].amount).toBe(466.67)
+  })
+
+  it('carries the snapshot on the row so a renewal settles the same number', () => {
+    // Re-deriving the amount at renewal time is how the charge the member is
+    // shown and the charge they are billed drift apart.
+    const ledger = computeMemberLedger({ member, plans: [MONTHLY], memberships: [period], freezes })
+    const [tail] = ledger.freezeTails
+    expect(tail.basis).toEqual({ total: 1000, durationDays: 30 })
+    const fromBasis = freezeTailCharge({ tailDays: tail.days, basis: tail.basis, plan: MONTHLY })
+    expect(fromBasis.amount).toBe(tail.amount)
+  })
+
+  it('falls back to the live plan only when the period has no price snapshot', () => {
+    const legacy = { id: 'ms-1', memberId: 'm1', planId: 'p1', startDate: '2026-07-01', expiryDate: '2026-07-31' }
+    const ledger = computeMemberLedger({ member, plans: [MONTHLY], memberships: [legacy], freezes })
+    expect(ledger.freezeTails[0]).toMatchObject({ priceable: true, amount: 466.67 })
+  })
+})
+
+/**
+ * A tail is a one-off charge against the period it is anchored to. Once a renewal
+ * has settled it, reporting it again would show the member owing money already
+ * taken.
+ */
+describe('a settled freeze tail is not offered again', () => {
+  const member = { id: 'm1', name: 'Zaid', membershipPlanId: 'p1', joinDate: '2026-07-01' }
+  const oldPeriod = {
+    id: 'ms-1',
+    memberId: 'm1',
+    planId: 'p1',
+    startDate: '2026-07-01',
+    expiryDate: '2026-07-31',
+    basePrice: 1000,
+    price: 1000,
+  }
+  const freezes = [{ id: 'f1', kind: 'freeze', memberId: 'm1', periodId: 'ms-1', startDate: '2026-07-20', expiryDate: '2026-08-14' }]
+
+  it('marks the tail settled when a later renewal names the period', () => {
+    const renewalPeriod = {
+      id: 'ms-2',
+      memberId: 'm1',
+      planId: 'p1',
+      startDate: '2026-08-15',
+      expiryDate: '2026-09-14',
+      basePrice: 1000,
+      freezeTailDays: 14,
+      freezeTailAmount: 466.67,
+      freezeTailSettledFor: 'ms-1',
+    }
+    const ledger = computeMemberLedger({ member, plans: [MONTHLY], memberships: [oldPeriod, renewalPeriod], freezes })
+    const oldTail = ledger.freezeTails.find((t) => t.membershipId === 'ms-1')
+    expect(oldTail.settledAt).toBe('2026-08-15')
+  })
+
+  it('leaves an unsettled tail marked as such', () => {
+    const ledger = computeMemberLedger({ member, plans: [MONTHLY], memberships: [oldPeriod], freezes })
+    expect(ledger.freezeTails[0].settledAt).toBeNull()
+  })
+
+  it('never changes the totals, because a tail was never a due to begin with', () => {
+    const renewalPeriod = {
+      id: 'ms-2',
+      memberId: 'm1',
+      planId: 'p1',
+      startDate: '2026-08-15',
+      expiryDate: '2026-09-14',
+      basePrice: 1000,
+      freezeTailSettledFor: 'ms-1',
+    }
+    const settled = computeMemberLedger({ member, plans: [MONTHLY], memberships: [oldPeriod, renewalPeriod], freezes })
+    const before = computeMemberLedger({ member, plans: [MONTHLY], memberships: [oldPeriod], freezes })
+    expect(settled.totals).toEqual(before.totals)
+  })
+
+  it('still prices the tail after settlement, for the record', () => {
+    // Settlement is a display/charging concern, not a deletion: the amount that
+    // was paid still has to be readable on the history row.
+    const renewalPeriod = {
+      id: 'ms-2',
+      memberId: 'm1',
+      planId: 'p1',
+      startDate: '2026-08-15',
+      expiryDate: '2026-09-14',
+      basePrice: 1000,
+      freezeTailSettledFor: 'ms-1',
+    }
+    const ledger = computeMemberLedger({ member, plans: [MONTHLY], memberships: [oldPeriod, renewalPeriod], freezes })
+    expect(ledger.freezeTails[0].amount).toBe(466.67)
+  })
+})
+
+describe('reports an unpriceable tail instead of silently waiving it', () => {
+  const member = { id: 'm1', name: 'Zaid', membershipPlanId: 'p1', joinDate: '2026-07-01' }
+  const plans = [MONTHLY]
+  const freezes = [{ id: 'f1', kind: 'freeze', memberId: 'm1', periodId: 'ms-1', startDate: '2026-07-20', expiryDate: '2026-08-14' }]
+
+  it('flags a period with neither a price snapshot nor an existing plan', () => {
+    // The one case where a tail genuinely cannot be valued. It must surface with
+    // a reason rather than resolving to a zero charge, which would hand the member
+    // paid-for days for free and record nothing about the shortfall.
+    const orphanPlan = { id: 'ms-1', memberId: 'm1', planId: 'p-gone', startDate: '2026-07-01', expiryDate: '2026-07-31' }
     const ledger = computeMemberLedger({
       member,
-      plans, // monthly plan still exists, but the PERIOD references a missing one
+      plans,
       memberships: [orphanPlan],
       freezes,
     })
     expect(ledger.freezeTails).toHaveLength(1)
     expect(ledger.freezeTails[0]).toMatchObject({ days: 14, priceable: false, amount: 0 })
     expect(ledger.freezeTails[0].reason).toBe(TAIL_UNPRICEABLE.NO_PLAN)
+  })
+
+  it('stays priceable when only the plan is missing, because the period recorded its own cost', () => {
+    // The delete-a-plan case must not become a silent write-off: the period's
+    // snapshot is enough to value the extension.
+    const orphanPlan = { id: 'ms-1', memberId: 'm1', planId: 'p-gone', startDate: '2026-07-01', expiryDate: '2026-07-31', basePrice: 1000 }
+    const ledger = computeMemberLedger({ member, plans, memberships: [orphanPlan], freezes })
+    expect(ledger.freezeTails[0]).toMatchObject({ days: 14, priceable: true, amount: 466.67 })
   })
 })

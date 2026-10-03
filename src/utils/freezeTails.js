@@ -31,17 +31,42 @@ export const TAIL_UNPRICEABLE = {
 }
 
 /**
+ * A period's own immutable price/duration pair, used to value its tail.
+ *
+ * This exists because a plan document is LIVE: editing its price changes what
+ * every historical period appears to be worth. A freeze is a historical fact, so
+ * the rate it is settled at has to come from the period it belongs to, not from
+ * whatever the plan costs today. `{ total, durationDays }` carries the period's
+ * already-committed money and its actual length, both of which stay readable even
+ * after the plan is renamed, repriced, or deleted.
+ */
+function rateFromBasis(basis) {
+  const total = Number(basis?.total)
+  const duration = Number(basis?.durationDays)
+  if (!Number.isFinite(duration) || duration <= 0) {
+    return { rate: 0, priceable: false, reason: TAIL_UNPRICEABLE.NO_DURATION }
+  }
+  if (!(total > 0)) {
+    return { rate: 0, priceable: false, reason: TAIL_UNPRICEABLE.NO_PRICE }
+  }
+  return { rate: total / duration, priceable: true, reason: '' }
+}
+
+/**
  * The daily rate a plan is worth, PT-inclusive where applicable.
  *
- * Uses `getMembershipCharge` - the single source of truth for PT pricing - so the
- * tail cannot be valued differently from the period it extends. A PT member's
- * daily rate therefore includes their surcharge; a regular member's does not, and
- * a stale per-gym surcharge can never leak onto a regular member here any more
- * than it can anywhere else.
+ * `basis` (a period's immutable snapshot) wins when supplied. Otherwise this
+ * falls back to `getMembershipCharge` - the single source of truth for PT pricing
+ * - so the tail cannot be valued differently from the period it extends. A PT
+ * member's daily rate therefore includes their surcharge; a regular member's does
+ * not, and a stale per-gym surcharge can never leak onto a regular member here any
+ * more than it can anywhere else.
  *
  * @returns {{ rate: number, priceable: boolean, reason: string }}
  */
-export function planDailyRate({ plan, isPT = false, ptSurcharge = 0, ptSurchargeOverride } = {}) {
+export function planDailyRate({ plan, basis, isPT = false, ptSurcharge = 0, ptSurchargeOverride } = {}) {
+  if (basis) return rateFromBasis(basis)
+
   if (!plan) return { rate: 0, priceable: false, reason: TAIL_UNPRICEABLE.NO_PLAN }
 
   const duration = Number(plan.durationDays)
@@ -58,6 +83,50 @@ export function planDailyRate({ plan, isPT = false, ptSurcharge = 0, ptSurcharge
 }
 
 /**
+ * Build a period's immutable pricing basis from the snapshots the period carries.
+ *
+ * `basePrice` + `ptSurcharge` is what the member actually committed to; the plan
+ * supplies only the length. A legacy period without a base snapshot falls back to
+ * `price`, and only then to the live plan - the fallback order is deliberate so
+ * pre-existing documents stay priceable without trusting a live price where a
+ * snapshot exists.
+ *
+ * @returns {{ total: number, durationDays: number } | null}
+ */
+export function pricingBasisForPeriod(period, plan) {
+  const isPT = Boolean(period?.isPT)
+  const base = Number(period?.basePrice ?? period?.price)
+  const addon = isPT ? Number(period?.ptSurcharge ?? 0) : 0
+  const total = Number.isFinite(base) && Number.isFinite(addon) ? base + addon : NaN
+
+  // Duration preference order: an explicit snapshot, the period's own start/end
+  // dates, then the live plan. The dates come before the plan deliberately - a
+  // period's length is fixed the day it is bought, and survives its plan being
+  // shortened, renamed or deleted.
+  const duration =
+    Number(period?.durationDays) > 0
+      ? Number(period.durationDays)
+      : periodDayCount(period) || Number(plan?.durationDays)
+
+  if (!(total > 0) || !Number.isFinite(duration) || duration <= 0) return null
+  return { total, durationDays: duration }
+}
+
+/**
+ * A period's own length in days, from the dates it was written with.
+ *
+ * @returns {number} 0 when either date is missing or unreadable.
+ */
+function periodDayCount(period) {
+  const start = period?.startDate
+  const expiry = period?.expiryDate
+  if (!start || !expiry) return 0
+  const ms = new Date(expiry).getTime() - new Date(start).getTime()
+  if (!Number.isFinite(ms) || ms <= 0) return 0
+  return Math.round(ms / 86400000)
+}
+
+/**
  * Price a freeze tail.
  *
  * The rate is captured from the plan the freeze was GRANTED against, passed in by
@@ -67,7 +136,10 @@ export function planDailyRate({ plan, isPT = false, ptSurcharge = 0, ptSurcharge
  *
  * @param {object} args
  * @param {number} args.tailDays         Days past the original expiry.
- * @param {object} args.plan             The plan the freeze was granted against.
+ * @param {object} [args.basis]          The period's immutable price/duration
+ *                                       snapshot. Preferred over `plan`.
+ * @param {object} [args.plan]           The plan the freeze was granted against,
+ *                                       used when no snapshot is available.
  * @param {boolean} [args.isPT]
  * @param {number} [args.ptSurcharge]
  * @param {number} [args.ptSurchargeOverride]
@@ -78,13 +150,14 @@ export function planDailyRate({ plan, isPT = false, ptSurcharge = 0, ptSurcharge
 export function freezeTailCharge({
   tailDays = 0,
   plan,
+  basis,
   isPT = false,
   ptSurcharge = 0,
   ptSurchargeOverride,
   currency = 'INR',
 } = {}) {
   const days = Math.max(0, Math.trunc(Number(tailDays) || 0))
-  const { rate, priceable, reason } = planDailyRate({ plan, isPT, ptSurcharge, ptSurchargeOverride })
+  const { rate, priceable, reason } = planDailyRate({ plan, basis, isPT, ptSurcharge, ptSurchargeOverride })
 
   if (!priceable) {
     return { days, dailyRate: 0, amount: 0, priceable: false, reason, currency }

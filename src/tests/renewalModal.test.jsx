@@ -75,6 +75,140 @@ describe('RenewalModal', () => {
     expect(screen.getByRole('button', { name: /renew & charge/i })).toBeDisabled()
   })
 
+  /**
+   * Commit C, from the staff side: the preserved extension days must be visible as
+   * their own line and passed to the service as days - never folded into the plan
+   * price, which is what the ledger keeps billing.
+   */
+  describe('freeze extension on a renewal', () => {
+    // Period priced 1000 over 30 days; the freeze runs 14 days past its expiry.
+    const FROZEN_PERIOD = {
+      id: 'ms-old',
+      memberId: 'm1',
+      planId: 'p1',
+      startDate: '2026-07-01',
+      expiryDate: '2026-07-31',
+      basePrice: 1000,
+      price: 1000,
+    }
+    const CROSSING_FREEZE = [
+      { id: 'f1', kind: 'freeze', memberId: 'm1', periodId: 'ms-old', startDate: '2026-07-20', expiryDate: '2026-08-14' },
+    ]
+
+    it('shows the extension as a separate line, not inside the plan price', () => {
+      renderModal({ memberships: [FROZEN_PERIOD], freezes: CROSSING_FREEZE })
+
+      const row = screen.getByText(/Freeze extension — 14 days/i).closest('div')
+      // 1000/30 * 14 = 466.666... -> 466.67
+      expect(row.textContent).toContain(formatCurrency(466.67, 'INR'))
+      // The plan line stays at the plan price; that separation is what keeps the
+      // ledger from billing the extension again.
+      expect(screen.getByText('Membership plan — base price').closest('div').textContent).toContain(formatCurrency(3500, 'INR'))
+    })
+
+    it('passes the extension days and the settling period to the service', async () => {
+      const user = userEvent.setup()
+      renderModal({ memberships: [FROZEN_PERIOD], freezes: CROSSING_FREEZE })
+
+      await user.selectOptions(screen.getAllByRole('combobox')[0], 'p1')
+      fireEvent.submit(screen.getByRole('form', { name: 'Renewal form' }))
+      await waitFor(() => expect(renewMembership).toHaveBeenCalledTimes(1))
+
+      expect(renewMembership).toHaveBeenCalledWith(
+        expect.objectContaining({ freezeTailDays: 14, freezeTailSettledFor: 'ms-old' })
+      )
+    })
+
+    it('includes the extension in the amount payable now', () => {
+      renderModal({ memberships: [FROZEN_PERIOD], freezes: CROSSING_FREEZE })
+      const totalRow = screen.getByText('Total amount payable now').closest('div')
+      // 3500 + 466.67
+      expect(totalRow.textContent).toContain(formatCurrency(3966.67, 'INR'))
+    })
+
+    it('never offers a tail that a later renewal already settled', () => {
+      // An early, forward-dated renewal settles the extension up front: it creates a
+      // future period that records `freezeTailSettledFor`, while the current period
+      // is still the one a subsequent renewal replaces. Reopening the modal must
+      // not offer money as owing that has already been taken, and that has to
+      // survive a reload because the marker lives on the period.
+      const SETTLED = {
+        id: 'ms-new',
+        memberId: 'm1',
+        planId: 'p1',
+        startDate: '2026-08-15',
+        expiryDate: '2026-09-14',
+        basePrice: 1000,
+        freezeTailSettledFor: 'ms-old',
+      }
+      renderModal({
+        memberships: [FROZEN_PERIOD, SETTLED],
+        freezes: CROSSING_FREEZE,
+        currentExpiry: new Date(2026, 6, 31),
+      })
+      expect(screen.queryByText(/Freeze extension/i)).not.toBeInTheDocument()
+    })
+
+    it('still offers the extension when the settling period is a different one', async () => {
+      // Control for the test above: the same documents WITHOUT the settlement
+      // marker must still show the extension, so the absence above is the marker
+      // doing the work and not the modal simply failing to find a tail.
+      const user = userEvent.setup()
+      renderModal({
+        memberships: [FROZEN_PERIOD, { id: 'ms-new', memberId: 'm1', planId: 'p1', startDate: '2026-08-15', expiryDate: '2026-09-14', basePrice: 1000 }],
+        freezes: CROSSING_FREEZE,
+        currentExpiry: new Date(2026, 6, 31),
+      })
+      await user.selectOptions(screen.getAllByRole('combobox')[0], 'p1')
+      fireEvent.submit(screen.getByRole('form', { name: 'Renewal form' }))
+      await waitFor(() => expect(renewMembership).toHaveBeenCalledTimes(1))
+      expect(renewMembership).toHaveBeenCalledWith(expect.objectContaining({ freezeTailDays: 14 }))
+    })
+
+    it('shows nothing extra for a member with no freeze', () => {
+      renderModal({ memberships: [FROZEN_PERIOD], freezes: [] })
+      expect(screen.queryByText(/Freeze extension/i)).not.toBeInTheDocument()
+    })
+
+    it('blocks the renewal when the extension exists but cannot be priced', () => {
+      // No price snapshot and the granting plan is gone: charging nothing would
+      // hand over paid-for days for free and record no shortfall anywhere.
+      const unpriceable = { ...FROZEN_PERIOD, basePrice: undefined, price: undefined, planId: 'p-gone' }
+      renderModal({ memberships: [unpriceable], freezes: CROSSING_FREEZE })
+
+      expect(screen.getByRole('alert')).toHaveTextContent(/cannot be priced/i)
+      expect(screen.getByRole('button', { name: /renew & charge/i })).toBeDisabled()
+    })
+
+    it('does not submit while the extension is unpriceable', () => {
+      const unpriceable = { ...FROZEN_PERIOD, basePrice: undefined, price: undefined, planId: 'p-gone' }
+      renderModal({ memberships: [unpriceable], freezes: CROSSING_FREEZE })
+      fireEvent.submit(screen.getByRole('form', { name: 'Renewal form' }))
+      expect(renewMembership).not.toHaveBeenCalled()
+    })
+
+    it('settles only the period this renewal replaces, not every outstanding tail', async () => {
+      // An older period can also carry a tail. Charging both here would bill for
+      // days the older period never granted this renewal.
+      const older = { ...FROZEN_PERIOD, id: 'ms-ancient', startDate: '2026-01-01', expiryDate: '2026-01-31' }
+      const olderFreeze = [
+        ...CROSSING_FREEZE,
+        { id: 'f2', kind: 'freeze', memberId: 'm1', periodId: 'ms-ancient', startDate: '2026-01-20', expiryDate: '2026-02-10' },
+      ]
+      const user = userEvent.setup()
+      renderModal({ memberships: [older, FROZEN_PERIOD], freezes: olderFreeze })
+
+      await user.selectOptions(screen.getAllByRole('combobox')[0], 'p1')
+      fireEvent.submit(screen.getByRole('form', { name: 'Renewal form' }))
+      await waitFor(() => expect(renewMembership).toHaveBeenCalledTimes(1))
+
+      // Only ms-old's tail is settled, and only its days are charged.
+      expect(renewMembership).toHaveBeenCalledWith(
+        expect.objectContaining({ freezeTailDays: 14, freezeTailSettledFor: 'ms-old' })
+      )
+    })
+  })
+
   it('shows the effective start and new expiry dates', () => {
     renderModal()
     // Previous expiry is 2026-01-01 and is the default effective start.

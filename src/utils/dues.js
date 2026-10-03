@@ -1,7 +1,7 @@
-import { addDays, parseDate } from './dateHelpers'
+import { addDays, parseDate, toDateInputValue } from './dateHelpers'
 import { safePaymentAmount } from './payments'
 import { getMembershipCharge } from './pt'
-import { freezeTailCharge } from './freezeTails'
+import { freezeTailCharge, pricingBasisForPeriod } from './freezeTails'
 import { freezeTailDays } from './membershipFreezes'
 
 /**
@@ -47,6 +47,28 @@ function implicitPeriodPrice({ plan, member, ptSurcharge, ptSurchargeOverride })
 function periodStatus({ dueAmount, totalPaid }) {
   if (dueAmount === 0) return 'paid'
   return totalPaid > 0 ? 'partial' : 'due'
+}
+
+/**
+ * A period document's immutable financial snapshots, carried onto the computed
+ * ledger row.
+ *
+ * These are deliberately NOT derived from the live plan. `basePrice`,
+ * `ptSurcharge` and `isPT` record what the member actually committed to on the day
+ * they bought the period, and `freezeTailSettledFor` records which earlier period's
+ * extension this renewal already paid for. Anything recomputed from a plan document
+ * can change when an owner edits that plan, which would silently rewrite history
+ * that has already been charged.
+ */
+function periodSnapshots(doc) {
+  return {
+    basePrice: Number(doc?.basePrice) || undefined,
+    ptSurcharge: Number(doc?.ptSurcharge) || undefined,
+    isPT: doc?.isPT,
+    freezeTailDays: doc?.freezeTailDays,
+    freezeTailAmount: doc?.freezeTailAmount,
+    freezeTailSettledFor: doc?.freezeTailSettledFor || null,
+  }
 }
 
 /**
@@ -220,6 +242,10 @@ export function computeMemberLedger({
         expiryDate: parseDate(doc.expiryDate),
         price: periodPrice(doc),
         implicit: false,
+        // The document's own immutable financial snapshots, carried through so
+        // downstream pricing never has to reach back to a live plan. `price` above
+        // is the derived, payable figure; these are what the member committed to.
+        ...periodSnapshots(doc),
       })
     }
   }
@@ -287,6 +313,19 @@ export function computeMemberLedger({
 function summariseFreezeTails({ periods, freezes, plans, member, ptSurcharge, ptSurchargeOverride }) {
   if (!Array.isArray(freezes) || freezes.length === 0) return []
 
+  // Tails already paid. A renewal records `freezeTailSettledFor` naming the period
+  // whose extension it charged, so the charge is attributable AND not re-offered.
+  // Reading it back from the renewal history means this stays correct even if the
+  // renewal that settled the tail is not the newest period.
+  const settledTailKeys = new Map()
+  for (const p of periods) {
+    const settledFor = p?.freezeTailSettledFor
+    if (!settledFor) continue
+    const prev = settledTailKeys.get(settledFor)
+    const stamp = toDateInputValue(parseDate(p.startDate))
+    if (!prev || stamp < prev) settledTailKeys.set(settledFor, stamp)
+  }
+
   const out = []
   for (const period of periods) {
     if (!period?.id) continue
@@ -295,24 +334,38 @@ function summariseFreezeTails({ periods, freezes, plans, member, ptSurcharge, pt
     const days = freezeTailDays({ ...period, memberId: member?.id }, freezes)
     if (days <= 0) continue
 
-    // Priced from the plan the freeze was GRANTED against, which is the plan the
-    // period itself was bought on - never the member's current plan.
+    // Priced from the period the tail belongs to - never the member's current
+    // plan. The period's own immutable price snapshot wins over the live plan
+    // document, so editing a plan's price cannot silently reprice a freeze that
+    // was already granted.
     const plan = plans.find((p) => String(p.id) === String(period.planId)) || null
+    const isPT = period.isPT ?? member?.isPT ?? false
+    const basis = pricingBasisForPeriod(period, plan)
     const charge = freezeTailCharge({
       tailDays: days,
+      basis,
       plan,
-      isPT: period.isPT ?? member?.isPT ?? false,
+      isPT,
       ptSurcharge,
       ptSurchargeOverride: ptSurchargeOverride ?? period.ptSurcharge ?? member?.ptSurchargeOverride,
     })
 
     out.push({
       membershipId: period.id,
+      // Carried so a renewal can settle the tail on the same terms the ledger
+      // showed, instead of re-deriving them and risking a different number.
+      planId: period.planId,
+      isPT: period.isPT,
+      basis,
       label: 'Freeze extension',
       days: charge.days,
       amount: charge.amount,
       priceable: charge.priceable,
       reason: charge.reason,
+      // Set once a later renewal has settled this tail. A period's tail is a
+      // one-off charge against that period; after it is billed, reporting it again
+      // would show the member owing money already taken.
+      settledAt: settledTailKeys.get(period.id) || null,
     })
   }
   return out

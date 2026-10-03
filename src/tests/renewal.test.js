@@ -150,6 +150,8 @@ describe('getRenewalPaymentSummary', () => {
   it('full payment → paid, nothing due', () => {
     expect(getRenewalPaymentSummary({ planPrice: 3500, paidAmount: 3500 })).toEqual({
       price: 3500,
+      tailAmount: 0,
+      total: 3500,
       paid: 3500,
       due: 0,
       status: 'paid',
@@ -159,6 +161,8 @@ describe('getRenewalPaymentSummary', () => {
   it('partial payment → partial, remaining due', () => {
     expect(getRenewalPaymentSummary({ planPrice: 3500, paidAmount: 2000 })).toEqual({
       price: 3500,
+      tailAmount: 0,
+      total: 3500,
       paid: 2000,
       due: 1500,
       status: 'partial',
@@ -168,10 +172,42 @@ describe('getRenewalPaymentSummary', () => {
   it('zero payment → due, full amount due', () => {
     expect(getRenewalPaymentSummary({ planPrice: 3500, paidAmount: 0 })).toEqual({
       price: 3500,
+      tailAmount: 0,
+      total: 3500,
       paid: 0,
       due: 3500,
       status: 'due',
     })
+  })
+
+  /**
+   * The tail is charged now but is NOT the period's price. Keeping `price` clean
+   * is what stops the ledger billing the same extension days again on every
+   * recompute, so this distinction is asserted rather than assumed.
+   */
+  it('a tail raises the total charged without entering the period price', () => {
+    expect(getRenewalPaymentSummary({ planPrice: 3500, tailAmount: 200, paidAmount: 3700 })).toEqual({
+      price: 3500,
+      tailAmount: 200,
+      total: 3700,
+      paid: 3700,
+      due: 0,
+      status: 'paid',
+    })
+  })
+
+  it('paying only the period price leaves the tail outstanding', () => {
+    // Guards against a partial payment on the period silently writing the
+    // extension off: the due amount has to still include it.
+    const s = getRenewalPaymentSummary({ planPrice: 3500, tailAmount: 200, paidAmount: 3500 })
+    expect(s.status).toBe('partial')
+    expect(s.due).toBe(200)
+    expect(s.price).toBe(3500)
+  })
+
+  it('negative or junk tail values are ignored rather than reducing the charge', () => {
+    expect(getRenewalPaymentSummary({ planPrice: 3500, tailAmount: -500, paidAmount: 0 }).total).toBe(3500)
+    expect(getRenewalPaymentSummary({ planPrice: 3500, tailAmount: 'x', paidAmount: 0 }).total).toBe(3500)
   })
 
   it('overpayment clamps due to 0', () => {

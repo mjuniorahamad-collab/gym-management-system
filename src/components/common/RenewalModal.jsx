@@ -17,6 +17,7 @@ import { toDateInputValue } from '@/utils/dateHelpers'
 import { formatCurrency, formatDate } from '@/utils/formatters'
 import { computeMemberLedger } from '@/utils/dues'
 import { getMembershipCharge } from '@/utils/pt'
+import { freezeTailCharge, tailRequiresAttention } from '@/utils/freezeTails'
 import {
   getMembershipPeriod,
   getRenewalPaymentSummary,
@@ -40,7 +41,7 @@ function defaultsFor(currentPlan) {
   }
 }
 
-export function RenewalModal({ open, onClose, member, currentPlan, currentExpiry, plans, payments = [], memberships = [], onRenewed, ptSurcharge = 0 }) {
+export function RenewalModal({ open, onClose, member, currentPlan, currentExpiry, plans, payments = [], memberships = [], freezes = [], onRenewed, ptSurcharge = 0 }) {
   const toast = useToast()
   const { settings, timezone } = useSettings()
   const {
@@ -113,15 +114,109 @@ export function RenewalModal({ open, onClose, member, currentPlan, currentExpiry
             plans,
             payments,
             memberships,
+            freezes,
             ptSurcharge,
             ptSurchargeOverride: member?.ptSurchargeOverride,
           })
         : null,
-    [member, plans, payments, memberships, ptSurcharge]
+    [member, plans, payments, memberships, freezes, ptSurcharge]
   )
 
   const previousDue = ledger?.totals.due || 0
   const targetMembershipId = ledger?.targetMembershipId
+
+  /**
+   * The period this renewal actually replaces.
+   *
+   * `targetMembershipId` is the OLDEST unpaid period, which is the right target
+   * for a previous-balance collection but the wrong one for a freeze tail: a
+   * renewal extends from the member's CURRENT expiry, so it is the latest period
+   * whose tail is being settled. Matching on `currentExpiry` is what ties the two
+   * together, and it matters whenever an older period is still unpaid - otherwise
+   * this renewal would bill an extension for a period it does not replace.
+   */
+  const replacedPeriodId = useMemo(() => {
+    const periods = ledger?.periods
+    if (!Array.isArray(periods) || periods.length === 0) return null
+    if (currentExpiry) {
+      // Compared as calendar dates, not instants. A period's expiry is stored as a
+      // date-only value and a `new Date('2026-07-31')` lands on UTC midnight, while
+      // `new Date(2026, 6, 31)` is local midnight - the same day, different instants.
+      // Matching instants would miss every period.
+      const expiryKey = toDateInputValue(currentExpiry)
+      const match = periods.find((p) => p.id && toDateInputValue(p.expiryDate) === expiryKey)
+      if (match) return match.id
+    }
+    // No usable expiry to match (a member with no current membership): the latest
+    // recorded period is the one a renewal would be replacing.
+    const recorded = periods.filter((p) => p.id && !p.implicit)
+    if (recorded.length === 0) return null
+    return recorded[recorded.length - 1].id
+  }, [ledger, currentExpiry])
+
+  /**
+   * The freeze extension owed on this renewal, taken from the ledger's tails.
+   *
+   * A tail is a one-off charge against the period it is anchored to, so only the
+   * period this renewal replaces may be settled, and a tail an earlier renewal
+   * already paid for is never offered again. `settledAt` is what makes that
+   * survive a reload: the marker lives on the period, not in component state.
+   */
+  const chargeableTails = useMemo(() => {
+    const tails = ledger?.freezeTails
+    if (!Array.isArray(tails) || tails.length === 0) return []
+    // Already paid - by an earlier renewal, recorded on the period that settled it.
+    const unpaid = tails.filter((t) => !t.settledAt)
+    // Tails anchored to other periods belong to those periods. Settling them here
+    // would charge for extension days this renewal does not grant.
+    if (replacedPeriodId == null) return unpaid
+    return unpaid.filter((t) => String(t.membershipId) === String(replacedPeriodId))
+  }, [ledger, replacedPeriodId])
+
+  // The period whose extension this renewal pays for, recorded on the new period
+  // so the charge is attributable and cannot be offered a second time.
+  const tailSettledFor = chargeableTails[0]?.membershipId || null
+
+  const tailDays = useMemo(
+    () => chargeableTails.reduce((sum, t) => sum + (Number(t.days) || 0), 0),
+    [chargeableTails]
+  )
+
+  // The plan the charged tail was granted against. Resolved from the tail's own
+  // period so the extension is never repriced at the plan being renewed onto.
+  const tailGrantPlan = useMemo(() => {
+    const first = chargeableTails[0]
+    if (!first) return null
+    return plans.find((p) => String(p.id) === String(first.planId)) || null
+  }, [chargeableTails, plans])
+
+  // The tail period's own price/duration snapshot, carried on the ledger row.
+  // Preferred over the live plan so a price edit after the freeze cannot change
+  // what this renewal charges.
+  const tailBasis = useMemo(() => {
+    const first = chargeableTails[0]
+    if (!first) return null
+    return first.basis || null
+  }, [chargeableTails])
+
+  const tailCharge = useMemo(
+    () =>
+      freezeTailCharge({
+        tailDays,
+        basis: tailBasis,
+        plan: tailGrantPlan,
+        isPT: Boolean(member?.isPT),
+        ptSurcharge,
+        ptSurchargeOverride: member?.ptSurchargeOverride,
+        currency: settings.currency,
+      }),
+    [tailDays, tailBasis, tailGrantPlan, member, ptSurcharge, settings.currency]
+  )
+
+  // An extension we cannot price must block the renewal rather than being
+  // absorbed silently: the member would receive the days and the gym would
+  // quietly forgo the revenue.
+  const tailBlocked = tailRequiresAttention(tailCharge)
 
   const summary = useMemo(
     () =>
@@ -133,8 +228,9 @@ export function RenewalModal({ open, onClose, member, currentPlan, currentExpiry
           ptSurchargeOverride: member?.ptSurchargeOverride,
         }).total,
         paidAmount: watched.amount,
+        tailAmount: tailCharge.amount,
       }),
-    [selectedPlan, watched.amount, member, ptSurcharge]
+    [selectedPlan, watched.amount, member, ptSurcharge, tailCharge.amount]
   )
 
   const charge = useMemo(
@@ -155,13 +251,16 @@ export function RenewalModal({ open, onClose, member, currentPlan, currentExpiry
       : 0
 
   // Renewals are single-purpose: they charge ONLY the new period unless the
-  // owner explicitly opts into also collecting the previous outstanding.
-  const totalPayable = summary.price + collectAmt
+  // owner explicitly opts into also collecting the previous outstanding. A freeze
+  // extension is part of what the new period costs the member now, so it belongs
+  // in this total - separately from `summary.price`, which stays plan-only.
+  const totalPayable = summary.total + collectAmt
 
   const [submitting, setSubmitting] = useState(false)
 
   const submit = async (values) => {
     if (submitting) return
+    if (tailBlocked) return
     setSubmitting(true)
     try {
       const result = await renewMembership({
@@ -172,12 +271,21 @@ export function RenewalModal({ open, onClose, member, currentPlan, currentExpiry
         paidAmount: values.amount,
         method: values.method,
         date: values.date,
-        note: values.note,
+note: values.note,
         receiptPrefix: settings.receiptPrefix,
         effectivePrice: charge.total,
-isPT: Boolean(member?.isPT),
+        isPT: Boolean(member?.isPT),
     ptSurcharge: charge.addon,
     timezone,
+    freezeTailDays: tailCharge.days,
+    // The tail period's immutable price/duration snapshot, and the granting plan
+    // as a fallback: the extension is valued on what the member committed to, not
+    // on the plan being renewed onto.
+    freezeTailBasis: tailBasis,
+    freezeTailSettledFor: tailSettledFor,
+    tailPricePlan: tailGrantPlan,
+    ptSurchargeOverride: member?.ptSurchargeOverride,
+    currency: settings.currency,
   })
 
       if (collectAmt > 0 && targetMembershipId) {
@@ -223,7 +331,7 @@ isPT: Boolean(member?.isPT),
           <Button variant="secondary" onClick={onClose} disabled={submitting}>
             Cancel
           </Button>
-          <Button type="submit" form="renewal-form" loading={submitting}>
+          <Button type="submit" form="renewal-form" loading={submitting} disabled={tailBlocked}>
             <RefreshCcw size={16} /> Renew &amp; charge
           </Button>
         </>
@@ -434,6 +542,31 @@ isPT: Boolean(member?.isPT),
                 <span className="text-slate-500 dark:text-slate-400">Personal Training</span>
                 <span className="font-medium text-slate-400">None</span>
               </div>
+            )}
+            {tailCharge.days > 0 && (
+              <div className="flex items-center justify-between">
+                <span className="text-slate-500 dark:text-slate-400">
+                  Freeze extension — {tailCharge.days} {tailCharge.days === 1 ? 'day' : 'days'}
+                </span>
+                {tailCharge.priceable ? (
+                  <span className="font-medium text-slate-800 dark:text-slate-100">
+                    {formatCurrency(tailCharge.amount, settings.currency)}
+                  </span>
+                ) : (
+                  <span className="font-medium text-amber-600 dark:text-amber-400">
+                    Cannot be priced — {tailCharge.reason}
+                  </span>
+                )}
+              </div>
+            )}
+            {tailCharge.days > 0 && !tailCharge.priceable && (
+              <p role="alert" className="flex items-start gap-2 text-sm text-amber-700 dark:text-amber-400">
+                <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+                <span>
+                  This renewal carries a {tailCharge.days}-day freeze extension that cannot be priced, so it
+                  cannot be submitted. Restore the plan the freeze was granted against, then renew.
+                </span>
+              </p>
             )}
             <div className="flex items-center justify-between">
               <span className="text-slate-500 dark:text-slate-400">New period total</span>
