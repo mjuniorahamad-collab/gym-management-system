@@ -34,9 +34,16 @@
  *
  * Records written before this module have no `attendanceSessions` pointer, so a
  * member already sitting in the gym could be checked in a second time. The UI
- * still derives `checkedInToday` from the loaded collection and blocks that, and
- * `seedAttendanceSessions` (migration, dry-run by default) backfills pointers for
- * genuinely open legacy sessions.
+ * still derives its open-session set from the loaded collection and blocks that
+ * case client-side, and the server-side pointer remains authoritative for any
+ * device whose snapshot has not yet caught up.
+ *
+ * Backfilling pointers for genuinely open legacy sessions is left to a future
+ * migration. It is deliberately NOT implemented here: it would be a multi-write
+ * sweep over existing attendance data, and the plan for this phase forbids
+ * unguarded production mutation. Until such a migration runs, the residual
+ * exposure is a legacy open session with no pointer, which only a manual
+ * double check-in on a stale snapshot could exploit.
  */
 
 import { collection, doc, runTransaction, serverTimestamp } from 'firebase/firestore'
