@@ -7,7 +7,9 @@ vi.mock('@/services/firestore', () => {
   const store = { memberships: [], payments: [], members: [], auditLog: [] }
   return {
     __store: store,
-    isReady: () => true,
+    isReady: () => false,
+    // These suites drive the mock store, so no real Firestore and no
+    // tenancy: renewMembership must take its sequential demo path.
     listAll: async (name) => store[name],
     getById: async (name, id) => store[name].find((d) => d.id === id) || null,
     createDoc: async (name, data) => {

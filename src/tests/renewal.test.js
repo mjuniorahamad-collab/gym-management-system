@@ -18,7 +18,7 @@ vi.mock('@/services/firestore', () => {
   const store = { memberships: [], payments: [], members: [], auditLog: [] }
   return {
     __store: store,
-    isReady: () => true,
+    isReady: () => false,
     listAll: async (name) => store[name],
     getById: async (name, id) => store[name].find((d) => d.id === id) || null,
     createDoc: async (name, data) => {
@@ -237,7 +237,10 @@ describe('renewMembership service', () => {
     const memberDoc = __store.members.find((m) => m.id === member.id)
     expect(memberDoc.status).toBe('active')
     expect(memberDoc.membershipPlanId).toBe(plan.id)
-    expect(memberDoc.joinDate).toBe(iso(today()))
+    // joinDate is when the member joined the GYM, not when the current period
+    // began. Rewriting it on every renewal corrupted the dashboard and Reports
+    // "new members this month" counts, which both filter on it.
+    expect(memberDoc.joinDate).toBe(iso(addDays(today(), -120)))
 
     const membership = __store.memberships.find((m) => m.memberId === member.id)
     expect(membership.startDate).toBe(iso(today()))
@@ -610,6 +613,127 @@ describe('renewMembership — backdated renewals (effective vs payment dates)', 
       .map((m) => m.startDate)
       .sort()
     expect(dates).toEqual([iso(addDays(today(), -60)), iso(addDays(today(), -30)), iso(prevExpiry())].sort())
+  })
+})
+
+describe('joinDate preservation across renewals', () => {
+  const monthlyPlan = () => ({ id: 'plan-30', name: 'Monthly', durationDays: 30, price: 1500, active: true })
+
+  function seed(member) {
+    __store.members.push({ ...member })
+  }
+
+  it('leaves joinDate untouched across four renewals in one month', async () => {
+    const plan = monthlyPlan()
+    const original = iso(addDays(today(), -400))
+    const member = makeMember({ membershipPlanId: plan.id, joinDate: original })
+    seed(member)
+
+    // Four separate renewals. Every one used to reset joinDate to its own
+    // effective start, so the member looked like a brand-new joiner four times
+    // and appeared in the dashboard's "new members this month" tile four times.
+    for (let i = 0; i < 4; i += 1) {
+      const stored = __store.members.find((m) => m.id === member.id)
+      await renewMembership({
+        member: stored,
+        plan,
+        currentExpiry: addDays(today(), -10 - i * 30),
+        effectiveStartDate: iso(addDays(today(), -9 - i * 30)),
+        paidAmount: 1500,
+        method: 'Cash',
+        date: iso(addDays(today(), -9 - i * 30)),
+      })
+    }
+
+    expect(__store.members.find((m) => m.id === member.id).joinDate).toBe(original)
+    expect(__store.memberships.length).toBe(4)
+    expect(__store.payments.length).toBe(4)
+  })
+
+  it('backfills joinDate when the member has none', async () => {
+    const plan = monthlyPlan()
+    const member = makeMember({ membershipPlanId: plan.id, joinDate: '' })
+    seed(member)
+    await renewMembership({
+      member,
+      plan,
+      currentExpiry: addDays(today(), -1),
+      paidAmount: 1500,
+      method: 'Cash',
+      date: iso(today()),
+    })
+    // Legacy members with no period documents derive their billing start from
+    // joinDate, so an absent value is still filled rather than left blank.
+    expect(__store.members.find((m) => m.id === member.id).joinDate).toBe(iso(today()))
+  })
+
+  it('backfills joinDate when the stored value is unparseable', async () => {
+    const plan = monthlyPlan()
+    const member = makeMember({ membershipPlanId: plan.id, joinDate: 'not-a-date' })
+    seed(member)
+    await renewMembership({
+      member,
+      plan,
+      currentExpiry: addDays(today(), -1),
+      paidAmount: 1500,
+      method: 'Cash',
+      date: iso(today()),
+    })
+    expect(__store.members.find((m) => m.id === member.id).joinDate).toBe(iso(today()))
+  })
+})
+
+describe('renewal receipt linking', () => {
+  function seed(member) {
+    __store.members.push({ ...member })
+  }
+
+  it('stores the same receipt number on the period and its payment', async () => {
+    const plan = makePlan()
+    const member = makeMember()
+    seed(member)
+    const result = await renewMembership({
+      member,
+      plan,
+      currentExpiry: addDays(today(), -1),
+      paidAmount: 3500,
+      method: 'Cash',
+      date: iso(today()),
+    })
+    const membership = __store.memberships[0]
+    const payment = __store.payments[0]
+    // Both documents are written in one transaction, so neither can end up with
+    // a number the other does not have.
+    expect(membership.receiptNo).toBe(payment.receiptNo)
+    expect(membership.receiptNo).toBeTruthy()
+    expect(membership.paymentId).toBe(payment.id)
+    expect(payment.membershipId).toBe(membership.id)
+    expect(result.membership.receiptNo).toBe(membership.receiptNo)
+    expect(result.payment.membershipId).toBe(membership.id)
+  })
+
+  it('issues a distinct receipt number per renewal', async () => {
+    const plan = makePlan()
+    const member = makeMember()
+    seed(member)
+    await renewMembership({
+      member,
+      plan,
+      currentExpiry: addDays(today(), -10),
+      paidAmount: 3500,
+      method: 'Cash',
+      date: iso(today()),
+    })
+    await renewMembership({
+      member: __store.members.find((m) => m.id === member.id),
+      plan,
+      currentExpiry: addDays(today(), -1),
+      paidAmount: 3500,
+      method: 'Cash',
+      date: iso(today()),
+    })
+    const numbers = __store.payments.map((p) => p.receiptNo)
+    expect(new Set(numbers).size).toBe(2)
   })
 })
 

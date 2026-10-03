@@ -63,6 +63,52 @@ export function __resetReceiptSeedCache() {
 }
 
 /**
+ * The per-gym receipt counter document, for callers that mint a receipt number
+ * inside their OWN transaction (see services/renewals.js).
+ *
+ * Minting must not be a second transaction: between "counter incremented" and
+ * "payment written" a failure would burn a number, and a retry would burn
+ * another. Doing the increment in the same transaction as the payment means the
+ * number and the payment it labels are committed or abandoned together.
+ */
+export function receiptCounterRef() {
+  return counterRef()
+}
+
+/**
+ * Read the counter state a caller needs BEFORE opening its transaction.
+ *
+ * Returns the floor to use when the counter document does not exist yet, so a
+ * fresh gym's first receipt cannot collide with a legacy one. Returns 0 when
+ * the counter exists, meaning "trust whatever the transaction reads".
+ *
+ * The payments scan stays out here on purpose: Firestore re-runs a transaction
+ * callback on every contention retry, and repeating a full payments read per
+ * retry would turn a busy counter into an expensive one.
+ */
+export async function prepareReceiptFloor() {
+  const current = await getDoc(counterRef()).catch(() => null)
+  if (current?.exists?.()) return 0
+  return highestExistingSequence()
+}
+
+/**
+ * Mint a receipt number inside a caller-supplied transaction.
+ *
+ * `floor` must come from `prepareReceiptFloor()`, called before the transaction
+ * opened. Reading and incrementing the counter here is what makes the receipt
+ * number and the payment atomic.
+ */
+export async function mintReceiptNoInTransaction(tx, gymId, prefix, floor) {
+  const snap = await tx.get(counterRef())
+  const stored = snap.data()?.value
+  const base = typeof stored === 'number' ? stored : Number(floor) || 0
+  const next = base + 1
+  tx.set(counterRef(), { value: next, gymId }, { merge: true })
+  return formatReceiptNo(prefix, next)
+}
+
+/**
  * Last-resort receipt when the counter cannot be reached. Made strictly
  * monotonic in-process so two receipts minted in the same millisecond still
  * differ, and so wide (full epoch ms) that the legacy 1e6-value cycle cannot
@@ -72,7 +118,7 @@ export function __resetReceiptSeedCache() {
  * staff than a receipt-numbering failure.
  */
 let lastFallback = 0
-function fallbackReceiptNo(prefix) {
+export function fallbackReceiptNo(prefix) {
   const now = Date.now()
   lastFallback = now > lastFallback ? now : lastFallback + 1
   return `${prefix || 'HWG'}-${lastFallback}`
