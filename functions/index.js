@@ -21,6 +21,12 @@
 import { onSchedule } from 'firebase-functions/v2/scheduler'
 import { firestore, storage } from './projection/admin.js'
 
+/**
+ * Callable: ask the trusted writer to recompute one member's projection.
+ * See ./projection/reproject.js for the authorization chain.
+ */
+export { reprojectMember } from './projection/reproject.js'
+
 const STORAGE_BACKUP_PREFIX = 'backups'
 const REMINDER_WINDOW_DAYS = 7
 

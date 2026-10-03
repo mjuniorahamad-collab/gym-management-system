@@ -9,9 +9,8 @@
  * consults. Rules are covered separately, in `tests.emulator/`, where the
  * client is deliberately untrusted.
  *
- * All ids are `pw-`-prefixed so these suites can share the single Firestore
- * emulator with `tests.emulator/**` without colliding, and so cleanup can find
- * everything they created.
+ * Each suite takes its own id prefix via `suite()`, so these files can share the
+ * single Firestore emulator without colliding.
  */
 import admin from 'firebase-admin'
 import { firestore } from '../projection/admin.js'
@@ -25,6 +24,30 @@ export const db = firestore({ projectId: PROJECT_ID })
 /** The gym-local day every test pins, so nothing depends on the wall clock. */
 export const TODAY = '2026-06-15'
 export const TIMEZONE = 'Asia/Kolkata'
+
+/**
+ * Today's real gym-local day key.
+ *
+ * The callable evaluates against the actual clock — it must, in production, and
+ * it deliberately accepts no `today` override so a client cannot choose the day
+ * its projection is computed for. Tests that drive the callable therefore have
+ * to build their fixtures relative to the real date rather than pin one, or they
+ * start failing the day after they are written.
+ */
+export function realToday(timezone = TIMEZONE) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date())
+}
+
+/** Shift a `YYYY-MM-DD` day key by whole days. */
+export function shiftDay(key, days) {
+  const [year, month, day] = key.split('-').map(Number)
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10)
+}
 
 export const GYM_A = `${PREFIX}gym-a`
 export const GYM_B = `${PREFIX}gym-b`
@@ -72,21 +95,29 @@ export async function seedFreeze(freezeId, gymId, memberId, { periodId, kind = '
   )
 }
 
+/** A caller profile. `gymId` omitted models an account with no bound gym. */
+export async function seedProfile(uid, { gymId = GYM_A, role = 'front-desk' } = {}) {
+  const profile = { role }
+  if (gymId !== null) profile.gymId = gymId
+  await db.doc(`users/${uid}`).set(profile)
+}
+
 export async function readMemberDoc(memberId) {
   const snapshot = await db.doc(`members/${memberId}`).get()
   return snapshot.exists ? snapshot.data() : null
 }
 
-/** Delete every `pw-` document from the collections these suites touch. */
-export async function cleanup() {
-  const collections = ['members', 'memberships', 'membershipFreezes', 'users', 'gyms']
+/** Delete every document belonging to one suite's prefix. */
+export async function cleanup(prefix = PREFIX) {
+  const collections = ['members', 'memberships', 'membershipFreezes', 'users', 'gyms', 'auditLog']
   for (const name of collections) {
     const snapshot = await db.collection(name).get()
     const batch = db.batch()
     let queued = 0
     for (const docSnap of snapshot.docs) {
-      if (!docSnap.id.startsWith(PREFIX)) continue
-      // A gym owns its settings subcollection, which is not matched by the parent id.
+      if (!docSnap.id.startsWith(prefix)) continue
+      // A gym owns its settings subcollection, whose doc id is the fixed
+      // 'app', so it has to be matched through its parent gym id.
       if (name === 'gyms') {
         const settings = await db.doc(`gyms/${docSnap.id}/settings/app`).get()
         if (settings.exists) {
@@ -99,6 +130,34 @@ export async function cleanup() {
       if (queued >= 400) break
     }
     if (queued) await batch.commit()
+  }
+}
+
+let seq = 0
+
+/**
+ * An isolated id namespace for one test file.
+ *
+ * Vitest runs each test file in its own worker against the SAME emulator, so two
+ * suites that both seed ids from a counter starting at zero will collide: the
+ * first suite's `cleanup()` deletes the second suite's fixtures mid-test. Each
+ * file therefore takes its own prefix and cleans up only its own ids, which also
+ * lets the files run concurrently.
+ *
+ * Destructure the parts you need to keep existing call sites readable:
+ *   const S = suite('pw-w-')
+ *   const { uid, gymA: GYM_A, cleanup } = S
+ */
+export function suite(prefix) {
+  if (typeof prefix !== 'string' || !prefix.startsWith(PREFIX) || prefix === PREFIX) {
+    throw new Error(`suite() needs a distinct prefix starting with "${PREFIX}", got ${prefix}`)
+  }
+  return {
+    prefix,
+    uid: (label) => `${prefix}${label}-${++seq}`,
+    gymA: `${prefix}gym-a`,
+    gymB: `${prefix}gym-b`,
+    cleanup: () => cleanup(prefix),
   }
 }
 

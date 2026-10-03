@@ -14,22 +14,21 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { checkFreshness } from '../build.mjs'
 import { desiredProjection, diffProjection, recomputeMemberProjection } from '../projection/writer.js'
 import {
-  GYM_A,
-  GYM_B,
   TODAY,
   assertEmulatorReachable,
-  cleanup,
   db,
   readMemberDoc,
   seedFreeze,
   seedGym,
   seedMember,
   seedPeriod,
+  suite,
 } from './helpers.js'
 
-let seq = 0
-/** Unique id per test, so parallel cases cannot see each other's documents. */
-const uid = (label) => `pw-${label}-${++seq}`
+// Own id namespace: vitest runs this file in its own worker but against the same
+// emulator as reprojectCallable.test.js, and both clean up between cases.
+const S = suite('pw-w-')
+const { uid, gymA: GYM_A, gymB: GYM_B, cleanup } = S
 
 /** Recompute with the pinned day and zone so nothing depends on the clock. */
 const project = (memberId, gymId = GYM_A) =>
