@@ -487,8 +487,14 @@ Read-only unless stated.
 9. **Migration freeze scope** — whether `counters` alone suffices or `members/memberships/payments` also need pausing during step 15.
 10. **Global `settings/app` retention window** — how long the doc is retained Admin-readable after step 14 before retirement at step 22.
 11. **Rollback latency acceptance for settings** — step 13 rollback now costs an app release cycle instead of a config flip. Confirm this is acceptable, or specify a time-boxed emergency procedure that **does not** reintroduce client dual-read (e.g. Admin-side restore of a scoped doc, which is fast because the data is retained).
+12. **Nightly projection sweep schedule (new, recorded 2026-10-03 at `713a567`).** The repair sweep is implemented, tenant-scoped, diff-only and covered by tests (§20.9), but **it is not scheduled and not deployed**. Three things need choosing together, because they interact:
+    - **frequency** — the sweep repairs staleness only; because reprojection after an authoritative write is an optimisation rather than a correctness dependency (§20.2), a missed write is recoverable, so daily or weekly are defensible. Hourly is unlikely to earn its write cost.
+    - **clock and timezone** — it derives "gym-local today" per gym from `gyms/{gymId}/settings/app.timezone`, so the trigger time must not be pinned to one tenant's midnight. Firing at a fixed UTC instant means the run straddles some tenants' local days and cannot be described as "the end of the day" for them.
+    - **write-amplification budget** — each member whose projection disagrees costs one write; a first run over a large collection is bounded but not free, and the exact scan cost is deployment-time information this environment cannot supply.
 
-**Locked and not reopenable:** client user deletion = deny all · trainer booking capability preserved · login = platform branding only · J1/J5/F9/E8 emulator-only · RC-7 client bootstrap removed · null-safety mandatory · financial snapshots immutable.
+    This is an **operational/deployment decision, not a correctness one**: no correctness property depends on it, and nothing in the local codebase is blocked behind the choice. It is recorded here rather than in §20 so the operational decisions stay in one place.
+
+**Locked and not reopenable:** client user deletion = deny all · trainer booking capability preserved · login = platform branding only · J1/J5/F9/E8 emulator-only · RC-7 client bootstrap removed · null-safety mandatory · financial snapshots immutable · the three SEC-I `member.status` assertions are obsolete under the current policy and stay failing (§20.7) · member projection fields are server-owned and read-model only (§20.5).
 
 ---
 
@@ -657,11 +663,35 @@ Equivalence was proved against verbatim copies of both previous implementations 
 
 ## 19. Current verification status — implementation line `production-readiness/phase-4`
 
+> **This section has been superseded in two places. Read the amendment note first.**
+>
+> §19.1–§19.6 below were recorded 2026-10-03 at commit `b982188` and describe the
+> state **at that commit**. They are deliberately left unedited so the checkpoint
+> stays auditable, exactly as §17.5 is.
+>
+> Two things happened after `b982188`:
+>
+> 1. **§19.6 ("Projection engine — inert in this phase") is no longer true.** The
+>    projection engine is now fully wired: trusted writer, authorized callable,
+>    repair sweep, client reprojection wiring, and hardened rules. Its concluding
+>    sentence — "no rule was changed here to test it" — was correct for `b982188`
+>    and is now wrong. Read **§20** for the projection contract as it stands.
+> 2. **The measured counts moved.** §19.1's `555/535/20` is stale. The current
+>    measurement is in **§20.6**.
+>
+> Everything else in §19.1–§19.6 — the `527 → 555` reconciliation in §19.2, the
+> Class 1/Class 2 failure taxonomy in §19.3, the SEC-O relocation in §19.4, and
+> the line-ending hazard and `.gitattributes` pin in §19.5 — remains accurate and
+> is still the governing record for the failures it describes.
+>
+> §19.3's caveat ("`firestore.rules` has changed since the §17.5 checkpoint") now
+> applies a third time: the projection-field rules changed again at `713a567`.
+
 Recorded 2026-10-03 at commit `b982188`.
 
-This section states the CURRENT measurement. It does not amend §17.5 or any earlier checkpoint: those record what was true when they were written, and §17.5's `527/507/20` was correct for `security-remediation/phase-1` at `ab33ddd`. Historical statements are left unedited so each checkpoint stays auditable.
+This section states the CURRENT measurement **as at that commit**. It does not amend §17.5 or any earlier checkpoint: those record what was true when they were written, and §17.5's `527/507/20` was correct for `security-remediation/phase-1` at `ab33ddd`. Historical statements are left unedited so each checkpoint stays auditable.
 
-### 19.1 Measured baseline
+### 19.1 Measured baseline (as at `b982188`)
 
 | Gate | Result |
 |---|---|
@@ -708,11 +738,135 @@ tests.emulator/firestoreSecurityEmulator.test.js text eol=lf
 
 Scoped to that one path deliberately. Repository-wide line-ending policy is unchanged, and `.prettierrc` already declares `"endOfLine": "lf"`, so LF is the project's existing intent — `core.autocrlf` was the machine-local override working against it.
 
-### 19.6 Projection engine — inert in this phase
+### 19.6 Projection engine — inert in this phase (as at `b982188`)
 
 `b982188` added `src/utils/memberProjection.js`, a pure function of the membership periods and freezes. The projection engine is inert in this phase: no writer, callable endpoint, nightly sweep, query migration, or Firestore-rule change was introduced. No new client-write path for the projection fields was added in this phase. Existing client-write capability, if any, remains unchanged and is explicitly deferred to the trusted-writer/rules phase.
 
 What that does **not** establish is that the fields are unwritable. Purity of the engine says nothing about what the rules permit, and no rule was changed here to test it. Phase 3 must add the trusted writer and settle the rules question explicitly.
+
+**That deferral is now discharged — see §20. The projection is live, server-written, and no longer client-writable.**
+
+---
+
+## 20. The projection contract — read model, authoritative sources, and current test classification
+
+Recorded 2026-10-03 at commit `713a567`, on `production-readiness/phase-4`. This section supersedes §19.6 and the counts in §19.1; it does not amend §17 or any earlier checkpoint.
+
+### 20.1 The five derived fields
+
+The member document carries a **projection**: five fields, every one of them an output, none of them an input.
+
+| Field | Meaning |
+|---|---|
+| `membershipStart` | gym-local start of the current authoritative period |
+| `effectiveExpiry` | original expiry extended by any valid anchored freeze |
+| `freezeUntil` | far end of the latest applicable freeze |
+| `status` | `active` \| `expiring` \| `expired` \| `null` |
+| `isFrozen` | whether an applicable freeze interval covers gym-local **today** |
+
+**Authoritative sources: `memberships` and `membershipFreezes` only.** Nothing else may influence any of the five. In particular the member document itself is never passed to the engine — it is read only to compute a diff and to verify tenancy, so a forged value stored on a member cannot influence what is written back over it.
+
+### 20.2 The projection is a read model, not authority
+
+The projection exists to answer **queries**, not to decide anything. Each field is exactly the class of fact Firestore cannot compute for itself in a `where()` clause. The consequences are worth stating because they bound what may later be built on top of it:
+
+- **It is not financial authority.** No dues, tail-settlement, renewal or repricing path may read any of the five. Currency comes from the membership period; a member becomes current by paying for a period, which has a ledger behind it.
+- **It is not membership authority.** It does not grant entitlement, move money, or alter a period or a freeze.
+- **It is derivable.** Every field can be recomputed from `memberships` + `membershipFreezes` + the gym timezone. That is what makes the repair sweep safe: no information exists only in the projection.
+- **It can be stale.** Reprojection after an authoritative write is an optimisation, not a correctness dependency. A missed reprojection is repaired by the sweep. Authoritative writes must never depend on the projection call succeeding.
+
+### 20.3 Freeze is orthogonal to currency
+
+`status` and `isFrozen` answer different questions, and `frozen` is deliberately **not** a status value.
+
+- `status` — is the membership paid up and unexpired?
+- `isFrozen` — is a freeze covering today in force?
+
+So `active` + `isFrozen: true` and `expiring` + `isFrozen: true` are both legitimate and expected. `expired` is determined solely by the authoritative membership/effective-expiry state. A member may be frozen and expired; the two do not interact.
+
+### 20.4 `isFrozen` is stored, not recomputed client-side
+
+`isFrozen` became the fifth field at `713a567`. It is stored rather than derived at read time because it is **not** derivable from `freezeUntil`:
+
+- `freezeUntil` is the far end of the latest applicable freeze, so it **cannot express cancellation**;
+- it **stays set after a freeze lapses**, so `freezeUntil >= today` would keep showing the badge for a freeze that has ended;
+- it cannot distinguish a freeze that has not yet **started** from one in force;
+- recomputing it in the client from that one stored date would be **a second freeze algorithm**, which is precisely what the canonical engine exists to prevent — and it could not see cancelled or overlapping freeze records anyway.
+
+The stored value is copied **verbatim from the engine**, so cancellation, overlapping/merged intervals, intervals crossing the original expiry, expired periods and future/prepaid periods all continue to be handled by the one canonical implementation. The engine's answer is a strict boolean (`=== true`), which matters because the filter queries `where('isFrozen', '==', true)` and would silently miss a string or a number.
+
+Two client-visible defects were fixed by this and had been failing silently:
+
+- the **Frozen badge** read `member.isFrozen`, a field no writer ever created — it was dead code that never rendered;
+- the **staff Frozen filter** issued `where('status', '==', 'frozen')` — an unmatchable query, since `frozen` is not a status. It returned an empty list for every gym.
+
+The filter is a real server-side query, not page-local filtering. The list is paginated, so filtering a loaded page in JS would report "no frozen members" whenever the first 20 rows happened to contain none.
+
+### 20.5 Client-write policy
+
+**No normal client may create or modify any of the five projection fields.** Not owner, admin, front-desk, or trainer.
+
+This is enforced in `firestore.rules` by naming the five fields and comparing each on update, rather than by maintaining a hand-written writable-key allowlist. Three properties of that choice matter:
+
+- **Create is checked separately.** On create, none of the five may be present at all — including as an explicit `null`, which is why the test is `keys().hasAny([...])` and not a null check.
+- **Update is compared field by field against the server's value**, so a client cannot bypass the guard by first restating the value the server already wrote and changing it afterwards.
+- **Reads use `get(field, null)`, never dot access.** Dot access on an *absent* field is not `null` in the rules language — it raises an evaluation error, and an evaluation error **denies**. Members the sweep has not reached legitimately have none of these fields, so dot access would lock staff out of editing exactly the documents that most need editing.
+
+A write that restates a projection value **unchanged** alongside a legitimate edit still succeeds. Only changing one is denied.
+
+The member form was also stopped from seeding its value store from the whole member document. It had been spreading `...initial`, which put a stored `status` into the form; `memberSchema`'s zod stripping was the only thing preventing it from reaching a payload. That guard remains the load-bearing one and is now covered by tests, because the invariant was otherwise resting entirely on the schema's shape.
+
+The **Admin SDK is not exempt** from this — the trusted writer bypasses these rules because it is trusted, not because it was granted an exception. No rule path admits a server write.
+
+### 20.6 Current measured baseline (as at `713a567`)
+
+| Gate | Result |
+|---|---|
+| `npm test` | **969 total, 968 passing, 1 failing** (59 files) |
+| `npm run test:functions` | **96 total, 96 passing** (4 files) |
+| `npm run lint` | 0 errors, 12 pre-existing `react-refresh` warnings |
+| `npm run build` | succeeds (existing >500 kB chunk warning only) |
+| `npm run test:rules` | **638 total, 615 passing, 23 failing** |
+
+The single unit failure is pre-existing and unrelated: `src/tests/attendance.test.jsx` → *does not offer a second check-in for an overnight session* → `Found multiple elements with the text: Zaid`. It reproduces on stashed `HEAD` and is recorded in §18.1.
+
+### 20.7 The 23 failures, classified
+
+**Zero unexpected failures.** Every failing test is in the frozen evidence file, and each is understood.
+
+**Class 1 — the 20 documented historical failures.** Unchanged by name and class assignment from §17.5 and §19.3: `C6/C7`, `E8`, `F9`, `F1–F4`×4, `F12`, `J1`×11, `J5`×1. Fifteen are emulator query-evaluation semantics; five are the fixture-dependent strict class-existence cases. **Zero of them were fixed, and none should be** — making them pass would mean rewriting the signed baseline rather than fixing anything, which §10 forbids.
+
+**Class 3 — the 3 intentional obsolete-baseline SEC-I failures.** These are new, and they are the **expected consequence** of hardening the rules:
+
+- `SEC-I — I — owner may change member.status (app grants members.write)`
+- `SEC-I — I — admin may change member.status (app grants members.write)`
+- `SEC-I — I — front-desk may change member.status (app grants members.write)`
+
+Each asserts that a role holding `members.write` **may** change `member.status` — the exact behaviour that made a cached projection field hand-assignable by staff, with no record of who overrode what, and which no longer holds because the projection is now server-owned. The assertions describe a policy that has been deliberately superseded.
+
+The decision was made explicitly, not by default: **Option 1 — retain the hardened rules and reclassify the three old assertions as obsolete.** The alternative (relaxing the rules to keep them green) was rejected because it would re-open a known security defect. The frozen file is immutable, so the three failures stand permanently and are reported by name in every verification pass so they can never be mistaken for regressions.
+
+Current-policy behaviour is instead asserted explicitly, by name, in the mutable suites: `tests.emulator/firestoreSecurityRemediation.test.js` (86 passing) and `tests.emulator/firestoreRulesEmulator.test.js` (126 passing). Coverage for `isFrozen` includes per-role denial, denial on create, denial on clearing as well as setting, a same-value restatement succeeding, forgery attempted alongside a legitimate change, cross-tenant forgery, and a client attempting to make itself appear in the Frozen filter.
+
+**Reconciling the movement from 555/535/20 to 638/615/23.** Additive only: **+83 tests, +0 deleted, 0 weakened, 0 skipped, 0 annotated away.** All three mutable emulator suites pass completely; all 23 failures are in the frozen file.
+
+### 20.8 Frozen evidence integrity (re-verified at `713a567`)
+
+| Property | Value |
+|---|---|
+| Path | `tests.emulator/firestoreSecurityEmulator.test.js` |
+| SHA-256 | `6DEDEA4CE32646C59B0A79957C703A657F5D7B5CB46208D75BC5A2A3B768BD54` |
+| Size | 82,517 bytes |
+| Git blob | `4fd23bdb1d21e49815b769d1eaa8883f5b0f3bad` |
+| Verified | byte-identical on disk and in the `713a567` tree |
+
+Re-verified after the `713a567` commit. `git status` continues to list this path as modified while `git diff` on it is empty and the hash matches: that is a stat-cache artefact of the CRLF/LF pin described in §19.5, not an edit. It has never been staged. The path must not be edited, restored, staged or renormalised.
+
+### 20.9 What is still open
+
+- The **nightly repair sweep is implemented and unscheduled.** Its function, tenancy scoping, diff-only writes and failure containment are covered by tests; choosing a schedule and deploying it is an operational decision and is tracked in §15, not here.
+- `isFrozen` needs **no backfill**: existing members have no `isFrozen` field, and `where('isFrozen', '==', true)` already excludes them. The sweep writes the first correct value on its next pass.
+- **No production data was read or written, and no rules, functions or indexes were deployed** in producing §20.
 
 ---
 
