@@ -17,7 +17,30 @@
  * Authoritative documents only: `memberships`, `membershipFreezes`, and each gym's
  * timezone. A member's existing projection is read solely to compute a diff and
  * is never an input — `planProjection` is the same function the callable uses, so
- * there is exactly one place where authoritative data becomes four fields.
+ * there is exactly one place where authoritative data becomes the projection
+ * fields.
+ *
+ * ## Dry run
+ *
+ * `{ dryRun: true }` computes the identical plan and reports the identical
+ * counters, but commits nothing.
+ *
+ * This exists because the sweep's schedule is an open operational decision, and a
+ * schedule is easier to choose once you can see what a run would actually cost.
+ * A first run over a large collection is bounded but not free, and the only way
+ * to know the real write count is to compute it against real data.
+ *
+ * The important property is that a dry run and a real run share one code path.
+ * The diff is computed by the same `planProjection`, from the same inputs, in the
+ * same tenant partition — so `changed` means the same number in both. A dry-run
+ * mode implemented as a separate simplified "what would change" query could
+ * disagree with the real sweep, which would make it worse than useless for
+ * deciding whether to schedule.
+ *
+ * Dry-run output is evidence, not a record. It logs what it would do and returns
+ * counters; it deliberately writes no audit entry and no run-marker document, so
+ * it can be run freely against production data without leaving a trace that a
+ * repair happened. Nothing is repaired until a real run does it.
  *
  * ## Conservative by construction
  *
@@ -102,12 +125,14 @@ function isUnprojectable(desired) {
  * @returns {Promise<object>} counters plus per-gym context
  * @param {string} [options.timezone]  explicit zone, overriding the gym's own
  * @param {string} [options.today]
+ * @param {boolean} [options.dryRun]   compute and report, commit nothing
  * @param {Function} [options.log]
  */
-export async function sweepGym(db, gymId, { timezone, today, log } = {}) {
+export async function sweepGym(db, gymId, { timezone, today, dryRun = false, log } = {}) {
   const emit = log ?? logger.info
   const counters = emptyCounters()
   counters.gymId = gymId
+  if (dryRun) counters.dryRun = true
 
   try {
     const zone = timezone === undefined ? await readGymTimezone(db, gymId) : timezone
@@ -164,7 +189,9 @@ export async function sweepGym(db, gymId, { timezone, today, log } = {}) {
       }
     }
 
-    if (pending.length) {
+    // Dry run stops here, after the identical plan. `changed` is already counted
+    // above, so the caller sees how many documents a real run WOULD write.
+    if (pending.length && !dryRun) {
       const result = await applyPatches(db, pending)
       counters.writeFailures = result.failed.length
       for (const failure of result.failed) {
@@ -206,14 +233,16 @@ export async function sweepGym(db, gymId, { timezone, today, log } = {}) {
  * @param {string} [options.today]   gym-local day; tests pin it, production leaves
  *                                   it to the engine so each gym resolves its own
  * @param {string} [options.scope]   label for the run id
+ * @param {boolean} [options.dryRun] compute and report, commit nothing
  * @param {Function} [options.log]   structured logger; defaults to firebase-functions.
  *                                   Injectable so tests can silence it and assert on
  *                                   the payloads rather than parsing console output.
  */
-export async function runProjectionSweep(db, { gymId, today, scope = 'sweep', log } = {}) {
+export async function runProjectionSweep(db, { gymId, today, scope = 'sweep', dryRun = false, log } = {}) {
   const emit = log ?? logger.info
   const totals = emptyCounters()
   totals.perGym = []
+  if (dryRun) totals.dryRun = true
 
   let gyms
   try {
@@ -226,7 +255,7 @@ export async function runProjectionSweep(db, { gymId, today, scope = 'sweep', lo
   }
 
   for (const gym of gyms) {
-    const counters = await sweepGym(db, gym.id, { today, log })
+    const counters = await sweepGym(db, gym.id, { today, dryRun, log })
     addCounters(totals, counters)
     const { failures, error, ...rest } = counters
     totals.perGym.push({ ...rest, ...(error ? { error } : {}), ...(failures ? { failures } : {}) })
@@ -237,6 +266,7 @@ export async function runProjectionSweep(db, { gymId, today, scope = 'sweep', lo
 
   emit('projection sweep complete', {
     runId: totals.runId,
+    dryRun: dryRun || undefined,
     gyms: totals.gyms,
     scanned: totals.scanned,
     changed: totals.changed,

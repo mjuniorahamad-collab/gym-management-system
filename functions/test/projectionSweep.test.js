@@ -413,6 +413,140 @@ describe('sweepGym directly', () => {
   })
 })
 
+describe('dry run', () => {
+  /**
+   * A dry run exists so the pending schedule decision (§15 item 12) can be made
+   * against a real write count rather than a guess. That is only useful if its
+   * numbers mean the same thing the real run's numbers will mean, which is what
+   * these tests pin down.
+   */
+  it('reports what a real run would write, and writes nothing', async () => {
+    await seedGym(GYM_A)
+    const stale = uid('stale')
+    await seedMember(stale, GYM_A, { status: 'expired' })
+    await seedPeriod(uid('period'), GYM_A, stale, {
+      startDate: '2026-06-01',
+      expiryDate: '2026-07-01',
+    })
+
+    const dry = await runProjectionSweep(db, { gymId: GYM_A, today: TODAY, dryRun: true })
+
+    expect(dry).toMatchObject({ scanned: 1, changed: 1, unchanged: 0, failed: 0, dryRun: true })
+    expect(dry.writeFailures).toBe(0)
+    // The whole point: the reported plan did not happen.
+    const after = await readMemberDoc(stale)
+    expect(after.status).toBe('expired')
+  })
+
+  it('agrees with a real run on every counter', async () => {
+    await seedGym(GYM_A)
+    const correct = uid('ok')
+    const stale = uid('stale')
+    const bare = uid('bare')
+    await seedMember(correct, GYM_A, {
+      membershipStart: '2026-06-01',
+      effectiveExpiry: '2026-07-01',
+      freezeUntil: null,
+      status: 'active',
+      isFrozen: false,
+    })
+    await seedPeriod(uid('period'), GYM_A, correct, {
+      startDate: '2026-06-01',
+      expiryDate: '2026-07-01',
+    })
+    await seedMember(stale, GYM_A, { status: 'expired' })
+    await seedPeriod(uid('period'), GYM_A, stale, {
+      startDate: '2026-06-01',
+      expiryDate: '2026-07-01',
+    })
+    await seedMember(bare, GYM_A, { isFrozen: false })
+
+    const dry = await runProjectionSweep(db, { gymId: GYM_A, today: TODAY, dryRun: true })
+    const real = await runProjectionSweep(db, { gymId: GYM_A, today: TODAY })
+
+    // If these ever diverge, a dry run has stopped predicting the real sweep and
+    // can no longer be used to decide whether to schedule it.
+    for (const key of ['scanned', 'changed', 'unchanged', 'malformed', 'failed', 'orphanedSources', 'writeFailures']) {
+      expect(dry[key]).toBe(real[key])
+    }
+  })
+
+  it('leaves the collection byte-identical after repeated dry runs', async () => {
+    await seedGym(GYM_A)
+    const a = uid('a')
+    const b = uid('b')
+    await seedMember(a, GYM_A, { status: 'expired' })
+    await seedPeriod(uid('period'), GYM_A, a, { startDate: '2026-06-01', expiryDate: '2026-07-01' })
+    await seedMember(b, GYM_A, { status: 'expired' })
+    await seedPeriod(uid('period'), GYM_A, b, { startDate: '2026-06-01', expiryDate: '2026-07-01' })
+
+    const beforeData = (await db.doc(`members/${a}`).get()).data()
+
+    for (let i = 0; i < 3; i += 1) {
+      const dry = await runProjectionSweep(db, { gymId: GYM_A, today: TODAY, dryRun: true })
+      expect(dry.changed).toBe(2)
+      expect(dry.writeFailures).toBe(0)
+    }
+
+    // Both members carry distinct `name`s, so compare member a against its own
+    // snapshot and member b against its own rather than against a's.
+    const beforeA = { ...beforeData }
+    const beforeB = (await db.doc(`members/${b}`).get()).data()
+
+    for (let i = 0; i < 3; i += 1) {
+      const dry = await runProjectionSweep(db, { gymId: GYM_A, today: TODAY, dryRun: true })
+      expect(dry.changed).toBe(2)
+      expect(dry.writeFailures).toBe(0)
+    }
+
+    expect((await db.doc(`members/${a}`).get()).data()).toEqual(beforeA)
+    expect((await db.doc(`members/${b}`).get()).data()).toEqual(beforeB)
+  })
+
+  it('counts isFrozen drift in a dry run like any other field', async () => {
+    // The fifth field has to participate, or a dry run would under-report the
+    // first pass over a collection whose members predate it.
+    await seedGym(GYM_A)
+    const forged = uid('forged')
+    await seedMember(forged, GYM_A, { status: 'active', isFrozen: true })
+    await seedPeriod(uid('period'), GYM_A, forged, {
+      startDate: '2026-06-01',
+      expiryDate: '2026-07-01',
+    })
+
+    const dry = await sweepGym(db, GYM_A, { today: TODAY, dryRun: true })
+    expect(dry).toMatchObject({ scanned: 1, changed: 1, dryRun: true })
+    expect((await readMemberDoc(forged)).isFrozen).toBe(true)
+
+    const real = await sweepGym(db, GYM_A, { today: TODAY })
+    expect(real.dryRun).toBeUndefined()
+    expect((await readMemberDoc(forged)).isFrozen).toBe(false)
+  })
+
+  it('does not let a dry run report success for a write it never made', async () => {
+    // Regression guard on the accounting, not the writes: `changed` must still mean
+    // "would write", and must not be silently reported as "wrote". If these were
+    // conflated, an operator reading a dry run would believe the collection was
+    // already repaired.
+    await seedGym(GYM_A)
+    const memberId = uid('m')
+    await seedMember(memberId, GYM_A, { status: 'expired' })
+    await seedPeriod(uid('period'), GYM_A, memberId, {
+      startDate: '2026-06-01',
+      expiryDate: '2026-07-01',
+    })
+
+    const dry = await runProjectionSweep(db, { gymId: GYM_A, today: TODAY, dryRun: true })
+    expect(dry.changed).toBe(1)
+    expect(dry.dryRun).toBe(true)
+    expect((await readMemberDoc(memberId)).status).toBe('expired')
+
+    const real = await runProjectionSweep(db, { gymId: GYM_A, today: TODAY })
+    expect(real.dryRun).toBeUndefined()
+    expect((await readMemberDoc(memberId)).status).toBe('active')
+  })
+})
+
 describe('structured logs', () => {
   it('emits a structured gym summary and a run summary', async () => {
     await seedGym(GYM_A)
