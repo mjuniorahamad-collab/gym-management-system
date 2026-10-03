@@ -83,6 +83,82 @@ export function diffProjection(current, desired) {
   return { patch, updated }
 }
 
+/**
+ * Plan one member's projection from already-read sources. NO database access.
+ *
+ * This is the single calculation path in the codebase. Both the callable and the
+ * nightly sweep go through it, which is why the sweep cannot quietly drift from
+ * the callable: there is only one place where authoritative data becomes four
+ * fields, and it is here.
+ *
+ * Splitting "decide" from "write" is what lets the sweep bulk-read a gym once and
+ * reuse those reads for every member, instead of re-querying per member. A second
+ * implementation for the sweep would be a second projection algorithm, and the
+ * whole design exists to make that impossible.
+ *
+ * @param {object} args
+ * @param {string} args.memberId
+ * @param {object} args.current    the member document, used ONLY to compute a diff
+ * @param {Array}  [args.periods]  stamped, ALREADY filtered to this member AND gym
+ * @param {Array}  [args.freezes]  stamped, ALREADY filtered to this member AND gym
+ * @param {string} [args.timezone]
+ * @param {string} [args.today]
+ * @returns {{ desired: object, patch: object, updated: string[] }}
+ *
+ * `gymId` is deliberately not a parameter: this function cannot enforce tenancy,
+ * because the engine it calls does not know what a gym is. Filtering is the
+ * caller's obligation, which is why both callers pass pre-filtered sources.
+ */
+export function planProjection({ memberId, current, periods = [], freezes = [], timezone, today } = {}) {
+  const derived = deriveMemberProjection({ memberId, memberships: periods, freezes, timezone, today })
+  const desired = desiredProjection(derived)
+  const { patch, updated } = diffProjection(current, desired)
+  return { desired, patch, updated }
+}
+
+/**
+ * Apply planned patches, isolating individual failures.
+ *
+ * Firestore batches are all-or-nothing, so a single bad document in a batch would
+ * otherwise take down every other member in it — the exact "one bad record stops
+ * the nightly repair" failure this sweep exists to prevent. So batches are
+ * committed optimistically, and any batch that fails is retried one document at a
+ * time to find out which member was at fault. The cost is paid only on failure.
+ *
+ * @param {FirebaseFirestore.Firestore} db
+ * @param {Array<{memberId: string, patch: object}>} entries
+ * @returns {Promise<{written: number, failed: Array<{memberId: string, error: string}>}>}
+ */
+export async function applyPatches(db, entries) {
+  const written = []
+  const failed = []
+  const BATCH_LIMIT = 400
+
+  for (let start = 0; start < entries.length; start += BATCH_LIMIT) {
+    const chunk = entries.slice(start, start + BATCH_LIMIT)
+    try {
+      const batch = db.batch()
+      for (const entry of chunk) batch.update(db.doc(`members/${entry.memberId}`), entry.patch)
+      await batch.commit()
+      written.push(...chunk)
+      continue
+    } catch {
+      // Fall through to the per-document path below to isolate the failure.
+    }
+
+    for (const entry of chunk) {
+      try {
+        await db.doc(`members/${entry.memberId}`).update(entry.patch)
+        written.push(entry)
+      } catch (error) {
+        failed.push({ memberId: entry.memberId, error: error?.message ?? 'unknown error' })
+      }
+    }
+  }
+
+  return { written: written.length, failed }
+}
+
 /** @typedef {object} ReprojectResult */
 /// @property {boolean} ok        false only for a rejected request or unreadable target
 /// @property {string}  [reason]  machine-readable rejection reason
@@ -128,16 +204,14 @@ export async function recomputeMemberProjection(db, { memberId, gymId, timezone,
 
   // Any read failure above propagates. The projection is left exactly as it was:
   // a stale value the sweep will repair, rather than a guess.
-  const derived = deriveMemberProjection({
+  const { patch, updated, desired } = planProjection({
     memberId,
-    memberships: periods,
+    current: member.data,
+    periods,
     freezes,
     timezone: zone,
     today,
   })
-
-  const desired = desiredProjection(derived)
-  const { patch, updated } = diffProjection(member.data, desired)
 
   if (!updated.length) {
     return { ok: true, changed: false, memberId, gymId, fields: desired }

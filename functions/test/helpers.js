@@ -107,6 +107,18 @@ export async function readMemberDoc(memberId) {
   return snapshot.exists ? snapshot.data() : null
 }
 
+/** Bind a member id once, so a fixture can never reference a *different* member. */
+export function memberIdFactory(uid) {
+  const id = uid('member')
+  return {
+    id,
+    seed: (gymId, extra) => seedMember(id, gymId, extra),
+    withPeriod: (gymId, options) => seedPeriod(uid('period'), gymId, id, options),
+    withFreeze: (gymId, options) => seedFreeze(uid('freeze'), gymId, id, options),
+    read: () => readMemberDoc(id),
+  }
+}
+
 /** Delete every document belonging to one suite's prefix. */
 export async function cleanup(prefix = PREFIX) {
   const collections = ['members', 'memberships', 'membershipFreezes', 'users', 'gyms', 'auditLog']

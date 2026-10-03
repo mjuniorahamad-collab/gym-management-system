@@ -19,5 +19,10 @@ export default defineConfig({
     include: ['functions/test/**/*.test.js'],
     testTimeout: 30000,
     hookTimeout: 30000,
+    // These files share ONE Firestore emulator and therefore one `gyms`
+    // collection. Running them in parallel is unsafe: a full-repo sweep reads
+    // every gym document, so it would sweep — and rewrite — another file's
+    // fixtures mid-run. Sequentially they are correct and still fast.
+    fileParallelism: false,
   },
 })
