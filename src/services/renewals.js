@@ -285,6 +285,15 @@ export async function renewMembership({
     membershipId = membershipRef.id
     paymentId = paymentRef.id
 
+    // `canWriteTenant` (firestore.rules) requires EVERY written document to carry
+    // the caller's own gymId, on a create as well as an update. The demo branch
+    // above gets this stamped for it by createDoc, but these writes go straight
+    // to a raw DocumentReference and bypass that helper, so the field is added
+    // here. Without it the rules reject both the period and the payment with an
+    // opaque PERMISSION_DENIED and the renewal is lost.
+    const membershipPayload = { ...membershipData, gymId }
+    const paymentPayload = { ...paymentData, gymId }
+
     // Read the counter floor BEFORE the transaction: the legacy-payments scan
     // must not be repeated on every contention retry.
     const floor = await prepareReceiptFloor()
@@ -292,8 +301,8 @@ export async function renewMembership({
     try {
       receiptNo = await runTransaction(db, async (tx) => {
         const minted = await mintReceiptNoInTransaction(tx, gymId, receiptPrefix, floor)
-        tx.set(membershipRef, { ...membershipData, paymentId, receiptNo: minted })
-        tx.set(paymentRef, { ...paymentData, membershipId, receiptNo: minted })
+        tx.set(membershipRef, { ...membershipPayload, paymentId, receiptNo: minted })
+        tx.set(paymentRef, { ...paymentPayload, membershipId, receiptNo: minted })
         tx.set(doc(db, 'members', member.id), memberPatch, { merge: true })
         return minted
       })
@@ -305,8 +314,8 @@ export async function renewMembership({
       console.warn('[renewals] receipt counter unavailable; retrying without it', err)
       receiptNo = fallbackReceiptNo(receiptPrefix)
       await runTransaction(db, async (tx) => {
-        tx.set(membershipRef, { ...membershipData, paymentId, receiptNo })
-        tx.set(paymentRef, { ...paymentData, membershipId, receiptNo })
+        tx.set(membershipRef, { ...membershipPayload, paymentId, receiptNo })
+        tx.set(paymentRef, { ...paymentPayload, membershipId, receiptNo })
         tx.set(doc(db, 'members', member.id), memberPatch, { merge: true })
       })
     }

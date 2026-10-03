@@ -168,6 +168,42 @@ describe('renewMembership transaction', () => {
   })
 
   /**
+   * `canWriteTenant` (firestore.rules) requires every written document to carry
+   * the caller's own gymId, on a create exactly as on an update. The demo path
+   * gets this stamped by createDoc, but the transactional path writes raw
+   * DocumentReferences and bypasses that helper, so it has to add the field
+   * itself. Without it the rules reject the period AND the payment, and the
+   * whole renewal fails with an opaque PERMISSION_DENIED.
+   */
+  it('stamps the bound gymId on the period and on the payment', async () => {
+    const { renewMembership } = await load()
+    await renewMembership(renewal())
+
+    const [period] = rows('memberships')
+    const [payment] = rows('payments')
+    expect(period.gymId).toBe('gym-1')
+    expect(payment.gymId).toBe('gym-1')
+  })
+
+  it('stamps whichever gym is bound rather than a fixed one', async () => {
+    mocks.getGymId.mockReturnValue('gym-9')
+    const { renewMembership } = await load()
+    await renewMembership(renewal())
+
+    expect(rows('memberships')[0].gymId).toBe('gym-9')
+    expect(rows('payments')[0].gymId).toBe('gym-9')
+  })
+
+  it('still carries gymId when the receipt counter fails and the fallback path runs', async () => {
+    const { renewMembership } = await load()
+    installTransactionalFirestore({ failOn: (c) => c === 'counters' })
+    await renewMembership(renewal())
+
+    expect(rows('memberships')[0].gymId).toBe('gym-1')
+    expect(rows('payments')[0].gymId).toBe('gym-1')
+  })
+
+  /**
    * The defect this replaces.
    *
    * joinDate is when the member joined the gym. Rewriting it on every renewal
