@@ -2,20 +2,25 @@
  * Gym Management System — Cloud Functions
  *
  * Scheduled jobs (v2 automation layer):
- *  1. dailyBackup              — exports all Firestore collections to Storage
- *  2. membershipExpiryReminders — flags memberships expiring in the next 7 days
+ * 1. dailyBackup               — exports all Firestore collections to Storage
+ * 2. membershipExpiryReminders — flags memberships expiring in the next 7 days
  *
- * Deploy:  firebase deploy --only functions
+ * Deploy:  npm run deploy   (runs `npm run build` first — see predeploy)
  *
  * NOTE: Email/SMS delivery is intentionally left as a TODO. Wire in a provider
  * (e.g. Resend, Twilio, Mailgun) inside `sendReminderEmail` and uncomment.
+ *
+ * ## Module system
+ *
+ * This package is ESM (`"type": "module"`). The projection engine is BUNDLED
+ * from the frontend's canonical `src/utils/` into `vendor/projection.mjs` by
+ * `npm run build`, because a deployed function cannot import anything outside
+ * this directory. `vendor/` is generated output — never edit it by hand, and
+ * never add a second copy of the projection logic here.
  */
-const { onSchedule } = require('firebase-functions/v2/scheduler')
-const admin = require('firebase-admin')
-const { getStorage } = require('firebase-admin/storage')
+import { onSchedule } from 'firebase-functions/v2/scheduler'
+import { firestore, storage } from './projection/admin.js'
 
-admin.initializeApp()
-const firestore = admin.firestore()
 const STORAGE_BACKUP_PREFIX = 'backups'
 const REMINDER_WINDOW_DAYS = 7
 
@@ -31,20 +36,21 @@ function daysUntil(target) {
  * Daily backup of every collection to Cloud Storage.
  * Reads from emulator-safe environment if configured.
  */
-exports.dailyBackup = onSchedule(
+export const dailyBackup = onSchedule(
   {
     schedule: 'every day 02:00',
     timeZone: 'Asia/Kathmandu',
     memory: '256MiB',
   },
   async () => {
+    const db = firestore()
     const dateFolder = new Date().toISOString().slice(0, 10)
-    const collections = await firestore.listCollections()
+    const collections = await db.listCollections()
 
     for (const col of collections) {
       const snap = await col.get()
       const data = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
-      const bucket = getStorage().bucket()
+      const bucket = storage().bucket()
       const file = bucket.file(`${STORAGE_BACKUP_PREFIX}/${dateFolder}/${col.id}.json`)
       await file.save(JSON.stringify(data, null, 2), {
         contentType: 'application/json',
@@ -53,7 +59,7 @@ exports.dailyBackup = onSchedule(
       console.log(`Backed up ${col.id}: ${data.length} docs`)
     }
 
-    await firestore.collection('auditLog').add({
+    await db.collection('auditLog').add({
       action: 'backup',
       entity: 'system',
       entityId: null,
@@ -70,17 +76,18 @@ exports.dailyBackup = onSchedule(
  * Flags memberships expiring within the next 7 days so staff can follow up.
  * Reads members + membershipPlans, then writes an auditLog entry per member.
  */
-exports.membershipExpiryReminders = onSchedule(
+export const membershipExpiryReminders = onSchedule(
   {
     schedule: 'every day 08:00',
     timeZone: 'Asia/Kathmandu',
     memory: '256MiB',
   },
   async () => {
-    const plansSnap = await firestore.collection('membershipPlans').get()
+    const db = firestore()
+    const plansSnap = await db.collection('membershipPlans').get()
     const plans = Object.fromEntries(plansSnap.docs.map((d) => [d.id, d.data()]))
 
-    const membersSnap = await firestore.collection('members').get()
+    const membersSnap = await db.collection('members').get()
     const expiring = []
 
     for (const doc of membersSnap.docs) {
@@ -94,7 +101,7 @@ exports.membershipExpiryReminders = onSchedule(
       const left = daysUntil(end)
       if (left >= 0 && left <= REMINDER_WINDOW_DAYS) {
         expiring.push({ member: doc.id, name: member.name, daysLeft: left })
-        await firestore.collection('auditLog').add({
+        await db.collection('auditLog').add({
           action: 'expiry-reminder',
           entity: 'members',
           entityId: doc.id,
@@ -116,7 +123,7 @@ async function sendReminderEmail(name, email, daysLeft) {
   if (!email) return
   // TODO: integrate an email/SMS provider (Resend, Twilio, Mailgun, ...).
   // Example (Resend):
-  //   const { Resend } = require('resend')
+  //   const { Resend } = await import('resend')
   //   const resend = new Resend(process.env.RESEND_API_KEY)
   //   await resend.emails.send({
   //     from: 'Himalye Wonders Gym <no-reply@yourdomain.com>',

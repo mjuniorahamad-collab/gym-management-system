@@ -14,7 +14,8 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:rules": "set FIRESTORE_EMULATOR_VERSION=1.19.8&& firebase emulators:exec --project demo-himalye-gym --only firestore \"vitest run --config vitest.emulator.js\""
+    "test:rules": "set FIRESTORE_EMULATOR_VERSION=1.19.8&& firebase emulators:exec --project demo-himalye-gym --only firestore \"vitest run --config vitest.emulator.js\"",
+    "test:functions": "set FIRESTORE_EMULATOR_VERSION=1.19.8&& firebase emulators:exec --project demo-himalye-gym --only firestore \"vitest run --config vitest.functions.js\""
   },
   "dependencies": {
     "@hookform/resolvers": "^3.9.1",

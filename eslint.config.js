@@ -7,7 +7,11 @@ import prettier from 'eslint-config-prettier'
 
 export default [
   {
-    ignores: ['dist', 'node_modules', 'coverage', 'functions'],
+    // `functions` was previously ignored wholesale, which left the trusted
+    // projection writer — the most security-sensitive code in the repository —
+    // entirely unlinted. Hand-written Functions code is now linted; only its
+    // dependencies and the generated bundle are excluded.
+    ignores: ['dist', 'node_modules', 'coverage', 'functions/node_modules', 'functions/vendor'],
   },
   js.configs.recommended,
   {
@@ -33,6 +37,17 @@ export default [
     },
     settings: {
       react: { version: 'detect' },
+    },
+  },
+  {
+    // Cloud Functions run in Node, not a browser. `functions/` used to be ignored
+    // outright, so its globals were never declared; giving it its own block keeps
+    // the browser globals above from masking genuinely Node-only code.
+    files: ['functions/**/*.{js,mjs}'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: { ...globals.node },
     },
   },
   prettier,
