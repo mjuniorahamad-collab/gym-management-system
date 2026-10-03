@@ -1,6 +1,8 @@
 import { addDays, parseDate } from './dateHelpers'
 import { safePaymentAmount } from './payments'
 import { getMembershipCharge } from './pt'
+import { freezeTailCharge } from './freezeTails'
+import { freezeTailDays } from './membershipFreezes'
 
 /**
  * SINGLE SOURCE OF TRUTH for all membership money math.
@@ -131,6 +133,7 @@ export function computeMemberLedger({
   plans = [],
   payments = [],
   memberships = [],
+  freezes = [],
   ptSurcharge = 0,
   ptSurchargeOverride,
 } = {}) {
@@ -264,7 +267,55 @@ export function computeMemberLedger({
       due: openPeriods.reduce((s, p) => s + p.due, 0),
     },
     targetMembershipId: openPeriods.find((p) => !p.implicit)?.id,
+    freezeTails: summariseFreezeTails({ periods, freezes, plans, member, ptSurcharge, ptSurchargeOverride }),
   }
+}
+
+/**
+ * Freeze tails owed on this member's periods - INFORMATIONAL ONLY.
+ *
+ * A tail is the post-expiry portion of a freeze: the member already holds those
+ * days as entitlement, so they are NOT an unpaid period and must never be added
+ * to `openPeriods` or `totals.due`. Doing so would create a phantom balance that
+ * no payment could ever settle, because the tail is invoiced as its own line
+ * inside the next renewal transaction rather than settled by period allocation.
+ *
+ * Surfacing it here is what stops it being invisible: the member can see what the
+ * next renewal will charge before they renew, and a tail that could not be priced
+ * is reported rather than silently waived.
+ */
+function summariseFreezeTails({ periods, freezes, plans, member, ptSurcharge, ptSurchargeOverride }) {
+  if (!Array.isArray(freezes) || freezes.length === 0) return []
+
+  const out = []
+  for (const period of periods) {
+    if (!period?.id) continue
+    // The ledger's period rows carry the member id separately from the period, so
+    // it is supplied here to scope the freeze lookup to this member.
+    const days = freezeTailDays({ ...period, memberId: member?.id }, freezes)
+    if (days <= 0) continue
+
+    // Priced from the plan the freeze was GRANTED against, which is the plan the
+    // period itself was bought on - never the member's current plan.
+    const plan = plans.find((p) => String(p.id) === String(period.planId)) || null
+    const charge = freezeTailCharge({
+      tailDays: days,
+      plan,
+      isPT: period.isPT ?? member?.isPT ?? false,
+      ptSurcharge,
+      ptSurchargeOverride: ptSurchargeOverride ?? period.ptSurcharge ?? member?.ptSurchargeOverride,
+    })
+
+    out.push({
+      membershipId: period.id,
+      label: 'Freeze extension',
+      days: charge.days,
+      amount: charge.amount,
+      priceable: charge.priceable,
+      reason: charge.reason,
+    })
+  }
+  return out
 }
 
 /**
