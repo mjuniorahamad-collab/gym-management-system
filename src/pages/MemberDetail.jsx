@@ -215,8 +215,17 @@ export default function MemberDetail() {
     [ledger]
   )
 
-  const canWrite = can('members.write')
+const canWrite = can('members.write')
   const canFinanceWrite = can('finance.write')
+  // Financial figures on this page are DERIVED from the payments collection.
+  // firestore.rules gates payments reads on isFinance() (owner/admin) and App.jsx
+  // routes every finance page behind finance.view, so front-desk and trainer get
+  // an empty payments list rather than a redacted one. computeMemberLedger sums
+  // payments with no denormalised fallback, which means for those roles every
+  // period would compute as paid=0 and due=full price. That is not a disclosure
+  // leak but it is wrong data presented as fact, so the figures are gated rather
+  // than merely hidden. See MemberDetail.financeVisibility.test.jsx.
+  const canFinanceView = can('finance.view')
 
   // Canonical PT charge for display: base plan price + applicable surcharge
   // (per-member override when set, otherwise the per-gym default) when the
@@ -474,8 +483,31 @@ export default function MemberDetail() {
     }
   }
 
+  // Declared before the early returns below so the hook order stays stable across
+  // the loading -> loaded transition.
+  const tabs = [
+    { key: 'overview', label: 'Overview' },
+    // The payments tab is omitted entirely for roles that cannot read the
+    // payments collection. Rendering it would show a "No payments yet" empty
+    // state that is factually wrong rather than merely empty.
+    ...(canFinanceView
+      ? [{ key: 'payments', label: `Payments (${memberPayments.length})` }]
+      : []),
+    { key: 'attendance', label: `Attendance (${memberAttendance.length})` },
+    { key: 'progress', label: `Progress (${weightProgress.chronological.length})` },
+  ]
+
+  // A tab withheld by role must not stay selected, or its content would keep
+  // rendering for a role that is no longer offered it. Keyed on the visible keys
+  // rather than the array itself, which is rebuilt every render and would
+  // otherwise re-run this effect each time.
+  const visibleTabKeys = tabs.map((t) => t.key).join(',')
+  useEffect(() => {
+    if (!visibleTabKeys.split(',').includes(tab)) setTab('overview')
+  }, [tab, visibleTabKeys])
+
   if (loading) return <Spinner label="Loading member…" />
-  if (!member) {
+if (!member) {
     if (loadError) {
       return (
         <EmptyState
@@ -512,14 +544,7 @@ export default function MemberDetail() {
     )
   }
 
-  const tabs = [
-    { key: 'overview', label: 'Overview' },
-    { key: 'payments', label: `Payments (${memberPayments.length})` },
-    { key: 'attendance', label: `Attendance (${memberAttendance.length})` },
-    { key: 'progress', label: `Progress (${weightProgress.chronological.length})` },
-  ]
-
-  return (
+return (
     <div className="space-y-5">
       <Link to="/members" className="inline-flex items-center gap-1.5 text-sm font-medium text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200">
         <ArrowLeft size={16} /> Back to members
@@ -688,7 +713,7 @@ export default function MemberDetail() {
                 </div>
               )}
 
-              {tab === 'payments' && (
+              {tab === 'payments' && canFinanceView && (
                 <div className="space-y-5">
                   {ledgerPeriodsDesc.length > 0 && (
                     <div className="rounded-xl border border-slate-200 dark:border-slate-800">
@@ -756,8 +781,11 @@ export default function MemberDetail() {
                     </div>
                   )}
 
-                  <div className="flex justify-end">
-                    {canWrite && (
+<div className="flex justify-end">
+                    {/* finance.write, not members.write: the payments create rule
+                        requires isFinance(), so members.write would have offered
+                        front-desk a button that always fails permission checks. */}
+                    {canFinanceWrite && (
                       <Button size="sm" onClick={() => setPayOpen(true)}>
                         <Plus size={14} /> Record payment
                       </Button>
@@ -974,7 +1002,7 @@ export default function MemberDetail() {
                   <span>Expires</span>
                   <span className="font-semibold">{expiry ? formatDate(expiry) : '—'}</span>
                 </div>
-                {ledger && (ledger.totals.billed > 0 || ledger.periods.length > 0) && (
+                {ledger && canFinanceView && (ledger.totals.billed > 0 || ledger.periods.length > 0) && (
                   <>
                     <div className="mt-1 flex items-center justify-between text-sm">
                       <span>Amount paid</span>
@@ -991,7 +1019,7 @@ export default function MemberDetail() {
                   </>
                 )}
               </div>
-              {canWrite && (
+{canFinanceWrite && (
                 <Button className="w-full" onClick={() => setPayOpen(true)}>
                   <CreditCard size={16} /> Record payment
                 </Button>
@@ -1173,7 +1201,7 @@ currentExpiry={expiry}
         loading={submitting}
         onConfirm={handlePtToggle}
       >
-        {!member?.isPT && (ledger?.targetMembershipId || latestMembershipId) && ledger?.totals.due > 0 && (
+        {!member?.isPT && canFinanceView && (ledger?.targetMembershipId || latestMembershipId) && ledger?.totals.due > 0 && (
           <div className="rounded-lg border border-indigo-200 bg-indigo-50 p-3 dark:border-indigo-500/30 dark:bg-indigo-500/10">
             <label className="flex cursor-pointer items-start gap-2 text-sm text-indigo-900 dark:text-indigo-200">
               <input
