@@ -5,6 +5,7 @@ import {
   periodsForMember,
   resolvePeriodState,
 } from './membershipPeriods'
+import { applyFreezes } from './membershipFreezes'
 
 /**
  * Derive a member's membership expiry date from the existing data model:
@@ -70,9 +71,10 @@ export function getDaysRemaining(expiry, timezone) {
  */
 export function getCurrentMembershipExpiry(member, plan, memberships, options = {}) {
   if (!member || !member.id) return null
+  const { freezes, ...periodOptions } = options
   if (Array.isArray(memberships)) {
-    const own = periodsForMember(memberships, member.id)
-    const state = resolvePeriodState(own, options)
+    const own = applyFreezes(periodsForMember(memberships, member.id), freezes)
+    const state = resolvePeriodState(own, periodOptions)
     const expiry = displayExpiry(state)
     if (expiry) return expiry
   }
@@ -94,8 +96,9 @@ export function getCurrentMembershipExpiry(member, plan, memberships, options = 
  */
 export function isMemberCurrent(member, memberships, options = {}) {
   if (!member || !member.id) return false
-  const own = periodsForMember(Array.isArray(memberships) ? memberships : [], member.id)
-  return Boolean(resolvePeriodState(own, options).current)
+  const { freezes, ...periodOptions } = options
+  const own = applyFreezes(periodsForMember(Array.isArray(memberships) ? memberships : [], member.id), freezes)
+  return Boolean(resolvePeriodState(own, periodOptions).current)
 }
 
 export function getExpiryBucket(days) {

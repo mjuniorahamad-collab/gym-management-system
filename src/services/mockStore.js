@@ -22,6 +22,7 @@ export const store = {
   trainers: [],
   membershipPlans: [],
   memberships: [],
+  membershipFreezes: [],
   payments: [],
   expenses: [],
   attendance: [],

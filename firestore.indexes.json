@@ -34,6 +34,13 @@
       ]
     },
     {
+      "collectionGroup": "membershipFreezes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "gymId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },    {
       "collectionGroup": "memberships",
       "queryScope": "COLLECTION",
       "fields": [

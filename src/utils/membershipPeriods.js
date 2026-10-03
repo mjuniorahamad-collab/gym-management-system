@@ -113,6 +113,20 @@ export function periodsForMember(periods, memberId) {
 }
 
 /**
+ * The expiry that actually applies to a period.
+ *
+ * `effectiveExpiry` is set by `utils/membershipFreezes.applyFreezes` and is the
+ * freeze-extended date. It is read in preference to `expiryDate` so that a
+ * freeze changes every expiry- and currency-aware screen without anything
+ * mutating the period document.
+ *
+ * `expiryDate` itself is never rewritten. It is what the member bought.
+ */
+export function periodExpiryKey(period) {
+  return periodDayKey(period?.effectiveExpiry) || periodDayKey(period?.expiryDate)
+}
+
+/**
  * Whether `period` covers `todayKey`.
  *
  * A period with a missing or unparseable expiry is NOT current. Treating an
@@ -122,7 +136,7 @@ export function periodsForMember(periods, memberId) {
  */
 export function isPeriodCurrent(period, todayKey) {
   const start = periodDayKey(period?.startDate)
-  const expiry = periodDayKey(period?.expiryDate)
+  const expiry = periodExpiryKey(period)
   if (!start || !expiry) return false
   if (keyCompare(expiry, start) < 0) return false
   return keyCompare(start, todayKey) <= 0 && keyCompare(todayKey, expiry) <= 0
@@ -205,7 +219,7 @@ export function isCurrentMember(periods, memberId, options = {}) {
 export function displayExpiry(periodState) {
   const s = periodState || {}
   const p = s.current || s.future || s.past
-  const key = periodDayKey(p?.expiryDate)
+  const key = periodExpiryKey(p)
   return key ? key : null
 }
 
@@ -219,7 +233,7 @@ export function displayExpiry(periodState) {
  * which is what every caller compares against.
  */
 export function daysToExpiry(period, todayKey) {
-  const expiry = periodDayKey(period?.expiryDate)
+  const expiry = periodExpiryKey(period)
   if (!expiry || !todayKey) return null
   const dayNum = (key) => {
     const [y, m, d] = key.split('-').map(Number)

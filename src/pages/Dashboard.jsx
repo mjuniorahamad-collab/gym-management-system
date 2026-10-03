@@ -95,6 +95,7 @@ export default function Dashboard() {
   const plans = useCollection('membershipPlans')
   const bookings = useCollection('bookings')
   const memberships = useCollection('memberships')
+  const freezes = useCollection('membershipFreezes')
 
   const loading =
     members.loading || payments.loading || expenses.loading || attendance.loading || plans.loading
@@ -145,7 +146,7 @@ export default function Dashboard() {
     const rows = []
     for (const member of members.items) {
       const plan = planMap[member.membershipPlanId]
-      const expiry = getCurrentMembershipExpiry(member, plan, memberships.items, { timezone })
+      const expiry = getCurrentMembershipExpiry(member, plan, memberships.items, { timezone, freezes: freezes.items })
       if (!expiry) continue
       const days = getDaysRemaining(expiry, timezone)
       if (days === null || !matchesExpiryFilter(days, 'all')) continue
@@ -157,7 +158,7 @@ export default function Dashboard() {
       return String(a.member.name || '').localeCompare(String(b.member.name || ''))
     })
     return rows
-  }, [members.items, planMap, memberships.items, timezone])
+  }, [members.items, planMap, memberships.items, timezone, freezes.items])
 
   const filteredExpiring = useMemo(() => {
     const list =

@@ -79,6 +79,7 @@ export default function MemberDetail() {
   const payments = useCollection('payments')
   const attendance = useCollection('attendance')
   const memberships = useCollection('memberships')
+  const freezes = useCollection('membershipFreezes')
   const membersCol = useCollection('members')
   const weightRecords = useCollection('weightRecords')
 
@@ -157,8 +158,8 @@ export default function MemberDetail() {
   // also replaced a local copy of the derivation that fabricated an expiry from
   // the current time when joinDate was unparseable.
   const expiry = useMemo(
-    () => getCurrentMembershipExpiry(member, plan, memberships.items, { timezone }),
-    [member, plan, memberships.items, timezone]
+    () => getCurrentMembershipExpiry(member, plan, memberships.items, { timezone, freezes: freezes.items }),
+    [member, plan, memberships.items, timezone, freezes.items]
   )
 
   const daysLeft = expiry ? getDaysRemaining(expiry, timezone) : null

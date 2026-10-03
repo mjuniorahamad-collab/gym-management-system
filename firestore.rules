@@ -338,6 +338,22 @@ service cloud.firestore {
       allow delete: if isOwner() && canDeleteTenant(resource);
     }
 
+    // ---------- Membership freezes (immutable, derived expiry) ---------------
+    // A freeze suspends a period's countdown. It must never edit the period:
+    // effective expiry is DERIVED from the period's original expiry plus these
+    // intervals, so the amount the member actually paid for stays on record.
+    //
+    // Append-only, like the audit log. Cancelling a freeze appends a
+    // `kind: 'cancellation'` document referencing the freeze it voids; there is
+    // deliberately no update and no delete path, so a freeze's history cannot be
+    // rewritten after the fact. `isFinance()` on create because a freeze grants
+    // a member paid-for time and so changes what is owed.
+    match /membershipFreezes/{id} {
+      allow read: if isStaff() && canReadTenant(resource);
+      allow create: if isFinance() && canWriteTenant(resource);
+      allow update, delete: if false;
+    }
+
     // ---------- Payments (financial — owner/admin only) --------------------
     match /payments/{id} {
       allow read: if isFinance() && canReadTenant(resource);

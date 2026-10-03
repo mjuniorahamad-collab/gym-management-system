@@ -71,13 +71,27 @@ describe('firestore rules — renewal write path', () => {
   })
 
   it('scopes every business collection by gymId (tenancy)', () => {
-    const scoped = ['members', 'trainers', 'membershipPlans', 'memberships', 'payments', 'expenses', 'attendance', 'classes', 'bookings', 'auditLog', 'weightRecords']
+    const scoped = ['members', 'trainers', 'membershipPlans', 'memberships', 'membershipFreezes', 'payments', 'expenses', 'attendance', 'classes', 'bookings', 'auditLog', 'weightRecords']
     for (const collection of scoped) {
       const block = extractBlock(rulesText, collection)
       expect(block, `match /${collection}/{id} block missing`).not.toBeNull()
       expect(block, `${collection} reads must be gym-scoped`).toContain('canReadTenant(resource)')
       expect(block, `${collection} must allow a tenancy write guard`).toMatch(/canWriteTenant\(resource\)|canDeleteTenant\(resource\)/)
     }
+  })
+
+  /**
+   * A freeze extends a membership's expiry, so it is append-only by design:
+   * there is no update and no delete path, and cancelling one appends a
+   * `kind: 'cancellation'` record instead. Without this, "correcting" a freeze
+   * would erase the fact that it was ever granted.
+   */
+  it('makes membershipFreezes append-only', () => {
+    const block = extractBlock(rulesText, 'membershipFreezes')
+    expect(block, 'match /membershipFreezes/{id} block missing').not.toBeNull()
+    expect(block).toContain('allow read: if isStaff() && canReadTenant(resource)')
+    expect(block).toContain('allow create: if isFinance() && canWriteTenant(resource)')
+    expect(block).toMatch(/allow update, delete: if false/)
   })
 
   it('gates weightRecords to staff read/write and admin/owner delete (same as members)', () => {
