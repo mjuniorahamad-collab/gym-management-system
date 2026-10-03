@@ -1,0 +1,4 @@
+# The frozen Phase 0.5A evidence file is a signed artifact whose recorded SHA-256
+# is the LF form (82,517 bytes). With core.autocrlf=true and no rule here, a plain
+# checkout smudged it to CRLF (84,468 bytes), silently invalidating the hash.
+tests.emulator/firestoreSecurityEmulator.test.js text eol=lf

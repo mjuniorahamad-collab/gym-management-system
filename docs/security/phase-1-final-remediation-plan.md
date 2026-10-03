@@ -556,6 +556,8 @@ Removing the client-side `ensureGymTenancy` also removed `ensureMemberNumberCoun
 - `npm run build` — succeeds (existing >500 kB chunk warning only).
 - `npm run test:rules` — **527 tests, 507 passing, 20 failing.** The frozen Phase 0.5A file is unmodified (SHA-256 `6DEDEA4CE32646C59B0A79957C703A657F5D7B5CB46208D75BC5A2A3B768BD54`).
 
+- **These counts are the §17.5 checkpoint, not the current implementation line.** The emulator suite has since grown; for the measured current baseline on `production-readiness/phase-4`, see **§19**.
+
 The 20 failures fall into **two distinct classes**, and the distinction is the point of this section:
 
 **Class 1 — the 15 pre-existing emulator-semantic failures (unchanged).** `C6/C7`, `E8`, `F9`, `J1`×11, `J5`×1. These were classified before the booking work and remain exactly as they were. The deployed Firestore rules were byte-identical to the local rules, and these cases are query-evaluation semantics of the emulator, not product behaviour. **No rules change was made for them, and none should be.** Do not treat them as regressions.
@@ -650,6 +652,67 @@ Equivalence was proved against verbatim copies of both previous implementations 
 - Replacing a logo does not delete the previous object. `storage.rules` matches `/logos/{name}` and only the download URL is stored, not the object path, so the old file cannot be identified with confidence. Deleting it could also break a URL already printed on signage or sent to a member — a product call.
 - The upload path is still not gym-scoped. This looks like an oversight, but `storage.rules` matches a single segment after `/logos/`, so `logos/{gymId}/{file}` would not match and would be **denied by the rules** until they were changed and deployed.
 - There is still no way to remove a logo, and nothing cleans up on gym deletion. The already-orphaned objects are production data and cannot be enumerated from here.
+
+---
+
+## 19. Current verification status — implementation line `production-readiness/phase-4`
+
+Recorded 2026-10-03 at commit `b982188`.
+
+This section states the CURRENT measurement. It does not amend §17.5 or any earlier checkpoint: those record what was true when they were written, and §17.5's `527/507/20` was correct for `security-remediation/phase-1` at `ab33ddd`. Historical statements are left unedited so each checkpoint stays auditable.
+
+### 19.1 Measured baseline
+
+| Gate | Result |
+|---|---|
+| `npm test` | 950 passing (57 files) |
+| `npm run lint` | 0 errors, 12 pre-existing `react-refresh` warnings |
+| `npm run build` | succeeds (existing >500 kB chunk warning only) |
+| `npm run test:rules` | **555 total, 535 passing, 20 failing** |
+
+### 19.2 Why the emulator total moved from 527 to 555
+
+Additive only. The +28 is accounted for exactly:
+
+- `16919bb` added `tests.emulator/firestoreAttendanceSessionsEmulator.test.js` — 19 tests covering the attendance-session rules.
+- `f860cc1` added the 9 SEC-O renewal-payload cases (§19.4).
+
+19 + 9 = 28. **No test was deleted, weakened, skipped or annotated away, and no failing test was made to pass.**
+
+### 19.3 The 20 failures are the same 20
+
+Unchanged by name and unchanged in class assignment from §17.5: **Class 1** (15, emulator query-evaluation semantics, no rules change) `C6/C7`, `E8`, `F9`, `J1`×11, `J5`×1; **Class 2** (5, fixture-dependent by design) `F1–F4`×4 and `F12`. **Zero new failures.**
+
+One caveat, so §17.5 is not misread as current: `firestore.rules` **has** changed since the §17.5 checkpoint — `16919bb` and `0c9a57a` both amended it. §17.5's statement that the deployed rules were byte-identical to the local rules described the situation at that checkpoint and is not a present-tense claim. Neither of those two commits added a failing case.
+
+### 19.4 SEC-O was relocated out of the frozen evidence file
+
+`f860cc1` appended 142 lines to `tests.emulator/firestoreSecurityEmulator.test.js` (group `SEC-O`, 9 cases), changing its SHA-256 from `6DEDEA4CE32646C59B0A79957C703A657F5D7B5CB46208D75BC5A2A3B768BD54` to `9A92C6ED363CBE68D568A9F425470F39BD97DF31CA0E428C1687DD78E4157980`. That broke the freeze. The file is a signed artifact whose failing tests ARE the deliverable, and §17.5 already records the governing rule: it must not be edited to change an outcome.
+
+Corrected by `766c433`. The evidence file was restored byte-for-byte, and the 9 cases were re-homed in `tests.emulator/firestoreSecurityRemediation.test.js` — the additive companion whose own header states the evidence file is deliberately left untouched — using the `rem-` id prefix that header requires. The move is total-neutral: **555/535/20 before and after.** The coverage is preserved and now lives where new evidence belongs.
+
+### 19.5 Frozen evidence integrity
+
+| Property | Value |
+|---|---|
+| Path | `tests.emulator/firestoreSecurityEmulator.test.js` |
+| SHA-256 | `6DEDEA4CE32646C59B0A79957C703A657F5D7B5CB46208D75BC5A2A3B768BD54` |
+| Size | 82,517 bytes |
+| Verified | byte-identical on disk and in the `b982188` blob |
+
+A line-ending hazard was found while restoring it and is now closed. `core.autocrlf` is `true` on this machine and the repository had no `.gitattributes`, so a plain `git checkout` of that path smudged the file to CRLF: 84,468 bytes and a changed hash, with no edit to any content. The recorded hash is the LF form, so the path is now pinned:
+
+```
+tests.emulator/firestoreSecurityEmulator.test.js text eol=lf
+```
+
+Scoped to that one path deliberately. Repository-wide line-ending policy is unchanged, and `.prettierrc` already declares `"endOfLine": "lf"`, so LF is the project's existing intent — `core.autocrlf` was the machine-local override working against it.
+
+### 19.6 Projection engine — inert in this phase
+
+`b982188` added `src/utils/memberProjection.js`, a pure function of the membership periods and freezes. The projection engine is inert in this phase: no writer, callable endpoint, nightly sweep, query migration, or Firestore-rule change was introduced. No new client-write path for the projection fields was added in this phase. Existing client-write capability, if any, remains unchanged and is explicitly deferred to the trusted-writer/rules phase.
+
+What that does **not** establish is that the fields are unwritable. Purity of the engine says nothing about what the rules permit, and no rule was changed here to test it. Phase 3 must add the trusted writer and settle the rules question explicitly.
 
 ---
 
