@@ -359,6 +359,37 @@ service cloud.firestore {
       allow delete: if (isRole('admin') || isOwner()) && canDeleteTenant(resource);
     }
 
+    // ---------- Attendance sessions (open check-in pointers) -----------------
+    // One document per (gym, member) at a deterministic id. Check-in reads this
+    // path inside a transaction and writes the attendance record and this
+    // pointer together, so two devices checking the same member in at the same
+    // moment contend on one document and exactly one wins — see
+    // src/services/attendanceSessions.js.
+    //
+    // The `resource == null` arm is required, not a convenience. The very first
+    // check-in of a member in a gym reads a pointer that does not exist yet, and
+    // Firestore evaluates that read against `resource == null`, for which every
+    // tenant guard below is false. Without this arm the first check-in of the
+    // first member in a new gym fails PERMISSION_DENIED. It discloses nothing:
+    // a missing document has no contents, so the answer is simply "not found",
+    // and it grants no access to any existing pointer.
+    match /attendanceSessions/{id} {
+      allow read: if isStaff() && ((resource == null && hasGym()) || canReadTenant(resource));
+      allow create, update: if isStaff() && canWriteTenant(resource);
+      // Delete is a separate clause, not `canWriteTenant`. That helper inspects
+      // `request.resource.data.gymId`, and on a delete there is no incoming
+      // document, so the access raises a null-value error and the delete is
+      // denied - which would strand every member who could never check out.
+      // `canDeleteTenant` reads only `resource`, so it is the correct guard.
+      //
+      // Staff may release a pointer on checkout, which is why this is not
+      // owner-only as it is for financial records. This is an operational
+      // pointer, not money: it carries no amount and no ledger entry, and staff
+      // already create and update attendance rows directly. The transaction
+      // still requires the pointer's gymId to match the caller's own gym.
+      allow delete: if isStaff() && canDeleteTenant(resource);
+    }
+
     // ---------- Classes ----------------------------------------------------
     match /classes/{id} {
       allow read: if isStaff() && canReadTenant(resource);

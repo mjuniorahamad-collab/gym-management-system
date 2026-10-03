@@ -3,8 +3,7 @@ import { CheckCircle2, ClipboardCheck, QrCode, Search, UserCheck } from 'lucide-
 import { useCollection } from '@/hooks/useFirestore'
 import { useToday } from '@/hooks/useToday'
 import { useSettings } from '@/context/SettingsContext'
-import { createDoc, updateDocById } from '@/services/firestore'
-import { logAudit } from '@/services/audit'
+import { checkInMember, checkOutMember } from '@/services/attendanceSessions'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/context/ToastContext'
 import { PageHeader } from '@/components/layout/PageHeader'
@@ -16,7 +15,7 @@ import { SearchInput } from '@/components/ui/SearchInput'
 import { Spinner } from '@/components/ui/Spinner'
 import { StatCard } from '@/components/charts/StatCard'
 import { formatDateTime, formatNumber } from '@/utils/formatters'
-import { gymDayKey } from '@/utils/gymTime'
+import { attendanceDay, isOpenSession } from '@/utils/attendance'
 
 export default function Attendance() {
   const { can } = useAuth()
@@ -37,18 +36,33 @@ export default function Attendance() {
   const todaysEntries = useMemo(
     () =>
       attendance
-        .filter((a) => gymDayKey(a.date, timezone) === todayStart)
+        .filter((a) => attendanceDay(a, timezone) === todayStart)
         .sort((a, b) => String(b.checkIn || b.date).localeCompare(String(a.checkIn || a.date))),
     [attendance, todayStart, timezone]
   )
 
-  const checkedInToday = useMemo(() => {
+  /**
+   * Members currently in the gym, from open sessions on ANY day.
+   *
+   * Deriving this from `todaysEntries` alone was wrong for a session that began
+   * at 23:50 and is still open at 00:10: that record is in yesterday's list, so
+   * the member appeared to have no open session, the "currently checked in"
+   * count under-reported, and the quick check-in card offered to check them in a
+   * second time. The server-side session pointer rejects that write, but the UI
+   * must not invite it.
+   */
+  const openSessions = useMemo(() => {
     const set = new Set()
-    for (const a of todaysEntries) {
-      if (!a.checkOut) set.add(a.memberId)
+    for (const a of attendance) {
+      if (isOpenSession(a)) set.add(a.memberId)
     }
     return set
-  }, [todaysEntries])
+  }, [attendance])
+
+  const checkedOutTodayCount = useMemo(
+    () => todaysEntries.filter((a) => !isOpenSession(a)).length,
+    [todaysEntries]
+  )
 
   const filteredMembers = useMemo(() => {
     const q = search.trim().toLowerCase()
@@ -67,7 +81,7 @@ export default function Attendance() {
 
   const canWrite = can('attendance.write')
 
-  // checkedInToday is derived from the realtime subscription, so a check-in that
+  // openSessions is derived from the realtime subscription, so a check-in that
   // has been accepted but not yet echoed back is invisible to it. Two check-ins
   // issued back to back - a double click, or Enter pressed twice in the QR field
   // while the first write is still in flight - would both pass the duplicate
@@ -81,7 +95,11 @@ export default function Attendance() {
   const handleCheckIn = async (memberId) => {
     if (!memberId || !canWrite) return false
     if (checkInsInFlight.current.has(memberId)) return false
-    if (checkedInToday.has(memberId)) {
+    // Fast client-side guard for the common case, using the loaded collection.
+    // It is NOT the duplicate check: this subscription can lag, so the
+    // authoritative test happens server-side in the same transaction that writes
+    // the record. This only saves a round trip for an obvious repeat.
+    if (openSessions.has(memberId)) {
       toast.info('Already checked in today')
       return false
     }
@@ -91,19 +109,23 @@ export default function Attendance() {
       // Stamped at write time, not read from render state: a front-desk tab left
       // open across midnight would otherwise record the check-in against the
       // previous day, corrupting the attendance history it is reporting on.
-      const now = new Date().toISOString()
-      await createDoc('attendance', {
+      // `now` is captured here so a transaction retry cannot rewrite it.
+      await checkInMember({
         memberId,
-        date: now,
-        checkIn: now,
-        checkOut: '',
-        source: 'manual',
+        memberName: memberMap[memberId]?.name,
+        timezone,
       })
-      await logAudit({ action: 'create', entity: 'attendance', entityId: memberId, details: { checkIn: true } })
       toast.success(`${memberMap[memberId]?.name} checked in`)
       return true
     } catch (e) {
-      toast.error(e.message || 'Check-in failed')
+      // The transaction rejected a duplicate that this device's snapshot had not
+      // yet seen. Report it as a duplicate rather than a failure, so staff are
+      // not sent looking for a problem that does not exist.
+      if (e?.code === 'already-checked-in') {
+        toast.info('Already checked in today')
+      } else {
+        toast.error(e.message || 'Check-in failed')
+      }
       return false
     } finally {
       checkInsInFlight.current.delete(memberId)
@@ -114,10 +136,17 @@ export default function Attendance() {
   const handleCheckOut = async (entry) => {
     setSubmitting(true)
     try {
-      await updateDocById('attendance', entry.id, { checkOut: new Date().toISOString() })
+      // Routed through the session pointer so the release and the checkOut write
+      // are one transaction. Writing them separately could strand the pointer
+      // and block the member from ever checking in again.
+      await checkOutMember({ memberId: entry.memberId, timezone })
       toast.success('Checked out')
     } catch (e) {
-      toast.error(e.message || 'Check-out failed')
+      if (e?.code === 'not-checked-in') {
+        toast.info('This member is not currently checked in')
+      } else {
+        toast.error(e.message || 'Check-out failed')
+      }
     } finally {
       setSubmitting(false)
     }
@@ -136,7 +165,7 @@ export default function Attendance() {
     // correctly. The field is cleared only once the write is confirmed; a
     // try/catch here could never restore it, because handleCheckIn reports its own
     // failures and does not rethrow.
-    if (checkedInToday.has(member.id)) {
+    if (openSessions.has(member.id)) {
       toast.info('Already checked in today')
       return
     }
@@ -154,13 +183,13 @@ export default function Attendance() {
         <StatCard title="Today's check-ins" value={formatNumber(todaysEntries.length)} icon={UserCheck} tone="emerald" />
         <StatCard
           title="Currently in the gym"
-          value={formatNumber(checkedInToday.size)}
+          value={formatNumber(openSessions.size)}
           icon={ClipboardCheck}
           tone="indigo"
         />
         <StatCard
           title="Checked out"
-          value={formatNumber(todaysEntries.length - checkedInToday.size)}
+          value={formatNumber(checkedOutTodayCount)}
           icon={CheckCircle2}
           tone="sky"
         />
@@ -174,7 +203,7 @@ export default function Attendance() {
             <div className="max-h-80 space-y-2 overflow-y-auto">
               {filteredMembers.length === 0 && <EmptyState title="No members match" />}
               {filteredMembers.map((m) => {
-                const checkedIn = checkedInToday.has(m.id)
+                const checkedIn = openSessions.has(m.id)
                 return (
                   <div
                     key={m.id}

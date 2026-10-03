@@ -1,15 +1,14 @@
 import { describe, beforeEach, expect, it, vi } from 'vitest'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import Attendance from '@/pages/Attendance'
 
 const { mocks, toastMocks, authValue } = vi.hoisted(() => ({
   mocks: {
-    createDoc: vi.fn(),
-    updateDocById: vi.fn(),
+    checkInMember: vi.fn(),
+    checkOutMember: vi.fn(),
     removeDoc: vi.fn(),
     fetchPage: vi.fn(),
     subscribeCollection: vi.fn(),
-    logAudit: vi.fn(),
   },
   toastMocks: { success: vi.fn(), error: vi.fn(), info: vi.fn() },
   authValue: {
@@ -23,15 +22,27 @@ const { mocks, toastMocks, authValue } = vi.hoisted(() => ({
 }))
 
 vi.mock('@/services/firestore', () => ({
-  createDoc: mocks.createDoc,
-  updateDocById: mocks.updateDocById,
   removeDoc: mocks.removeDoc,
   fetchPage: mocks.fetchPage,
   subscribeCollection: mocks.subscribeCollection,
   isReady: vi.fn(() => true),
 }))
 
-vi.mock('@/services/audit', () => ({ logAudit: mocks.logAudit }))
+// Only the write boundary is stubbed. 'attendanceDay' and 'isOpenSession' come
+// from @/utils/attendance and stay real, because the page's timezone bucketing
+// and its overnight-session handling are what these tests assert.
+vi.mock('@/services/attendanceSessions', () => ({
+  checkInMember: mocks.checkInMember,
+  checkOutMember: mocks.checkOutMember,
+}))
+
+const duplicateError = Object.assign(new Error('This member is already checked in'), {
+  code: 'already-checked-in',
+  checkInDay: '2026-03-10',
+})
+const notCheckedInError = Object.assign(new Error('This member is not currently checked in'), {
+  code: 'not-checked-in',
+})
 
 vi.mock('@/context/AuthContext', () => ({
   useAuth: () => authValue,
@@ -39,6 +50,12 @@ vi.mock('@/context/AuthContext', () => ({
 
 vi.mock('@/context/ToastContext', () => ({
   useToast: () => ({ toast: toastMocks, ...toastMocks, promise: vi.fn() }),
+}))
+
+// The gym timezone is the default; the page passes it through to the service so
+// check-in day keys are stamped in the gym's calendar, not the device's.
+vi.mock('@/context/SettingsContext', () => ({
+  useSettings: () => ({ timezone: 'Asia/Kolkata' }),
 }))
 
 const listeners = {}
@@ -72,9 +89,8 @@ describe('Attendance check-in/check-out', () => {
     }
     Object.keys(listeners).forEach((k) => delete listeners[k])
     vi.clearAllMocks()
-    mocks.createDoc.mockResolvedValue('mock-id')
-    mocks.updateDocById.mockResolvedValue()
-    mocks.logAudit.mockResolvedValue()
+    mocks.checkInMember.mockResolvedValue({ attendanceId: 'mock-id' })
+    mocks.checkOutMember.mockResolvedValue()
   })
 
   it('manual check-in shows only a success toast and writes an attendance record', async () => {
@@ -82,12 +98,10 @@ describe('Attendance check-in/check-out', () => {
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Check in' })[0])
 
-    await waitFor(() => expect(mocks.createDoc).toHaveBeenCalledTimes(1))
-    expect(mocks.createDoc).toHaveBeenCalledWith(
-      'attendance',
-      expect.objectContaining({ memberId: 'm1', checkOut: '', source: 'manual' })
+    await waitFor(() => expect(mocks.checkInMember).toHaveBeenCalledTimes(1))
+    expect(mocks.checkInMember).toHaveBeenCalledWith(
+      expect.objectContaining({ memberId: 'm1', memberName: 'Zaid', timezone: 'Asia/Kolkata' })
     )
-    expect(mocks.logAudit).toHaveBeenCalledWith(expect.objectContaining({ action: 'create', entity: 'attendance' }))
     expect(toastMocks.success).toHaveBeenCalledWith('Zaid checked in')
     expect(toastMocks.error).not.toHaveBeenCalled()
   })
@@ -125,8 +139,8 @@ describe('Attendance check-in/check-out', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Check out' }))
 
-    await waitFor(() => expect(mocks.updateDocById).toHaveBeenCalledTimes(1))
-    expect(mocks.updateDocById).toHaveBeenCalledWith('attendance', 'att-1', { checkOut: expect.any(String) })
+    await waitFor(() => expect(mocks.checkOutMember).toHaveBeenCalledTimes(1))
+    expect(mocks.checkOutMember).toHaveBeenCalledWith(expect.objectContaining({ memberId: 'm1' }))
     expect(toastMocks.success).toHaveBeenCalledWith('Checked out')
     expect(toastMocks.error).not.toHaveBeenCalled()
   })
@@ -153,17 +167,16 @@ describe('Attendance check-in/check-out', () => {
     fireEvent.change(input, { target: { value: 'm1' } })
     fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' })
 
-    await waitFor(() => expect(mocks.createDoc).toHaveBeenCalledTimes(1))
-    expect(mocks.createDoc).toHaveBeenCalledWith(
-      'attendance',
-      expect.objectContaining({ memberId: 'm1', checkOut: '', source: 'manual' })
+    await waitFor(() => expect(mocks.checkInMember).toHaveBeenCalledTimes(1))
+    expect(mocks.checkInMember).toHaveBeenCalledWith(
+      expect.objectContaining({ memberId: 'm1', memberName: 'Zaid', timezone: 'Asia/Kolkata' })
     )
     expect(toastMocks.success).toHaveBeenCalledWith('Zaid checked in')
     expect(toastMocks.error).not.toHaveBeenCalled()
   })
 
   it('a real Firestore failure still shows the real error message', async () => {
-    mocks.createDoc.mockRejectedValue(new Error('Permission denied'))
+    mocks.checkInMember.mockRejectedValue(new Error('Permission denied'))
     renderPage()
 
     fireEvent.click(screen.getAllByRole('button', { name: 'Check in' })[0])
@@ -176,7 +189,7 @@ describe('Attendance check-in/check-out', () => {
   // field up-front (with a try/catch around the call) silently discarded the
   // scanned ID on every failed write and staff had to re-scan.
   it('keeps the scanned ID in the field when the check-in write fails', async () => {
-    mocks.createDoc.mockRejectedValue(new Error('Permission denied'))
+    mocks.checkInMember.mockRejectedValue(new Error('Permission denied'))
     renderPage()
 
     const input = screen.getByPlaceholderText('Scan or paste member ID…')
@@ -210,7 +223,7 @@ describe('Attendance check-in/check-out', () => {
     fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' })
 
     await waitFor(() => expect(toastMocks.info).toHaveBeenCalledWith('Already checked in today'))
-    expect(mocks.createDoc).not.toHaveBeenCalled()
+    expect(mocks.checkInMember).not.toHaveBeenCalled()
     expect(input.value).toBe('m1')
   })
 
@@ -222,7 +235,7 @@ describe('Attendance check-in/check-out', () => {
     fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' })
 
     await waitFor(() => expect(toastMocks.error).toHaveBeenCalledWith('Unknown member ID'))
-    expect(mocks.createDoc).not.toHaveBeenCalled()
+    expect(mocks.checkInMember).not.toHaveBeenCalled()
     expect(input.value).toBe('nope')
   })
 })
@@ -260,7 +273,7 @@ describe('Attendance concurrent check-in', () => {
 
   const settle = async (d) => {
     await act(async () => {
-      d.resolve('att-1')
+      d.resolve({ attendanceId: 'att-1' })
       await d.promise
     })
   }
@@ -278,12 +291,11 @@ describe('Attendance concurrent check-in', () => {
     }
     Object.keys(listeners).forEach((k) => delete listeners[k])
     vi.clearAllMocks()
-    mocks.logAudit.mockResolvedValue()
   })
 
   it('writes one record when the check-in button is clicked twice before the first write lands', async () => {
     const d = deferred()
-    mocks.createDoc.mockReturnValue(d.promise)
+    mocks.checkInMember.mockReturnValue(d.promise)
     renderPage()
 
     const button = checkInButton()
@@ -292,17 +304,17 @@ describe('Attendance concurrent check-in', () => {
       fireEvent.click(button)
     })
 
-    expect(mocks.createDoc).toHaveBeenCalledTimes(1)
+    expect(mocks.checkInMember).toHaveBeenCalledTimes(1)
 
     await settle(d)
 
     await waitFor(() => expect(toastMocks.success).toHaveBeenCalledTimes(1))
-    expect(mocks.logAudit).toHaveBeenCalledTimes(1)
+    expect(mocks.checkInMember).toHaveBeenCalledTimes(1)
   })
 
   it('ignores a second scan while the first check-in write is still in flight', async () => {
     const d = deferred()
-    mocks.createDoc.mockReturnValue(d.promise)
+    mocks.checkInMember.mockReturnValue(d.promise)
     renderPage()
 
     scanEnter('m1')
@@ -310,19 +322,19 @@ describe('Attendance concurrent check-in', () => {
       fireEvent.keyDown(qrField(), { key: 'Enter', code: 'Enter' })
     })
 
-    expect(mocks.createDoc).toHaveBeenCalledTimes(1)
+    expect(mocks.checkInMember).toHaveBeenCalledTimes(1)
 
     await settle(d)
 
     await waitFor(() => expect(toastMocks.success).toHaveBeenCalledWith('Zaid checked in'))
     expect(toastMocks.success).toHaveBeenCalledTimes(1)
-    expect(mocks.createDoc).toHaveBeenCalledTimes(1)
+    expect(mocks.checkInMember).toHaveBeenCalledTimes(1)
     expect(qrField().value).toBe('')
   })
 
   it('does not double-write when a scan and a button click overlap', async () => {
     const d = deferred()
-    mocks.createDoc.mockReturnValue(d.promise)
+    mocks.checkInMember.mockReturnValue(d.promise)
     renderPage()
 
     scanEnter('m1')
@@ -330,17 +342,17 @@ describe('Attendance concurrent check-in', () => {
       fireEvent.click(checkInButton())
     })
 
-    expect(mocks.createDoc).toHaveBeenCalledTimes(1)
+    expect(mocks.checkInMember).toHaveBeenCalledTimes(1)
 
     await settle(d)
 
     await waitFor(() => expect(toastMocks.success).toHaveBeenCalledTimes(1))
-    expect(mocks.createDoc).toHaveBeenCalledTimes(1)
+    expect(mocks.checkInMember).toHaveBeenCalledTimes(1)
   })
 
   it('does not claim the member is already checked in for an overlapping click', async () => {
     const d = deferred()
-    mocks.createDoc.mockReturnValue(d.promise)
+    mocks.checkInMember.mockReturnValue(d.promise)
     renderPage()
 
     act(() => {
@@ -355,7 +367,7 @@ describe('Attendance concurrent check-in', () => {
   })
 
   it('allows a retry after a failed check-in instead of locking the member out', async () => {
-    mocks.createDoc
+    mocks.checkInMember
       .mockRejectedValueOnce(new Error('Permission denied'))
       .mockResolvedValueOnce('att-1')
     renderPage()
@@ -367,7 +379,7 @@ describe('Attendance concurrent check-in', () => {
     fireEvent.keyDown(qrField(), { key: 'Enter', code: 'Enter' })
 
     await waitFor(() => expect(toastMocks.success).toHaveBeenCalledWith('Zaid checked in'))
-    expect(mocks.createDoc).toHaveBeenCalledTimes(2)
+    expect(mocks.checkInMember).toHaveBeenCalledTimes(2)
   })
 
   it('does not let one member in flight block a different member', async () => {
@@ -376,8 +388,8 @@ describe('Attendance concurrent check-in', () => {
       { id: 'm2', name: 'Bilal', phone: '9812345679' },
     ]
     const d = deferred()
-    mocks.createDoc.mockImplementation((name, data) =>
-      data.memberId === 'm1' ? d.promise : Promise.resolve('att-2')
+    mocks.checkInMember.mockImplementation((args) =>
+      args.memberId === 'm1' ? d.promise : Promise.resolve({ attendanceId: 'att-2' })
     )
     renderPage()
 
@@ -387,7 +399,7 @@ describe('Attendance concurrent check-in', () => {
       fireEvent.click(buttons[1])
     })
 
-    expect(mocks.createDoc).toHaveBeenCalledTimes(2)
+    expect(mocks.checkInMember).toHaveBeenCalledTimes(2)
 
     await waitFor(() => expect(toastMocks.success).toHaveBeenCalledWith('Bilal checked in'))
 
@@ -402,12 +414,139 @@ describe('Attendance concurrent check-in', () => {
     collections.attendance = [
       { id: 'att-1', memberId: 'm1', date: now, checkIn: now, checkOut: now, source: 'manual' },
     ]
-    mocks.createDoc.mockResolvedValue('att-2')
+    mocks.checkInMember.mockResolvedValue({ attendanceId: 'att-2' })
     renderPage()
 
     fireEvent.click(checkInButton())
 
-    await waitFor(() => expect(mocks.createDoc).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(mocks.checkInMember).toHaveBeenCalledTimes(1))
     expect(toastMocks.success).toHaveBeenCalledWith('Zaid checked in')
+  })
+})
+
+
+// The authoritative duplicate check now runs server-side in the transaction that
+// writes the record. The client guard can only save a round trip, so these cover
+// how the page reports the two rejections the service can raise.
+describe('Attendance session pointer outcomes', () => {
+  beforeEach(() => {
+    collections = {
+      attendance: [],
+      members: [{ id: 'm1', name: 'Zaid', phone: '9812345678' }],
+    }
+    Object.keys(listeners).forEach((k) => delete listeners[k])
+    vi.clearAllMocks()
+    mocks.checkInMember.mockResolvedValue({ attendanceId: 'att-1' })
+    mocks.checkOutMember.mockResolvedValue({ attendanceId: 'att-1' })
+  })
+
+  /**
+   * A rejection from the transaction means a competing device already checked
+   * this member in. Surfacing it as an error would send staff looking for a
+   * fault that does not exist.
+   */
+  it('reports a server-side duplicate as information, not an error', async () => {
+    mocks.checkInMember.mockRejectedValue(duplicateError)
+    renderPage()
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Check in' })[0])
+
+    await waitFor(() => expect(toastMocks.info).toHaveBeenCalledWith('Already checked in today'))
+    expect(toastMocks.error).not.toHaveBeenCalled()
+    expect(toastMocks.success).not.toHaveBeenCalled()
+  })
+
+  it('still surfaces a genuine write failure as an error', async () => {
+    mocks.checkInMember.mockRejectedValue(new Error('Permission denied'))
+    renderPage()
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Check in' })[0])
+
+    await waitFor(() => expect(toastMocks.error).toHaveBeenCalledWith('Permission denied'))
+    expect(toastMocks.info).not.toHaveBeenCalled()
+  })
+
+  it('reports checkout with no open session as information, not an error', async () => {
+    const now = new Date().toISOString()
+    collections.attendance = [{ id: 'att-1', memberId: 'm1', date: now, checkIn: now, checkOut: '' }]
+    mocks.checkOutMember.mockRejectedValue(notCheckedInError)
+    renderPage()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check out' }))
+
+    await waitFor(() => expect(toastMocks.info).toHaveBeenCalledWith('This member is not currently checked in'))
+    expect(toastMocks.error).not.toHaveBeenCalled()
+  })
+
+  it('passes the gym timezone through so the day key is stamped server-side', async () => {
+    renderPage()
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Check in' })[0])
+
+    await waitFor(() => expect(mocks.checkInMember).toHaveBeenCalledTimes(1))
+    expect(mocks.checkInMember).toHaveBeenCalledWith(
+      expect.objectContaining({ timezone: 'Asia/Kolkata' })
+    )
+  })
+
+  /**
+   * A session opened at 23:50 and still open at 00:10 lives in yesterday's list.
+   * Deriving "in the gym" from today's rows alone hid the member and offered a
+   * second check-in that the transaction would then reject.
+   */
+  it('counts a session opened before midnight as still in the gym', async () => {
+    const yesterday = new Date(Date.now() - 20 * 60 * 60 * 1000).toISOString()
+    collections.attendance = [
+      {
+        id: 'att-y',
+        memberId: 'm1',
+        date: yesterday,
+        checkIn: yesterday,
+        checkInDay: yesterday.slice(0, 10),
+        checkOut: '',
+      },
+    ]
+    renderPage()
+
+    expect(await screen.findByText('In gym')).toBeInTheDocument()
+    // "Today's check-ins" must stay 0; only the live count should see yesterday.
+    const inGym = screen.getByText('Currently in the gym').closest('div')
+    expect(within(inGym).getByText('1')).toBeInTheDocument()
+    const todays = screen.getByText("Today's check-ins").closest('div')
+    expect(within(todays).getByText('0')).toBeInTheDocument()
+  })
+
+it('does not offer a second check-in for an overnight session', async () => {
+    const yesterday = new Date(Date.now() - 20 * 60 * 60 * 1000).toISOString()
+    collections.attendance = [
+      { id: 'att-y', memberId: 'm1', date: yesterday, checkIn: yesterday, checkOut: '' },
+    ]
+    renderPage()
+
+    expect(await screen.findByText('In gym')).toBeInTheDocument()
+    // Scope to the member row; the QR form has its own "Check in" button.
+    const row = screen.getByText('Zaid').closest('div.flex')
+    expect(within(row).queryByRole('button', { name: 'Check in' })).toBeNull()
+    expect(mocks.checkInMember).not.toHaveBeenCalled()
+  })
+
+  it('counts a member checked out earlier today as checked out, not in the gym', async () => {
+    const now = new Date().toISOString()
+    collections.attendance = [
+      {
+        id: 'att-1',
+        memberId: 'm1',
+        date: now,
+        checkIn: now,
+        checkInDay: now.slice(0, 10),
+        checkOut: now,
+      },
+    ]
+    renderPage()
+
+    const checkedOut = screen.getByText('Checked out').closest('div')
+    expect(within(checkedOut).getByText('1')).toBeInTheDocument()
+    const inGym = screen.getByText('Currently in the gym').closest('div')
+    expect(within(inGym).getByText('0')).toBeInTheDocument()
   })
 })
