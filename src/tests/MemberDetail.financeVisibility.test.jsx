@@ -24,7 +24,7 @@
  * they document that the correct figures still reach the roles entitled to them.
  */
 import { describe, expect, it, beforeEach, vi } from 'vitest'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, within, waitFor } from '@testing-library/react'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 
 const mockState = {
@@ -162,7 +162,7 @@ describe('MemberDetail financial visibility', () => {
       // The fix must not over-reach: masking money must not disable the member
       // record work that members.write legitimately authorises.
       await renderAs('front-desk')
-      await new Promise((r) => setTimeout(r, 0))
+      await waitFor(() => {})
       expect(screen.queryByRole('button', { name: /Record payment/i })).toBeNull()
       expect(screen.getByText('Overview')).toBeInTheDocument()
     })
@@ -171,29 +171,33 @@ describe('MemberDetail financial visibility', () => {
       // getMembershipCharge reads the plan document, which staff can read, so the
       // PT price panel is accurate for every role and must stay visible.
       await renderAs('front-desk')
-      await new Promise((r) => setTimeout(r, 0))
-      expect(screen.getByText('Gold')).toBeInTheDocument()
+      await waitFor(() => {
+        expect(screen.getByText('Gold')).toBeInTheDocument()
+      })
     })
   })
 
   describe('owner (can read payments)', () => {
     it('offers the Payments tab', async () => {
       await renderAs('owner')
-      await new Promise((r) => setTimeout(r, 0))
+      await waitFor(() => {
       expect(screen.getByText(/^Payments \(/)).toBeInTheDocument()
+    })
     })
 
     it('shows the dues rows it is entitled to', async () => {
       await renderAs('owner')
-      await new Promise((r) => setTimeout(r, 0))
+      await waitFor(() => {
       expect(screen.getByText('Amount paid')).toBeInTheDocument()
       expect(screen.getByText('Due (all periods)')).toBeInTheDocument()
+    })
     })
 
     it('offers Record payment', async () => {
       await renderAs('owner')
-      await new Promise((r) => setTimeout(r, 0))
+      await waitFor(() => {
       expect(screen.getByRole('button', { name: /Record payment/i })).toBeInTheDocument()
+    })
     })
   })
 
