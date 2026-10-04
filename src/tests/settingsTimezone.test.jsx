@@ -11,8 +11,7 @@ const { mocks, settingsValue, toastValue } = vi.hoisted(() => ({
     setPtSurcharge: vi.fn(),
     getWhatsAppLink: vi.fn(),
     setWhatsAppLink: vi.fn(),
-    uploadFile: vi.fn(),
-    deleteFile: vi.fn(),
+    uploadGymLogo: vi.fn(),
     loadSampleData: vi.fn(),
     ensureOriginPeriods: vi.fn(),
   },
@@ -40,9 +39,7 @@ vi.mock('@/services/whatsappGroup', () => ({
   setWhatsAppLink: mocks.setWhatsAppLink,
 }))
 vi.mock('@/services/storage', () => ({
-  uploadFile: mocks.uploadFile,
-  deleteFile: mocks.deleteFile,
-  logoPath: (p) => p,
+  uploadGymLogo: mocks.uploadGymLogo,
   isStorageReady: () => false,
 }))
 vi.mock('@/services/seedService', () => ({ loadSampleData: mocks.loadSampleData }))

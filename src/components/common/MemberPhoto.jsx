@@ -2,7 +2,8 @@ import { useRef, useState } from 'react'
 import { Camera, Loader2 } from 'lucide-react'
 import clsx from 'clsx'
 import { initials } from '@/utils/formatters'
-import { memberPhotoPath, uploadFile } from '@/services/storage'
+import { uploadMemberPhoto } from '@/services/storage'
+import { useAuth } from '@/context/AuthContext'
 
 const SIZES = {
   sm: 'h-9 w-9 text-xs',
@@ -15,13 +16,23 @@ export function MemberPhoto({ member, size = 'md', editable = false, onUpload })
   const [uploading, setUploading] = useState(false)
   const inputRef = useRef(null)
 
+  // The gym identity comes from the signed-in users/{uid} profile, which is the
+  // same source storage.rules trusts. It is never taken from the member
+  // document, the route, or any other client-controlled value, and a caller
+  // cannot override it by passing a prop.
+  //
+  // useAuth() returns null when no AuthProvider is mounted (some component
+  // tests render this in isolation), so the optional chain keeps rendering
+  // working; only an actual upload needs the identity, and it fails loudly.
+  const gymId = useAuth()?.gymId ?? null
+
   const handleFile = async (e) => {
     const file = e.target.files?.[0]
     if (!file || !member?.id) return
     setUploading(true)
     try {
-      const url = await uploadFile(file, memberPhotoPath(member.id))
-      onUpload?.(url)
+      const { url, path } = await uploadMemberPhoto(gymId, member.id, file)
+      onUpload?.(url, path)
     } catch (err) {
       console.error('Upload failed', err)
     } finally {

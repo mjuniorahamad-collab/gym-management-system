@@ -3,11 +3,11 @@ import { fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { OutstandingDuesCard } from '@/components/dashboard/OutstandingDuesCard'
 
+// MemberPhoto uploads through uploadMemberPhoto(gymId, memberId, file), which
+// derives the gym-scoped path itself. The path builders and the client delete
+// helper are no longer part of that flow.
 vi.mock('@/services/storage', () => ({
-  uploadFile: vi.fn(),
-  deleteFile: vi.fn(),
-  memberPhotoPath: () => '',
-  logoPath: () => '',
+  uploadMemberPhoto: vi.fn(),
 }))
 
 const ROWS = [

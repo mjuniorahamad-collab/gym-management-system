@@ -353,9 +353,13 @@ const canWrite = can('members.write')
     }
   }
 
-  const handlePhoto = async (url) => {
+// photoUrl is a bearer download token, useful for rendering but NOT the
+  // privacy boundary: it stays valid for anyone who ever obtains it. photoPath
+  // is the durable object path, stored alongside it so a future rules-evaluated
+  // read (D1) can be built from the path rather than from a persisted URL.
+  const handlePhoto = async (url, photoPath) => {
     try {
-      await updateDocById('members', id, { photoUrl: url })
+      await updateDocById('members', id, { photoUrl: url, photoPath })
       await logAudit({ action: 'update', entity: 'members', entityId: id, details: { photo: true } })
       toast.success('Photo updated')
       reload()

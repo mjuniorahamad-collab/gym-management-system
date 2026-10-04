@@ -10,7 +10,7 @@ const { mocks, settingsValue, toastValue } = vi.hoisted(() => ({
     getWhatsAppLink: vi.fn(),
     setWhatsAppLink: vi.fn(),
     isStorageReady: vi.fn(),
-    uploadFile: vi.fn(),
+    uploadGymLogo: vi.fn(),
     loadSampleData: vi.fn(),
     ensureOriginPeriods: vi.fn(),
   },
@@ -40,8 +40,7 @@ vi.mock('@/services/whatsappGroup', () => ({
 }))
 
 vi.mock('@/services/storage', () => ({
-  uploadFile: mocks.uploadFile,
-  logoPath: (p) => p,
+  uploadGymLogo: mocks.uploadGymLogo,
   isStorageReady: () => false,
 }))
 

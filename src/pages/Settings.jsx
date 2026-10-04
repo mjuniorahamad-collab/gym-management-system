@@ -5,7 +5,7 @@ import { Building2, Database, Dumbbell, Loader2, MessageCircle, ShieldCheck, Upl
 import { settingsSchema, ptSurchargeSchema } from '@/schemas/validationSchemas'
 import { useSettings, DEFAULT_SETTINGS } from '@/context/SettingsContext'
 import { useToast } from '@/context/ToastContext'
-import { uploadFile, deleteFile, logoPath, isStorageReady } from '@/services/storage'
+import { uploadGymLogo, isStorageReady } from '@/services/storage'
 import { getPtSurcharge, setPtSurcharge as persistPtSurcharge } from '@/services/pt'
 import { getWhatsAppLink, setWhatsAppLink } from '@/services/whatsappGroup'
 import { loadSampleData } from '@/services/seedService'
@@ -20,10 +20,15 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { CURRENCIES, DATE_FORMATS } from '@/utils/constants'
 import { formatCurrency } from '@/utils/formatters'
 import { COMMON_GYM_TIMEZONES, resolveGymTimezone } from '@/utils/gymTime'
+import { useAuth } from '@/context/AuthContext'
 
 export default function Settings() {
   const { settings, updateSettings, error: settingsError } = useSettings()
   const toast = useToast()
+  // Tenancy comes from the signed-in users/{uid} profile, the same source
+  // storage.rules trusts. Branding writes are owner-only server-side, so the
+  // gym id must be the caller's own gym and can never be supplied by the form.
+  const gymId = useAuth()?.gymId ?? null
 
   const [saving, setSaving] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -160,32 +165,34 @@ export default function Settings() {
       toast.error('Firebase Storage is not configured')
       return
     }
-setUploading(true)
-        const path = logoPath(`logo-${Date.now()}.${file.name.split('.').pop()}`)
-        try {
-          const url = await uploadFile(file, path)
-          // updateSettings reports its own failure and returns false rather than
-          // throwing, so its result has to be honoured. Ignoring it showed
-          // "Logo uploaded" next to the error it had just raised, telling the
-          // operator the new logo was live when the settings document still
-          // pointed at the old one.
-          const saved = await updateSettings({ logoUrl: url })
-          if (saved) {
-            toast.success('Logo uploaded')
-            return
-          }
-          // The object is referenced by nothing at this point, so leaving it
-          // behind would strand a file nothing can ever clean up. Best effort:
-          // the settings write has already reported its own error, and a failed
-          // cleanup must not replace it with a second confusing one.
-          try {
-            await deleteFile(path)
-          } catch {
-            // Nothing actionable here - the settings error is the real problem.
-          }
-        } catch (err) {
-          toast.error(err.message || 'Upload failed')
-        } finally {
+    if (!gymId) {
+      toast.error('Your gym could not be resolved')
+      return
+    }
+    setUploading(true)
+    try {
+      // One deterministic object per gym (D2). Re-uploading replaces the logo in
+      // place, so there is no second object to clean up afterwards — which is
+      // precisely why this flow no longer deletes anything. The previous version
+      // minted a fresh `logo-${Date.now()}.${ext}` object on every upload and had
+      // to delete it again when the settings write failed, because it had
+      // stranded a file nothing could reach. storage.rules denies client deletes
+      // on branding, and no product flow needs one.
+      const { url, path } = await uploadGymLogo(gymId, file)
+      // logoPath is persisted beside logoUrl so a future rules-evaluated read is
+      // built from the stable object path rather than from a bearer URL.
+      //
+      // updateSettings reports its own failure and returns false rather than
+      // throwing, so its result has to be honoured. Ignoring it showed
+      // "Logo uploaded" next to the error it had just raised, telling the
+      // operator the new logo was live when the settings document still
+      // pointed at the old one.
+      const saved = await updateSettings({ logoUrl: url, logoPath: path })
+      if (!saved) return
+      toast.success('Logo uploaded')
+    } catch (err) {
+      toast.error(err.message || 'Upload failed')
+    } finally {
       setUploading(false)
       if (logoRef.current) logoRef.current.value = ''
     }

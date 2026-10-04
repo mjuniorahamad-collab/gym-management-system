@@ -58,10 +58,10 @@ vi.mock('@/firebase', () => ({
   isFirebaseConfigured: false,
 }))
 
+// MemberPhoto uploads via uploadMemberPhoto(gymId, memberId, file); the old
+// uploadFile / deleteFile / uploadImage helpers no longer exist.
 vi.mock('@/services/storage', () => ({
-  uploadFile: vi.fn(),
-  deleteFile: vi.fn(),
-  uploadImage: vi.fn(),
+  uploadMemberPhoto: vi.fn(),
 }))
 
 // MemberDetail destructures { settings, timezone } from this hook.
