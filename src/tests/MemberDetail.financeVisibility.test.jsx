@@ -34,6 +34,7 @@ const mockState = {
   payments: { items: [], loading: false },
   memberships: { items: [], loading: false },
   attendance: { items: [], loading: false },
+  membershipPlans: { items: [], loading: false },
   weights: { items: [], loading: false },
 }
 
@@ -116,7 +117,8 @@ const PLAN = { id: 'plan-gold', gymId: 'gym-1', name: 'Gold', price: 10000, dura
 async function renderAs(role) {
   mockState.role = role
   mockState.member = MEMBER
-  mockState.plans = { items: [PLAN], loading: false }
+  mockState.plans = { items: [PLAN], loading: false };
+  mockState.membershipPlans = { items: [PLAN], loading: false };
   mockState.payments = { items: [], loading: false }
   mockState.memberships = { items: [PERIOD], loading: false }
 
