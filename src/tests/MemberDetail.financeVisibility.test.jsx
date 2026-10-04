@@ -171,33 +171,25 @@ describe('MemberDetail financial visibility', () => {
       // getMembershipCharge reads the plan document, which staff can read, so the
       // PT price panel is accurate for every role and must stay visible.
       await renderAs('front-desk')
-      await waitFor(() => {
-        expect(screen.getByText('Gold')).toBeInTheDocument()
-      })
+      expect(await screen.findByText(/Gold/i)).toBeInTheDocument()
     })
   })
 
   describe('owner (can read payments)', () => {
     it('offers the Payments tab', async () => {
       await renderAs('owner')
-      await waitFor(() => {
-      expect(screen.getByText(/^Payments \(/)).toBeInTheDocument()
-    })
+      expect(await screen.findByText(/^Payments \(/)).toBeInTheDocument()
     })
 
     it('shows the dues rows it is entitled to', async () => {
       await renderAs('owner')
-      await waitFor(() => {
-      expect(screen.getByText('Amount paid')).toBeInTheDocument()
-      expect(screen.getByText('Due (all periods)')).toBeInTheDocument()
-    })
+      expect(await screen.findByText('Amount paid')).toBeInTheDocument()
+      expect(await screen.findByText('Due (all periods)')).toBeInTheDocument()
     })
 
     it('offers Record payment', async () => {
       await renderAs('owner')
-      await waitFor(() => {
-      expect(screen.getByRole('button', { name: /Record payment/i })).toBeInTheDocument()
-    })
+      expect(await screen.findByRole('button', { name: /Record payment/i })).toBeInTheDocument()
     })
   })
 
