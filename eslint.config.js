@@ -50,5 +50,17 @@ export default [
       globals: { ...globals.node },
     },
   },
+  {
+    // Operator scripts run in Node via `npx vite-node`, not in the browser.
+    // The block above only matches .js/.jsx, so .mjs scripts would otherwise be
+    // linted with no globals declared at all and report every `console` and
+    // `process` use as undefined.
+    files: ['scripts/**/*.{js,mjs}'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: { ...globals.node },
+    },
+  },
   prettier,
 ]

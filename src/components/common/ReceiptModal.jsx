@@ -10,6 +10,13 @@ import { useSecureImage } from '@/hooks/useSecureImage'
 const STATUS_TONES = { paid: 'success', partial: 'warning', due: 'danger' }
 
 function ReceiptContent({ payment, member, plan, settings, summary, receiptNo, logoSrc }) {
+  // A receipt is a customer-facing financial document. It must never carry a
+  // gym name this gym did not choose: the previous `'Himalye Wonders Gym'`
+  // fallback printed that business's name on receipts belonging to every other
+  // gym in the system. An unset name renders as an explicit marker instead, so
+  // the gap is visible on the printed page rather than silently filled in.
+  const gymName = typeof settings?.gymName === 'string' ? settings.gymName.trim() : ''
+
   return (
     <div className="space-y-4">
       <div className="border-b border-dashed border-slate-300 pb-3 text-center dark:border-slate-700">
@@ -17,7 +24,7 @@ function ReceiptContent({ payment, member, plan, settings, summary, receiptNo, l
           <img src={logoSrc} alt="logo" className="mx-auto mb-2 h-12 w-12 rounded-full object-cover" />
         )}
         <h3 className="text-base font-bold text-slate-900 dark:text-slate-100">
-          {settings?.gymName || 'Himalye Wonders Gym'}
+          {gymName || 'Gym name not set'}
         </h3>
         {settings?.tagline && <p className="text-xs text-slate-400">{settings.tagline}</p>}
       </div>
@@ -130,7 +137,18 @@ export function ReceiptModal({ open, onClose, payment, member, plan, settings, s
 
   if (!payment) return null
 
-  const receiptNo = payment.receiptNo || `${settings?.receiptPrefix || 'HWG'}-${payment.id?.slice(0, 6).toUpperCase()}`
+  // `payment.receiptNo` is authoritative. Only when it is absent do we fall
+  // back to the gym's own configured prefix. The previous default here was the
+  // literal 'HWG', which stamped one gym's receipt numbering onto every other
+  // gym's un-numbered payments — and that number then gets persisted onto the
+  // payment record. With no prefix configured, print an explicit marker so the
+  // gap is visible on the receipt instead of being invented.
+  const receiptPrefix = typeof settings?.receiptPrefix === 'string' ? settings.receiptPrefix.trim() : ''
+  const receiptNo =
+    payment.receiptNo ||
+    (receiptPrefix
+      ? `${receiptPrefix}-${payment.id?.slice(0, 6).toUpperCase()}`
+      : 'Not assigned')
   const receiptProps = { payment, member, plan, settings, summary, receiptNo, logoSrc }
 
   return (

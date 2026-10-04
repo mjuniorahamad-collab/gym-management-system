@@ -23,8 +23,30 @@ import { COMMON_GYM_TIMEZONES, resolveGymTimezone } from '@/utils/gymTime'
 import { useSecureImage } from '@/hooks/useSecureImage'
 import { useAuth } from '@/context/AuthContext'
 
+/**
+ * Renders an absent settings value as an empty controlled input rather than
+ * `undefined`, so a value the gym has not chosen yet stays visibly unset (and
+ * stays required) instead of becoming an uncontrolled field.
+ */
+const text = (value) => (typeof value === 'string' ? value : '')
+
+/** Human labels for the fields the bootstrap refuses to invent. */
+const FIELD_LABELS = {
+  gymName: 'Gym name',
+  currency: 'Currency',
+  dateFormat: 'Date format',
+  receiptPrefix: 'Receipt prefix',
+  timezone: 'Gym timezone',
+}
+
 export default function Settings() {
-  const { settings, updateSettings, error: settingsError } = useSettings()
+  const {
+    settings,
+    updateSettings,
+    error: settingsError,
+    needsConfiguration,
+    missingRequiredFields,
+  } = useSettings()
   const toast = useToast()
   // Tenancy comes from the signed-in users/{uid} profile, the same source
   // storage.rules trusts. Branding writes are owner-only server-side, so the
@@ -59,11 +81,15 @@ export default function Settings() {
 
   useEffect(() => {
     reset({
-      gymName: settings.gymName,
-      tagline: settings.tagline,
-      currency: settings.currency,
-      dateFormat: settings.dateFormat,
-      receiptPrefix: settings.receiptPrefix,
+      gymName: text(settings.gymName),
+      // An explicitly empty tagline must reach the form as an empty string, not
+      // as `undefined`. Passing undefined would make react-hook-form treat the
+      // input as uncontrolled and stop reporting its value on submit, which
+      // would silently blank the gym's chosen tagline on the next save.
+      tagline: text(settings.tagline),
+      currency: text(settings.currency),
+      dateFormat: text(settings.dateFormat),
+      receiptPrefix: text(settings.receiptPrefix),
       // A gym created before the timezone field existed has no stored value;
       // show the same default every reader falls back to, so saving cannot
       // silently change the gym's day boundaries.
@@ -255,6 +281,31 @@ export default function Settings() {
         </div>
       )}
 
+      {/*
+        A gym can hold a valid settings document and still be unconfigured.
+        Nothing here invents a value for it: the document is created from the
+        gym's own owner-of-record, and anything that cannot be derived — the
+        receipt prefix above all, which ends up on printed receipts and on
+        persisted payment records — is left unset and demanded here.
+      */}
+      {!settingsError && needsConfiguration && (
+        <div
+          role="status"
+          className="rounded-lg border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200"
+        >
+          <p className="font-semibold">Finish configuring this gym</p>
+          <p className="mt-1">
+            These required values are not set for this gym, so nothing is being shown or printed in
+            their place:{' '}
+            <span className="font-medium">
+              {missingRequiredFields.map((f) => FIELD_LABELS[f] || f).join(', ')}
+            </span>
+            . Complete them below and save. The receipt prefix in particular is never
+            defaulted, because it appears on customer receipts and on stored payment records.
+          </p>
+        </div>
+      )}
+
       <div className="grid gap-5 lg:grid-cols-2">
         <Card>
           <CardHeader
@@ -395,7 +446,11 @@ export default function Settings() {
                     ))}
                   </Select>
                 </FormField>
-                <FormField label="Date format" error={errors.dateFormat?.message}>
+                <FormField
+                  label="Date format"
+                  error={errors.dateFormat?.message}
+                  hint="Stored for your gym, but not applied to date display yet — every screen currently renders the standard 'May 5, 2026' style."
+                >
                   <Select error={errors.dateFormat} {...register('dateFormat')}>
                     {DATE_FORMATS.map((d) => (
                       <option key={d.value} value={d.value}>
@@ -404,7 +459,12 @@ export default function Settings() {
                     ))}
                   </Select>
                 </FormField>
-                <FormField label="Receipt prefix" error={errors.receiptPrefix?.message}>
+                <FormField
+                  label="Receipt prefix"
+                  error={errors.receiptPrefix?.message}
+                  required
+                  hint="Printed on receipts and stored on payment records. There is no default — choose your gym's own prefix."
+                >
                   <Input error={errors.receiptPrefix} {...register('receiptPrefix')} />
                 </FormField>
                 <FormField
