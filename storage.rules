@@ -2,22 +2,181 @@ rules_version = '2';
 
 service firebase.storage {
   match /b/{bucket}/o {
-    // Member profile photos. Public reads keep image URLs simple to share;
-    // any authenticated staff member may upload/replace.
-    match /memberPhotos/{memberId} {
-      allow read: if request.auth != null;
-      allow write: if request.auth != null;
+
+    // ======================================================================
+    // Identity + tenancy helpers.
+    //
+    // These mirror the Firestore model (firestore.rules:17-63) exactly: the
+    // caller's gym and role are derived from users/{uid} and nowhere else, so
+    // a client cannot assert its own tenancy. Every accessor is NULL-SAFE: each
+    // firestore.get() is guarded by firestore.exists() plus an `in` field check,
+    // so a missing profile yields null and DENIES explicitly instead of raising
+    // an evaluation error. Access control must never depend on a crash.
+    // ======================================================================
+
+    function isSignedIn() {
+      return request.auth != null;
     }
 
-    // Gym logo / branding assets.
-    match /logos/{name} {
-      allow read: if true;
-      allow write: if request.auth != null;
+    function userDoc(uid) {
+      return /databases/(default)/documents/users/$(uid);
     }
 
-    // Cloud Functions backup output — never publicly readable.
+    function memberDoc(memberId) {
+      return /databases/(default)/documents/members/$(memberId);
+    }
+
+    // True only when the caller has a users/{uid} profile document at all.
+    function hasProfile() {
+      return isSignedIn() && firestore.exists(userDoc(request.auth.uid));
+    }
+
+    // The caller's bound gym, or null when the profile is absent, carries no
+    // gymId, or carries a blank one. A blank gymId is treated as unbound so a
+    // half-provisioned profile can never match a path segment.
+    function callerGym() {
+      let p = userDoc(request.auth.uid);
+      return firestore.exists(p) && 'gymId' in firestore.get(p).data
+             && firestore.get(p).data.gymId != ''
+        ? firestore.get(p).data.gymId
+        : null;
+    }
+
+    // The caller's role, or null when the profile is absent or has no role.
+    function callerRole() {
+      let p = userDoc(request.auth.uid);
+      return firestore.exists(p) && 'role' in firestore.get(p).data
+        ? firestore.get(p).data.role
+        : null;
+    }
+
+    // ---------- Role gates (mirroring src/utils/constants.js) ----------
+    // STAFF_ROLES = ['owner', 'admin', 'front-desk', 'trainer']
+    function isStaff() {
+      return callerRole() in ['owner', 'admin', 'front-desk', 'trainer'];
+    }
+
+    // settings.write is ['owner'] (constants.js:43)
+    function isOwner() {
+      return callerRole() == 'owner';
+    }
+
+    // members.write is ['owner', 'admin', 'front-desk'] (constants.js:26).
+    // Deliberately excludes 'trainer': MemberDetail.jsx hides the photo control
+    // from trainers via `editable={canWrite}`, and the rules must agree with the
+    // UI rather than being the weaker of the two.
+    function canWriteMembers() {
+      return callerRole() in ['owner', 'admin', 'front-desk'];
+    }
+
+    // ---------- Parent-document integrity ----------
+    // A member photo is only meaningful if the member it names exists AND
+    // belongs to the same gym as the path. Without this, any caller could mint
+    // a photo for a member id belonging to another tenant, or for a member id
+    // that does not exist at all.
+    function memberInGym(memberId, gymId) {
+      let p = memberDoc(memberId);
+      return firestore.exists(p) && 'gymId' in firestore.get(p).data
+             && firestore.get(p).data.gymId == gymId;
+    }
+
+    // ---------- Upload constraints ----------
+    // `accept="image/*"` (MemberPhoto.jsx:62, Settings.jsx:359) is a
+    // client-side hint the caller can ignore, and the logo extension is taken
+    // straight from the user's filename (Settings.jsx:164). These allowlists
+    // are the only server-side control on what lands in the bucket.
+    function isAllowedImageType() {
+      return request.resource.contentType in ['image/jpeg', 'image/png', 'image/webp'];
+    }
+
+    // Rejects text/html, application/pdf and anything else, including
+    // user-controlled extensions that would create an object a browser would
+    // happily render as an active document.
+    function hasAllowedImageExtension(name) {
+      return name.matches('.*\\.(jpg|jpeg|png|webp)$');
+    }
+
+    // Member photos: strictly under 5 MB.
+    function photoSizeOk() {
+      return request.resource.size < 5 * 1024 * 1024;
+    }
+
+    // Branding assets: strictly under 2 MB.
+    function brandingSizeOk() {
+      return request.resource.size < 2 * 1024 * 1024;
+    }
+
+    // ======================================================================
+    // Member photos — private per-gym PII.
+    //
+    // Read:  same-gym staff only (members.view is all four staff roles).
+    // Write: same-gym staff holding members.write; trainer is denied.
+    // Delete: NOT GRANTED. No client code path deletes a member photo, so the
+    //         rules do not hand out that capability. Any future retention or
+    //         erasure workflow must go through the Admin SDK, which bypasses
+    //         rules by design, rather than widening this block.
+    // ======================================================================
+    match /gyms/{gymId}/memberPhotos/{memberId}/{fileName} {
+      allow read: if callerGym() == gymId && isStaff() && memberInGym(memberId, gymId);
+
+      allow create, update: if callerGym() == gymId
+                             && canWriteMembers()
+                             && memberInGym(memberId, gymId)
+                             && photoSizeOk()
+                             && isAllowedImageType()
+                             && hasAllowedImageExtension(fileName);
+    }
+
+    // ======================================================================
+    // Gym branding / logo — durable per-gym asset, NOT a public namespace.
+    //
+    // Read:  same-gym staff only. There is deliberately no `allow read: if true`
+    //         and no unscoped public prefix: a logo is fetched through a
+    //         download token minted by an authorized staff member, so it stays
+    //         renderable on printed output without exposing the bucket.
+    // Write: owner only, mirroring settings.write and the owner-only
+    //         <RoleGuard roles={['owner']}> around /settings (App.jsx:106).
+    // Delete: not granted to clients; replacement is an update in place.
+    // ======================================================================
+    match /gyms/{gymId}/branding/{fileName} {
+      allow read: if callerGym() == gymId && isStaff();
+
+      allow create, update: if callerGym() == gymId
+                             && isOwner()
+                             && brandingSizeOk()
+                             && isAllowedImageType()
+                             && hasAllowedImageExtension(fileName);
+    }
+
+    // ======================================================================
+    // Backups — defence in depth only. Backups are written by the Admin SDK
+    // (functions/index.js), which bypasses rules by design; the real control is
+    // the bucket's IAM policy. This deny must never be relaxed.
+    // ======================================================================
     match /backups/{allPaths=**} {
       allow read, write: if false;
     }
+
+    // ======================================================================
+    // Legacy flat paths, revoked.
+    //
+    // The pre-hardening layout (storage.js:20-21) stored objects as
+    // memberPhotos/{memberId} and logos/{name}. Both were unscoped: no gym
+    // dimension, no role check, and logos were world-readable. They are denied
+    // explicitly rather than merely left unmatched so the revocation is
+    // auditable and cannot be undone by a future catch-all. Objects already at
+    // these paths become unreachable until they are migrated.
+    // ======================================================================
+    match /memberPhotos/{memberId} {
+      allow read, write: if false;
+    }
+
+    match /logos/{name} {
+      allow read, write: if false;
+    }
+
+    // Any other path — unknown prefixes, deeper nesting under the blocks
+    // above, and bucket-root listing — matches no `allow` and is denied by
+    // default.
   }
 }
