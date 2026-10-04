@@ -3,6 +3,7 @@ import { Camera, Loader2 } from 'lucide-react'
 import clsx from 'clsx'
 import { initials } from '@/utils/formatters'
 import { uploadMemberPhoto } from '@/services/storage'
+import { useSecureImage } from '@/hooks/useSecureImage'
 import { useAuth } from '@/context/AuthContext'
 
 const SIZES = {
@@ -31,8 +32,11 @@ export function MemberPhoto({ member, size = 'md', editable = false, onUpload })
     if (!file || !member?.id) return
     setUploading(true)
     try {
-      const { url, path } = await uploadMemberPhoto(gymId, member.id, file)
-      onUpload?.(url, path)
+      // The upload returns a PATH, not a URL. No download token is minted, so
+      // nothing is written to the member document that would outlive this
+      // user's access.
+      const { path } = await uploadMemberPhoto(gymId, member.id, file)
+      onUpload?.({ path })
     } catch (err) {
       console.error('Upload failed', err)
     } finally {
@@ -41,11 +45,16 @@ export function MemberPhoto({ member, size = 'md', editable = false, onUpload })
     }
   }
 
+  // Photos are read from the stored path, so every render is checked against
+  // storage.rules. `member.photoUrl` is only consulted for documents that predate
+  // the path field; once a path exists it is never used as the access mechanism.
+  const { url: photoSrc, loading: photoLoading } = useSecureImage(member?.photoPath, member?.photoUrl)
+
   return (
     <div className="relative inline-block">
-      {member?.photoUrl ? (
+      {photoSrc ? (
         <img
-          src={member.photoUrl}
+          src={photoSrc}
           alt={member.name}
           className={clsx('rounded-full object-cover ring-2 ring-white dark:ring-slate-800', SIZES[size])}
         />
@@ -55,6 +64,7 @@ export function MemberPhoto({ member, size = 'md', editable = false, onUpload })
             'flex items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-emerald-500 font-bold text-white',
             SIZES[size]
           )}
+          title={photoLoading ? 'Loading photo' : undefined}
         >
           {initials(member?.name || '?')}
         </div>

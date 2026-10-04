@@ -24,6 +24,7 @@ import {
   MEMBER_PHOTO_FILENAME,
   logoPath,
   memberPhotoPath,
+  readObjectUrl,
   uploadGymLogo,
   uploadMemberPhoto,
   validateImageFile,
@@ -32,14 +33,17 @@ import {
 const { mocks } = vi.hoisted(() => ({
   mocks: {
     uploadBytes: vi.fn(),
-    getDownloadURL: vi.fn(),
+    getBytes: vi.fn(),
   },
 }))
 
+// getDownloadURL is deliberately NOT mocked: the service must no longer import
+// it. Minting a download token is the bearer-URL leak this phase removed, so
+// having it available here would let the leak back in unnoticed.
 vi.mock('firebase/storage', () => ({
   ref: (_storage, path) => ({ path, kind: 'ref' }),
   uploadBytes: mocks.uploadBytes,
-  getDownloadURL: mocks.getDownloadURL,
+  getBytes: mocks.getBytes,
   // deleteObject is deliberately absent: the service must not expose a client
   // delete path. If this mock ever needs it, that is a signal the service has
   // reintroduced a capability storage.rules denies.
@@ -53,6 +57,8 @@ vi.mock('@/firebase', () => ({
 const GYM_A = 'gym-alpha'
 const GYM_B = 'gym-beta'
 const MEMBER = 'member-123'
+const PHOTO_PATH = `gyms/${GYM_A}/memberPhotos/${MEMBER}/photo.jpg`
+const LOGO_PATH = `gyms/${GYM_A}/branding/logo.png`
 
 const pngFile = (bytes = 8, type = 'image/png', name = 'photo.png') =>
   new File([new Uint8Array(bytes)], name, { type })
@@ -61,7 +67,7 @@ describe('Storage path generation', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mocks.uploadBytes.mockResolvedValue({ ref: { path: 'x' } })
-    mocks.getDownloadURL.mockResolvedValue('https://example.test/o')
+    mocks.getBytes.mockResolvedValue(new Uint8Array([1, 2, 3]))
   })
 
   // ---- member photos ------------------------------------------------
@@ -138,17 +144,22 @@ describe('Storage path generation', () => {
   })
 
   // ---- upload wrappers ----------------------------------------------
-  it('uploads a member photo to the scoped path and returns url plus path', async () => {
+  // Uploads return a PATH only. A returned URL would be a download token, and
+  // the caller persisting one is exactly the leak D1 forbids.
+  it('uploads a member photo to the scoped path and returns only the path', async () => {
     const result = await uploadMemberPhoto(GYM_A, MEMBER, pngFile())
     const [refArg] = mocks.uploadBytes.mock.calls[0]
-    expect(refArg.path).toBe(memberPhotoPath(GYM_A, MEMBER))
-    expect(result).toEqual({ url: 'https://example.test/o', path: memberPhotoPath(GYM_A, MEMBER) })
+    expect(refArg.path).toBe(PHOTO_PATH)
+    expect(result).toEqual({ path: PHOTO_PATH })
+    expect(result.url).toBeUndefined()
   })
 
-  it('uploads a logo to the scoped branding path', async () => {
-    await uploadGymLogo(GYM_A, pngFile())
+  it('uploads a logo to the scoped branding path and returns only the path', async () => {
+    const result = await uploadGymLogo(GYM_A, pngFile())
     const [refArg] = mocks.uploadBytes.mock.calls[0]
-    expect(refArg.path).toBe(logoPath(GYM_A))
+    expect(refArg.path).toBe(LOGO_PATH)
+    expect(result).toEqual({ path: LOGO_PATH })
+    expect(result.url).toBeUndefined()
   })
 
   it('refuses to upload without a gym identity, before touching Storage', async () => {
@@ -196,5 +207,62 @@ describe('Storage path generation', () => {
 
   it('reports a missing file', () => {
     expect(validateImageFile(null, MAX_LOGO_BYTES)).toMatch(/No file/i)
+  })
+})
+
+describe('Secure runtime reads (D1)', () => {
+  let createObjectURL
+  let revokeObjectURL
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.getBytes.mockResolvedValue(new Uint8Array([1, 2, 3]))
+    // jsdom does not implement the blob URL factory; the hook under test and
+    // this suite both need a deterministic stand-in.
+    createObjectURL = vi.fn(() => 'blob:mock-url')
+    revokeObjectURL = vi.fn()
+    global.URL.createObjectURL = createObjectURL
+    global.URL.revokeObjectURL = revokeObjectURL
+  })
+
+  // Reads must go through getBytes, not getDownloadURL: getBytes re-authorises
+  // each request against storage.rules, while a download token would not.
+  it('fetches bytes for the path and returns a blob URL', async () => {
+    const url = await readObjectUrl(PHOTO_PATH)
+
+    const [refArg] = mocks.getBytes.mock.calls[0]
+    expect(refArg.path).toBe(PHOTO_PATH)
+    expect(createObjectURL).toHaveBeenCalledTimes(1)
+    expect(url).toBe('blob:mock-url')
+  })
+
+  it('reads a logo by its deterministic branding path', async () => {
+    await readObjectUrl(LOGO_PATH)
+    expect(mocks.getBytes.mock.calls[0][0].path).toBe(LOGO_PATH)
+  })
+
+  it('types the blob from the path extension', async () => {
+    await readObjectUrl(PHOTO_PATH)
+    const blob = createObjectURL.mock.calls[0][0]
+    expect(blob.type).toBe('image/jpeg')
+  })
+
+  it('keeps an unknown extension opaque rather than guessing', async () => {
+    await readObjectUrl(`gyms/${GYM_A}/branding/logo.bin`)
+    expect(createObjectURL.mock.calls[0][0].type).toBe('application/octet-stream')
+  })
+
+  it('refuses a blank path rather than reading the bucket root', async () => {
+    await expect(readObjectUrl('')).rejects.toThrow(/path is required/i)
+    await expect(readObjectUrl(null)).rejects.toThrow(/path is required/i)
+    expect(mocks.getBytes).not.toHaveBeenCalled()
+  })
+
+  // A denied read must surface as an error. Swallowing it would leave the UI
+  // indistinguishable from "this member has no photo".
+  it('propagates a denied read', async () => {
+    mocks.getBytes.mockRejectedValue(new Error('storage/unauthorized'))
+    await expect(readObjectUrl(PHOTO_PATH)).rejects.toThrow('storage/unauthorized')
+    expect(createObjectURL).not.toHaveBeenCalled()
   })
 })

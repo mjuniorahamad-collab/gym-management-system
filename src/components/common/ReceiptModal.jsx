@@ -5,15 +5,16 @@ import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { formatCurrency, formatDate } from '@/utils/formatters'
 import { PAYMENT_STATUS_LABELS } from '@/utils/renewal'
+import { useSecureImage } from '@/hooks/useSecureImage'
 
 const STATUS_TONES = { paid: 'success', partial: 'warning', due: 'danger' }
 
-function ReceiptContent({ payment, member, plan, settings, summary, receiptNo }) {
+function ReceiptContent({ payment, member, plan, settings, summary, receiptNo, logoSrc }) {
   return (
     <div className="space-y-4">
       <div className="border-b border-dashed border-slate-300 pb-3 text-center dark:border-slate-700">
-        {settings?.logoUrl && (
-          <img src={settings.logoUrl} alt="logo" className="mx-auto mb-2 h-12 w-12 rounded-full object-cover" />
+        {logoSrc && (
+          <img src={logoSrc} alt="logo" className="mx-auto mb-2 h-12 w-12 rounded-full object-cover" />
         )}
         <h3 className="text-base font-bold text-slate-900 dark:text-slate-100">
           {settings?.gymName || 'Himalye Wonders Gym'}
@@ -118,10 +119,19 @@ function ReceiptContent({ payment, member, plan, settings, summary, receiptNo })
 }
 
 export function ReceiptModal({ open, onClose, payment, member, plan, settings, summary }) {
+  // The logo is fetched once here from the stored path and handed to both the
+  // modal and the print copy, so opening a receipt costs a single read. Reading
+  // it inside each ReceiptContent instead would download it twice, and the
+  // print copy is the one that must not be racing a network call.
+  const { url: logoSrc, loading: logoLoading } = useSecureImage(
+    settings?.logoPath,
+    settings?.logoUrl
+  )
+
   if (!payment) return null
 
   const receiptNo = payment.receiptNo || `${settings?.receiptPrefix || 'HWG'}-${payment.id?.slice(0, 6).toUpperCase()}`
-  const receiptProps = { payment, member, plan, settings, summary, receiptNo }
+  const receiptProps = { payment, member, plan, settings, summary, receiptNo, logoSrc }
 
   return (
     <>
@@ -131,8 +141,11 @@ export function ReceiptModal({ open, onClose, payment, member, plan, settings, s
         size="sm"
         title="Payment Receipt"
         footer={
-          <Button variant="outline" size="sm" onClick={() => window.print()}>
-            <Printer size={14} /> Print
+          // Printing while the logo is still in flight would silently produce a
+          // receipt with no gym branding, which is the document a member keeps.
+          // The button waits instead.
+          <Button variant="outline" size="sm" onClick={() => window.print()} disabled={logoLoading}>
+            <Printer size={14} /> {logoLoading ? 'Preparing…' : 'Print'}
           </Button>
         }
       >

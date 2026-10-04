@@ -27,6 +27,7 @@ const { mocks, authValue, settingsValue, toastValue, collections, member } = vi.
       createDoc: vi.fn(),
       logAudit: vi.fn(),
       uploadMemberPhoto: vi.fn(),
+      readObjectUrl: vi.fn(),
     },
     authValue: {
       user: { uid: 'u1' },
@@ -66,7 +67,7 @@ vi.mock('@/services/firestore', () => ({
 
 vi.mock('@/services/audit', () => ({ logAudit: mocks.logAudit }))
 
-vi.mock('@/services/storage', () => ({ uploadMemberPhoto: mocks.uploadMemberPhoto }))
+vi.mock('@/services/storage', () => ({ uploadMemberPhoto: mocks.uploadMemberPhoto, readObjectUrl: mocks.readObjectUrl }))
 
 vi.mock('@/hooks/useFirestore', () => ({
   useCollection: (name) => ({ items: collections[name] || [], loading: false, error: null }),

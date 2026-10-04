@@ -20,6 +20,7 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { CURRENCIES, DATE_FORMATS } from '@/utils/constants'
 import { formatCurrency } from '@/utils/formatters'
 import { COMMON_GYM_TIMEZONES, resolveGymTimezone } from '@/utils/gymTime'
+import { useSecureImage } from '@/hooks/useSecureImage'
 import { useAuth } from '@/context/AuthContext'
 
 export default function Settings() {
@@ -29,6 +30,11 @@ export default function Settings() {
   // storage.rules trusts. Branding writes are owner-only server-side, so the
   // gym id must be the caller's own gym and can never be supplied by the form.
   const gymId = useAuth()?.gymId ?? null
+  // The preview reads the stored object PATH, so the bytes are fetched with the
+  // signed-in user's credentials and re-checked against storage.rules on every
+  // render. settings.logoUrl is consulted only for documents written before the
+  // path field existed; once a path is present the URL is never the access path.
+  const { url: logoSrc } = useSecureImage(settings.logoPath, settings.logoUrl)
 
   const [saving, setSaving] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -178,16 +184,18 @@ export default function Settings() {
       // to delete it again when the settings write failed, because it had
       // stranded a file nothing could reach. storage.rules denies client deletes
       // on branding, and no product flow needs one.
-      const { url, path } = await uploadGymLogo(gymId, file)
-      // logoPath is persisted beside logoUrl so a future rules-evaluated read is
-      // built from the stable object path rather than from a bearer URL.
+      const { path } = await uploadGymLogo(gymId, file)
+      // Only the object PATH is persisted. A getDownloadURL() token is never
+      // stored: it bypasses storage.rules for anyone who holds it. logoPath is
+      // the durable identifier the preview and receipts read through
+      // useSecureImage, so every render is re-authorised.
       //
       // updateSettings reports its own failure and returns false rather than
       // throwing, so its result has to be honoured. Ignoring it showed
       // "Logo uploaded" next to the error it had just raised, telling the
       // operator the new logo was live when the settings document still
       // pointed at the old one.
-      const saved = await updateSettings({ logoUrl: url, logoPath: path })
+      const saved = await updateSettings({ logoPath: path })
       if (!saved) return
       toast.success('Logo uploaded')
     } catch (err) {
@@ -347,9 +355,9 @@ export default function Settings() {
           />
           <CardBody>
             <div className="mb-5 flex items-center gap-4">
-              {settings.logoUrl ? (
+              {logoSrc ? (
                 <img
-                  src={settings.logoUrl}
+                  src={logoSrc}
                   alt="Gym logo"
                   className="h-16 w-16 rounded-xl object-cover ring-1 ring-slate-200 dark:ring-slate-700"
                 />

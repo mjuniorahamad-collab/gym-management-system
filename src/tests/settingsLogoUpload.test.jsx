@@ -13,6 +13,7 @@ const { mocks, settingsValue, toastValue, authValue, GYM_ID } = vi.hoisted(() =>
       getWhatsAppLink: vi.fn(),
       setWhatsAppLink: vi.fn(),
       uploadGymLogo: vi.fn(),
+      readObjectUrl: vi.fn(),
       loadSampleData: vi.fn(),
       ensureOriginPeriods: vi.fn(),
     },
@@ -50,6 +51,7 @@ vi.mock('@/services/whatsappGroup', () => ({
 // path removes the orphan they used to clean up.
 vi.mock('@/services/storage', () => ({
   uploadGymLogo: mocks.uploadGymLogo,
+  readObjectUrl: mocks.readObjectUrl,
   isStorageReady: () => true,
 }))
 
@@ -79,7 +81,6 @@ const logoInput = (container) => container.querySelector('input[type="file"]')
 const pickLogo = (container, name = 'logo.png') =>
   userEvent.upload(logoInput(container), new File(['x'], name, { type: 'image/png' }))
 
-const LOGO_URL = 'https://example.test/gym-alpha/branding/logo.png'
 const LOGO_PATH = `gyms/${GYM_ID}/branding/logo.png`
 
 describe('Settings logo upload', () => {
@@ -93,7 +94,7 @@ describe('Settings logo upload', () => {
   })
 
   it('reports success and keeps the object when the settings write succeeds', async () => {
-    mocks.uploadGymLogo.mockResolvedValue({ url: LOGO_URL, path: LOGO_PATH })
+    mocks.uploadGymLogo.mockResolvedValue({ path: LOGO_PATH })
     settingsValue.updateSettings.mockResolvedValue(true)
 
     const { container } = render(<Settings />)
@@ -101,10 +102,13 @@ describe('Settings logo upload', () => {
 
     await pickLogo(container)
 
+    // Only the object PATH is stored. A getDownloadURL() token is never
+    // persisted: it would bypass storage.rules for anyone who obtained it.
     await waitFor(() => expect(settingsValue.updateSettings).toHaveBeenCalledWith({
-      logoUrl: LOGO_URL,
       logoPath: LOGO_PATH,
     }))
+    const written = settingsValue.updateSettings.mock.calls[0][0]
+    expect(written.logoUrl).toBeUndefined()
     await waitFor(() => expect(toastValue.success).toHaveBeenCalledWith('Logo uploaded'))
   })
 
@@ -113,7 +117,7 @@ describe('Settings logo upload', () => {
   // uploaded" immediately after the error, and the settings document kept the
   // old logo while the operator believed the new one was live.
   it('does not claim success when the settings write fails', async () => {
-    mocks.uploadGymLogo.mockResolvedValue({ url: LOGO_URL, path: LOGO_PATH })
+    mocks.uploadGymLogo.mockResolvedValue({ path: LOGO_PATH })
     settingsValue.updateSettings.mockResolvedValue(false)
 
     const { container } = render(<Settings />)
@@ -132,7 +136,7 @@ describe('Settings logo upload', () => {
   // SAME object: that is the property which makes orphan growth impossible, and it
   // is what removed the need for a client-side cleanup delete.
   it('reuses one object path across uploads, so a failed settings write strands nothing', async () => {
-    mocks.uploadGymLogo.mockResolvedValue({ url: LOGO_URL, path: LOGO_PATH })
+    mocks.uploadGymLogo.mockResolvedValue({ path: LOGO_PATH })
     settingsValue.updateSettings.mockResolvedValue(false)
 
     const { container } = render(<Settings />)
@@ -166,7 +170,7 @@ describe('Settings logo upload', () => {
 
   // The gym must come from the trusted signed-in profile, never from the file.
   it('uploads under the gym-scoped branding path storage.rules matches', async () => {
-    mocks.uploadGymLogo.mockResolvedValue({ url: LOGO_URL, path: LOGO_PATH })
+    mocks.uploadGymLogo.mockResolvedValue({ path: LOGO_PATH })
     settingsValue.updateSettings.mockResolvedValue(true)
 
     const { container } = render(<Settings />)
@@ -189,7 +193,7 @@ describe('Settings logo upload', () => {
   // than building an unscoped path.
   it('refuses to upload when no gym identity is resolved', async () => {
     authValue.gymId = null
-    mocks.uploadGymLogo.mockResolvedValue({ url: LOGO_URL, path: LOGO_PATH })
+    mocks.uploadGymLogo.mockResolvedValue({ path: LOGO_PATH })
     settingsValue.updateSettings.mockResolvedValue(true)
 
     const { container } = render(<Settings />)

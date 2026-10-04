@@ -8,6 +8,7 @@ import { OutstandingDuesCard } from '@/components/dashboard/OutstandingDuesCard'
 // helper are no longer part of that flow.
 vi.mock('@/services/storage', () => ({
   uploadMemberPhoto: vi.fn(),
+  readObjectUrl: vi.fn(),
 }))
 
 const ROWS = [

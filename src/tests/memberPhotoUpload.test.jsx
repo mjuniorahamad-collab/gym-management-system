@@ -23,17 +23,19 @@ import userEvent from '@testing-library/user-event'
 import { MemberPhoto } from '@/components/common/MemberPhoto'
 
 const { mocks, authValue } = vi.hoisted(() => ({
-  mocks: { uploadMemberPhoto: vi.fn() },
+  mocks: { uploadMemberPhoto: vi.fn(), readObjectUrl: vi.fn() },
   authValue: { gymId: 'gym-alpha' },
 }))
 
-vi.mock('@/services/storage', () => ({ uploadMemberPhoto: mocks.uploadMemberPhoto }))
+vi.mock('@/services/storage', () => ({
+  uploadMemberPhoto: mocks.uploadMemberPhoto,
+  readObjectUrl: mocks.readObjectUrl,
+}))
 vi.mock('@/context/AuthContext', () => ({ useAuth: () => authValue }))
 
 const GYM_ID = 'gym-alpha'
 const MEMBER = { id: 'member-1', name: 'Ayesha Khan', gymId: 'gym-alpha' }
 
-const PHOTO_URL = 'https://example.test/gyms/gym-alpha/memberPhotos/member-1/photo.jpg'
 const PHOTO_PATH = `gyms/${GYM_ID}/memberPhotos/${MEMBER.id}/photo.jpg`
 
 const pngFile = (bytes = 8, type = 'image/png', name = 'photo.png') =>
@@ -50,18 +52,24 @@ describe('MemberPhoto upload', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     authValue.gymId = GYM_ID
-    mocks.uploadMemberPhoto.mockResolvedValue({ url: PHOTO_URL, path: PHOTO_PATH })
+    mocks.uploadMemberPhoto.mockResolvedValue({ path: PHOTO_PATH })
+    mocks.readObjectUrl.mockResolvedValue('blob:mock-url')
+    // jsdom implements neither half of the blob URL lifecycle.
+    global.URL.createObjectURL = vi.fn(() => 'blob:mock-url')
+    global.URL.revokeObjectURL = vi.fn()
     // Expected for the rejection cases; silenced so the run stays readable.
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
   })
 
-  it('uploads with the gym from the signed-in profile and reports both url and path', async () => {
+  it('uploads with the gym from the signed-in profile and reports the stored path', async () => {
     const onUpload = vi.fn()
     const { container } = render(<MemberPhoto member={MEMBER} editable onUpload={onUpload} />)
 
     await pick(container)
 
-    await waitFor(() => expect(onUpload).toHaveBeenCalledWith(PHOTO_URL, PHOTO_PATH))
+    // The callback receives a PATH, not a URL. Nothing is persisted that would
+    // keep working for someone who later loses access.
+    await waitFor(() => expect(onUpload).toHaveBeenCalledWith({ path: PHOTO_PATH }))
     const [gymIdArg, memberIdArg, fileArg] = mocks.uploadMemberPhoto.mock.calls[0]
     expect(gymIdArg).toBe(GYM_ID)
     expect(memberIdArg).toBe(MEMBER.id)
@@ -110,12 +118,55 @@ describe('MemberPhoto upload', () => {
   })
 
   it('renders the existing photo when one is stored', () => {
+    // A document written before Phase 3C still has only a stored URL and no path,
+    // so it keeps rendering until it is migrated. Reading it does NOT mint a new
+    // token.
+    const legacyUrl = 'https://example.test/legacy/photo.jpg'
     const { container } = render(
-      <MemberPhoto member={{ ...MEMBER, photoUrl: PHOTO_URL }} />,
+      <MemberPhoto member={{ ...MEMBER, photoUrl: legacyUrl }} />,
     )
     const img = container.querySelector('img')
-    expect(img?.getAttribute('src')).toBe(PHOTO_URL)
+    expect(img?.getAttribute('src')).toBe(legacyUrl)
     expect(img?.getAttribute('alt')).toBe(MEMBER.name)
+    expect(mocks.readObjectUrl).not.toHaveBeenCalled()
+  })
+
+  // The D1 behaviour: a member with a path is fetched by path, so the read is
+  // authorised by storage.rules at render time.
+  it('reads a stored path through the secure reader instead of a stored URL', async () => {
+    const { container } = render(
+      <MemberPhoto member={{ ...MEMBER, photoPath: PHOTO_PATH, photoUrl: 'https://stale/token' }} />,
+    )
+
+    await waitFor(() => expect(mocks.readObjectUrl).toHaveBeenCalledWith(PHOTO_PATH))
+    const img = await waitFor(() => container.querySelector('img'))
+    expect(img.getAttribute('src')).toBe('blob:mock-url')
+    // The stale bearer URL is ignored entirely once a path exists.
+    expect(img.getAttribute('src')).not.toContain('stale')
+  })
+
+  it('revokes the blob URL when it unmounts', async () => {
+    const revoke = vi.fn()
+    global.URL.revokeObjectURL = revoke
+    const { container, unmount } = render(
+      <MemberPhoto member={{ ...MEMBER, photoPath: PHOTO_PATH }} />,
+    )
+
+    await waitFor(() => expect(container.querySelector('img')).toBeTruthy())
+    unmount()
+    expect(revoke).toHaveBeenCalledWith('blob:mock-url')
+  })
+
+  // A denied read must not silently degrade into the old token: the photo is
+  // absent and no legacy URL is substituted for a document that has a path.
+  it('does not fall back to a stored URL when a stored path cannot be read', async () => {
+    mocks.readObjectUrl.mockRejectedValue(new Error('storage/unauthorized'))
+    const { container } = render(
+      <MemberPhoto member={{ ...MEMBER, photoPath: PHOTO_PATH, photoUrl: 'https://stale/token' }} />,
+    )
+
+    await waitFor(() => expect(container.querySelector('img')).toBeNull())
+    expect(container.textContent).toContain('AK')
   })
 
   it('falls back to initials when there is no photo', () => {
@@ -132,7 +183,7 @@ describe('MemberPhoto upload', () => {
   it('forwards the missing gym identity and surfaces the refusal', async () => {
     authValue.gymId = null
     mocks.uploadMemberPhoto.mockImplementation((gymId) =>
-      gymId ? Promise.resolve({ url: PHOTO_URL, path: PHOTO_PATH }) : Promise.reject(new Error('No gym identity')),
+      gymId ? Promise.resolve({ path: PHOTO_PATH }) : Promise.reject(new Error('No gym identity')),
     )
     const onUpload = vi.fn()
     const { container } = render(<MemberPhoto member={MEMBER} editable onUpload={onUpload} />)

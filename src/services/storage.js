@@ -1,4 +1,4 @@
-import { getDownloadURL, ref, uploadBytes } from 'firebase/storage'
+import { getBytes, ref, uploadBytes } from 'firebase/storage'
 import { isFirebaseConfigured, storage } from '@/firebase'
 
 // ---------------------------------------------------------------------------
@@ -19,7 +19,7 @@ import { isFirebaseConfigured, storage } from '@/firebase'
  * A constant name makes each logical asset exactly one object, so re-uploading
  * overwrites in place. That removes orphan growth entirely: there is never a
  * second object to clean up, which is what previously forced the client to
- * delete files it had just uploaded â€” a capability storage.rules denies on
+ * delete files it had just uploaded — a capability storage.rules denies on
  * purpose, because no product flow needs client-side deletion.
  *
  * The extension is part of the constant rather than the user's filename, so a
@@ -29,7 +29,7 @@ import { isFirebaseConfigured, storage } from '@/firebase'
 export const MEMBER_PHOTO_FILENAME = 'photo.jpg'
 export const LOGO_FILENAME = 'logo.png'
 
-// Mirrors storage.rules. Client validation here is UX only â€” it lets the user
+// Mirrors storage.rules. Client validation here is UX only — it lets the user
 // see "that file is too large" instead of a rules error. The security boundary
 // is the ruleset, which re-checks all of this server-side.
 export const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp']
@@ -45,7 +45,7 @@ export function isStorageReady() {
  *
  * The gym id is the tenancy boundary, so a missing or empty one must fail loudly
  * rather than silently producing an unscoped path. Callers get the value from
- * the signed-in users/{uid} profile â€” never from the URL, form input, or any
+ * the signed-in users/{uid} profile — never from the URL, form input, or any
  * other client-controlled field.
  */
 function requireGymId(gymId) {
@@ -87,34 +87,74 @@ export function validateImageFile(file, maxBytes) {
   return null
 }
 
-export async function uploadFile(file, path) {
+/**
+ * Uploads bytes to an explicit object path.
+ *
+ * Returns the PATH, not a download URL. Returning a URL here is what created the
+ * bearer-token leak: `getDownloadURL` mints a credential that bypasses
+ * `storage.rules` for anyone holding it, so storing one turned a revocable
+ * access decision into a permanent one. Nothing in this client needs a token
+ * (see `readObjectUrl`), so no token is minted at all.
+ */
+async function putFile(file, path) {
   if (!isStorageReady()) throw new Error('Firebase is not configured')
-  const fileRef = ref(storage, path)
-  const snap = await uploadBytes(fileRef, file)
-  return getDownloadURL(snap.ref)
+  await uploadBytes(ref(storage, path), file)
+  return path
 }
 
 /**
- * Uploads one member photo.
+ * Uploads one member photo and returns its stable object path.
  *
- * Returns BOTH the download URL and the stable object path. The URL is a
- * bearer token suitable for rendering; the path is the durable identifier a
- * future rules-evaluated read is built from. Callers persist the path
- * separately so the privacy boundary never depends on a stored URL.
+ * The caller persists the path. Rendering then goes through `readObjectUrl`, so
+ * every read is authorised by `storage.rules` at the moment it happens.
  */
 export async function uploadMemberPhoto(gymId, memberId, file) {
   const invalid = validateImageFile(file, MAX_MEMBER_PHOTO_BYTES)
   if (invalid) throw new Error(invalid)
   const path = memberPhotoPath(gymId, memberId)
-  const url = await uploadFile(file, path)
-  return { url, path }
+  await putFile(file, path)
+  return { path }
 }
 
-/** Uploads the gym logo to its single deterministic branding object. */
+/**
+ * Uploads the gym logo to its single deterministic branding object and returns
+ * the stable object path.
+ */
 export async function uploadGymLogo(gymId, file) {
   const invalid = validateImageFile(file, MAX_LOGO_BYTES)
   if (invalid) throw new Error(invalid)
   const path = logoPath(gymId)
-  const url = await uploadFile(file, path)
-  return { url, path }
+  await putFile(file, path)
+  return { path }
+}
+
+const MIME_BY_EXTENSION = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  webp: 'image/webp',
+}
+
+/**
+ * Fetches an object and returns a blob URL for it (D1).
+ *
+ * This replaces handing out a download token. `getBytes` sends the signed-in
+ * user's ID token with the request, so `storage.rules` re-evaluates tenancy on
+ * every read: a downgraded or removed staff member loses access on their next
+ * render instead of keeping a URL that works forever.
+ *
+ * The returned URL is a blob URL scoped to this page, and the CALLER MUST revoke
+ * it when it is no longer needed or the bytes leak for the lifetime of the
+ * document. `useSecureImage` owns that lifecycle.
+ */
+export async function readObjectUrl(path) {
+  if (!isStorageReady()) throw new Error('Firebase is not configured')
+  const target = typeof path === 'string' ? path.trim() : ''
+  if (!target) throw new Error('A Storage path is required to read an object')
+  const bytes = await getBytes(ref(storage, target))
+  const extension = target.split('.').pop()?.toLowerCase() || ''
+  // Mirrors the storage.rules allowlist; unknown extensions stay opaque rather
+  // than being guessed at, and the rules remain the access boundary regardless.
+  const type = MIME_BY_EXTENSION[extension] || 'application/octet-stream'
+  return URL.createObjectURL(new Blob([bytes], { type }))
 }

@@ -353,13 +353,13 @@ const canWrite = can('members.write')
     }
   }
 
-// photoUrl is a bearer download token, useful for rendering but NOT the
-  // privacy boundary: it stays valid for anyone who ever obtains it. photoPath
-  // is the durable object path, stored alongside it so a future rules-evaluated
-  // read (D1) can be built from the path rather than from a persisted URL.
-  const handlePhoto = async (url, photoPath) => {
+// Only the object PATH is persisted. A getDownloadURL() token is deliberately
+  // NOT stored: it bypasses storage.rules for whoever holds it, so persisting one
+  // turns a revocable access decision into a permanent capability. Reads go
+  // through useSecureImage, which re-authorises every render.
+  const handlePhoto = async ({ path: photoPath }) => {
     try {
-      await updateDocById('members', id, { photoUrl: url, photoPath })
+      await updateDocById('members', id, { photoPath })
       await logAudit({ action: 'update', entity: 'members', entityId: id, details: { photo: true } })
       toast.success('Photo updated')
       reload()
