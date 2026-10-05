@@ -11,7 +11,21 @@ export default [
     // projection writer — the most security-sensitive code in the repository —
     // entirely unlinted. Hand-written Functions code is now linted; only its
     // dependencies and the generated bundle are excluded.
-    ignores: ['dist', 'node_modules', 'coverage', 'functions/node_modules', 'functions/vendor'],
+    //
+    // `.kilo` / `.kilocode` are agent tool worktrees, not part of this project.
+    // They are untracked and hidden from `git status` by .git/info/exclude, so
+    // without this entry `eslint .` walks into a nested worktree containing its
+    // own copy of functions/ and reports errors for code this repository does
+    // not own. Ignoring them suppresses nothing in project source.
+    ignores: [
+      'dist',
+      'node_modules',
+      'coverage',
+      'functions/node_modules',
+      'functions/vendor',
+      '.kilo',
+      '.kilocode',
+    ],
   },
   js.configs.recommended,
   {

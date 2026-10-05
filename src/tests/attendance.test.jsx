@@ -1,6 +1,7 @@
-import { describe, beforeEach, expect, it, vi } from 'vitest'
+import { describe, afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import Attendance from '@/pages/Attendance'
+import { gymDayKey } from '@/utils/gymTime'
 
 const { mocks, toastMocks, authValue } = vi.hoisted(() => ({
   mocks: {
@@ -436,8 +437,19 @@ describe('Attendance session pointer outcomes', () => {
     }
     Object.keys(listeners).forEach((k) => delete listeners[k])
     vi.clearAllMocks()
-    mocks.checkInMember.mockResolvedValue({ attendanceId: 'att-1' })
+mocks.checkInMember.mockResolvedValue({ attendanceId: 'att-1' })
     mocks.checkOutMember.mockResolvedValue({ attendanceId: 'att-1' })
+
+    // Pin the clock so day-key comparisons are independent of when the suite
+    // runs. 04:30 UTC is 10:00 IST, comfortably inside the local day.
+    // `shouldAdvanceTime` keeps wall-clock moving, which the waitFor/act helpers
+    // in this file depend on -- plain fake timers deadlock them.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.setSystemTime(new Date('2026-10-03T04:30:00.000Z'))
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
   })
 
   /**
@@ -494,15 +506,20 @@ describe('Attendance session pointer outcomes', () => {
    * Deriving "in the gym" from today's rows alone hid the member and offered a
    * second check-in that the transaction would then reject.
    */
-  it('counts a session opened before midnight as still in the gym', async () => {
-    const yesterday = new Date(Date.now() - 20 * 60 * 60 * 1000).toISOString()
+it('counts a session opened before midnight as still in the gym', async () => {
+    // Absolute times relative to the pinned clock (04:30 UTC = 10:00 IST, 3 Oct).
+    // 15:20 UTC on 2 Oct is 20:50 IST on 2 Oct, so this session belongs to the
+    // previous local day. `Date.now() - 20h` was not equivalent: for any run
+    // between 20:00 and 24:00 local it lands on the same calendar day and the
+    // fixture silently stopped exercising the overnight case.
+    const yesterday = '2026-10-02T15:20:00.000Z'
     collections.attendance = [
       {
         id: 'att-y',
         memberId: 'm1',
         date: yesterday,
         checkIn: yesterday,
-        checkInDay: yesterday.slice(0, 10),
+        checkInDay: gymDayKey(yesterday),
         checkOut: '',
       },
     ]
@@ -517,7 +534,7 @@ describe('Attendance session pointer outcomes', () => {
   })
 
 it('does not offer a second check-in for an overnight session', async () => {
-    const yesterday = new Date(Date.now() - 20 * 60 * 60 * 1000).toISOString()
+    const yesterday = '2026-10-02T15:20:00.000Z'
     collections.attendance = [
       { id: 'att-y', memberId: 'm1', date: yesterday, checkIn: yesterday, checkOut: '' },
     ]
@@ -530,15 +547,19 @@ it('does not offer a second check-in for an overnight session', async () => {
     expect(mocks.checkInMember).not.toHaveBeenCalled()
   })
 
-  it('counts a member checked out earlier today as checked out, not in the gym', async () => {
-    const now = new Date().toISOString()
+it('counts a member checked out earlier today as checked out, not in the gym', async () => {
+    // `attendanceDay` is compared against the gym-local day, so the fixture's
+    // day key must come from gymDayKey(). Deriving it with toISOString().slice(0,10)
+    // yields the UTC day instead, and the two disagree for the six hours after
+    // local midnight -- which is exactly when the suite was run.
+    const now = '2026-10-03T04:30:00.000Z'
     collections.attendance = [
       {
         id: 'att-1',
         memberId: 'm1',
         date: now,
         checkIn: now,
-        checkInDay: now.slice(0, 10),
+        checkInDay: gymDayKey(now),
         checkOut: now,
       },
     ]
