@@ -41,6 +41,19 @@ export function storage() {
   return admin.storage.getStorage()
 }
 
+/**
+ * Server timestamp sentinel for writes made through this handle.
+ *
+ * Exposed here so an operator script can stamp documents without importing
+ * `firebase-admin` itself, which would either duplicate `initializeApp` or
+ * require the dependency at the repo root. Callers pass the returned value into
+ * a `create()`; it is resolved by the SDK, not by JavaScript.
+ */
+export function serverTimestamp() {
+  if (!admin.apps.length) admin.initializeApp()
+  return admin.firestore.FieldValue.serverTimestamp()
+}
+
 /** Test-only: drop the memoised handle so a suite can start from a clean app. */
 export function resetFirestoreForTests() {
   cached = null

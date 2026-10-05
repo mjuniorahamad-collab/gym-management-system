@@ -33,6 +33,18 @@
  *   adds no dependency. Running under plain `node` fails closed with a message
  *   rather than silently diverging from the app's copy of the policy.
  *
+ * WHERE THE WRITE PATH LIVES
+ *   Planning and apply logic is in `functions/projection/tenantSettingsBootstrap.js`,
+ *   because the root package has no `firebase-admin` dependency and must not gain
+ *   one. That module takes an injected Firestore handle, imports no Admin code,
+ *   and is unit tested in plain Node. This file is the thin CLI around it.
+ *
+ *   The `--apply` path reaches the Admin SDK through
+ *   `functions/projection/admin.js`, the single place in this repository that
+ *   calls `initializeApp`, so there is exactly one Admin app and one dependency.
+ *   `functions/build.mjs` bundles only `projection/engine.entry.js`, and nothing
+ *   in `functions/` imports the bootstrap module, so it is NOT deployed.
+ *
  * WHY THE POLICY IS IMPORTED RATHER THAN REIMPLEMENTED
  *   The app bootstraps settings on an owner's first sign-in using
  *   src/services/tenantSettings.js. This script calls the SAME module, so the
@@ -48,9 +60,14 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import process from 'node:process'
-
-const CONFIRM_TOKEN = 'INIT-TENANT-SETTINGS'
-const SETTINGS_PATH_SUFFIX = '/settings/app'
+import {
+  CONFIRM_TOKEN,
+  buildRollback,
+  gateRows,
+  guardWrite,
+  normaliseSnapshot,
+  settingsPath,
+} from '../functions/projection/tenantSettingsBootstrap.js'
 
 let policy
 try {
@@ -101,60 +118,12 @@ function parseArgs(argv) {
   return args
 }
 
-/**
- * Normalises a snapshot into the shape the pure planner expects.
- *
- * Accepts the Phase 4B read-only snapshot shape:
- *   { gyms: [{ path, id, data: { name, tagline, ownerUid } }] }
- *
- * `memberCount` and `settingsDoc` are optional per gym. Absence of
- * `memberCount` is treated as UNKNOWN and blocks the write for that gym.
- * `settingsDoc: null` must be stated explicitly to mean "read, absent"; an
- * omitted key means "not checked", which also blocks the write.
- */
-function normaliseSnapshot(raw) {
-  const gyms = Array.isArray(raw?.gyms) ? raw.gyms : []
-  if (!gyms.length) throw new Error('Snapshot contains no gyms; refusing to plan an empty set.')
-
-  return gyms.map((entry) => {
-    const data = entry?.data && typeof entry.data === 'object' ? entry.data : entry || {}
-    const memberCount = Number.isInteger(entry?.memberCount) ? entry.memberCount : null
-    const settingsKnown = Object.prototype.hasOwnProperty.call(entry || {}, 'settingsDoc')
-
-    return {
-      id: typeof entry?.id === 'string' ? entry.id : '',
-      name: typeof data.name === 'string' ? data.name : '',
-      tagline: typeof data.tagline === 'string' ? data.tagline : '',
-      memberCount,
-      settingsDoc: settingsKnown ? entry.settingsDoc ?? null : undefined,
-      settingsKnown,
-    }
-  })
-}
-
-/** Applies the script-level safety gates the pure planner does not own. */
-function gateRows(rows) {
-  return rows.map((row) => {
-    const gates = []
-    if (row.classification === 'refused-no-activity') {
-      gates.push('no members: presumed abandoned onboarding attempt or duplicate')
-    }
-    if (row.memberCount === null) {
-      gates.push('member count unknown in snapshot')
-    }
-    if (row.settingsChecked !== true) {
-      gates.push('existence of settings/app was not established in the snapshot')
-    }
-    return { ...row, blockedBy: gates, writable: gates.length === 0 && !!row.write }
-  })
-}
-
 function printPlan(rows, mode) {
   const label = mode === 'apply' ? 'APPLY' : 'DRY RUN'
   console.log(`\n=== tenant settings initialiser — ${label} ===\n`)
 
   for (const row of rows) {
-    const target = `gyms/${row.id}${SETTINGS_PATH_SUFFIX}`
+    const target = settingsPath(row.id)
     console.log(`${row.writable ? 'WRITE ' : 'SKIP  '} ${target}`)
     console.log(`        classification : ${row.classification}`)
     console.log(`        gym            : ${row.name || '(no usable name)'}`)
@@ -185,45 +154,36 @@ function printPlan(rows, mode) {
 }
 
 /**
- * Applies the plan. Imported lazily so a planning-only run needs no Firebase
- * credentials and no admin SDK.
+ * Applies the plan through the Admin SDK that `functions/` already owns.
+ *
+ * Both imports are lazy: a planning-only run must need no credentials and must
+ * never initialise the app. The Firestore handle comes from
+ * `functions/projection/admin.js`, the single place in this repository allowed
+ * to call `initializeApp`, so this adds no dependency at the root and creates no
+ * second Admin app.
  */
 async function applyPlan(rows, projectId) {
-  let admin
+  let bootstrap
+  let adminBridge
   try {
-    admin = await import('firebase-admin/firestore')
-  } catch {
+    bootstrap = await import('../functions/projection/tenantSettingsBootstrap.js')
+    adminBridge = await import('../functions/projection/admin.js')
+  } catch (err) {
     throw new Error(
-      'The apply path needs the Firebase Admin SDK, which is not installed.\n' +
-        'Review the dry-run plan first, then install it deliberately:\n' +
-        '  npm i -D firebase-admin\n' +
-        'and re-run. Do not install it as part of an unreviewed change.'
+      'Could not reach the Admin SDK owned by functions/.\n' +
+        'It is expected at functions/projection/admin.js; the root package has no\n' +
+        'firebase-admin dependency and must not gain one. Check that functions/ is\n' +
+        'present and its dependencies are installed (npm --prefix functions ci).\n' +
+        `Underlying error: ${err?.message || err}`
     )
   }
 
-  const { getFirestore } = admin
-  const db = getFirestore(projectId)
-  const applied = []
-
-  for (const row of rows.filter((r) => r.writable)) {
-    const ref = db.doc(`gyms/${row.id}${SETTINGS_PATH_SUFFIX}`)
-
-    // Re-check immediately before writing. The snapshot may be stale, and this
-    // is the last point at which an overwrite can still be prevented.
-    const current = await ref.get()
-    if (current.exists) {
-      console.log(`SKIP  gyms/${row.id}${SETTINGS_PATH_SUFFIX} — appeared since the snapshot`)
-      continue
-    }
-
-    // `create()` fails if the document now exists, so this cannot clobber even
-    // under a race.
-    await ref.create({ ...row.write, createdAt: admin.FieldValue.serverTimestamp() })
-    applied.push({ path: `gyms/${row.id}${SETTINGS_PATH_SUFFIX}`, payload: row.write })
-    console.log(`WROTE gyms/${row.id}${SETTINGS_PATH_SUFFIX}`)
-  }
-
-  return applied
+  const db = adminBridge.firestore({ projectId })
+  return bootstrap.applyPlan(rows, {
+    db,
+    serverTimestamp: adminBridge.serverTimestamp,
+    log: (line) => console.log(line),
+  })
 }
 
 function usage() {
@@ -272,17 +232,10 @@ async function main() {
   rows = gateRows(rows)
 
   const mode = args.apply ? 'apply' : 'dry-run'
-  if (args.apply) {
-    if (!args.project) {
-      console.error('--apply requires --project=<firebase-project-id>.')
-      process.exit(2)
-    }
-    if (args.confirm !== CONFIRM_TOKEN) {
-      console.error(
-        `--apply requires an explicit --confirm=${CONFIRM_TOKEN}. Nothing was written.`
-      )
-      process.exit(2)
-    }
+  const refusal = guardWrite({ apply: args.apply, project: args.project, confirm: args.confirm })
+  if (refusal) {
+    console.error(refusal)
+    process.exit(2)
   }
 
   printPlan(rows, mode)
@@ -299,29 +252,17 @@ async function main() {
     // owner has since edited them. Comparing the live document against `payload`
     // field-by-field tells you whether an edit happened; `createdAt` is a
     // serverTimestamp, so the manifest records the intended payload only.
-    rollback: {
-      strategy: 'delete-only',
-      paths: rows
-        .filter((r) => r.writable)
-        .map((r) => ({ path: `gyms/${r.id}${SETTINGS_PATH_SUFFIX}`, payload: r.write })),
-      notes: [
-        'Only documents that did not previously exist are ever written.',
-        'No existing document is modified, so rollback cannot lose owner data.',
-        'Verify a document still matches `payload` before deleting it; an owner may have edited it since.',
-      ],
-      notTouched: [
-        'settings/app (the shared legacy singleton) is left in place and remains unreadable by tenants.',
-        'gyms/{gymId}/settings/pt and gyms/{gymId}/settings/whatsapp are never written.',
-        'gyms/{gymId} documents themselves are never modified or deleted.',
-      ],
-    },
+    rollback: buildRollback(rows),
     rows,
   }
 
   let applied = []
   if (args.apply) {
-    applied = await applyPlan(rows, args.project)
+    const result = await applyPlan(rows, args.project)
+    applied = result.applied
     manifest.applied = applied
+    manifest.skipped = result.skipped
+    manifest.failed = result.failed
   }
 
   if (args.manifest) {
@@ -331,6 +272,13 @@ async function main() {
 
   if (args.apply) {
     console.log(`\nApplied ${applied.length} document(s).`)
+    if (manifest.failed?.length) {
+      // Non-zero exit so a wrapper script or an operator notices a partial run
+      // rather than reading exit 0 as "the apply finished".
+      console.error(`${manifest.failed.length} document(s) FAILED. Review them before retrying.`)
+      console.error('Each seeded gym now needs its owner to set a receipt prefix in Settings.')
+      process.exit(1)
+    }
     console.log('Each seeded gym now needs its owner to set a receipt prefix in Settings.')
   }
 }

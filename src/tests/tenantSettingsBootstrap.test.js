@@ -22,6 +22,11 @@ import {
   describeSettingsCompleteness,
   withSettingsFallbacks,
 } from '@/services/tenantSettings'
+import {
+  buildRollback,
+  gateRows,
+  normaliseSnapshot,
+} from '../../functions/projection/tenantSettingsBootstrap.js'
 
 const CRYSTAL = { name: 'Crystal gym', tagline: 'Discipline Strength ' }
 const OXYGEN = { name: 'Oxygen Gym Kandhla', tagline: '' }
@@ -330,5 +335,99 @@ describe('classifyGymsForBootstrap', () => {
     expect(checked.settingsChecked).toBe(true)
     expect(checked.classification).toBe('seed-safe')
     expect(unchecked.settingsChecked).toBe(false)
+  })
+})
+
+/**
+ * Round trip through the operator tool's own planner.
+ *
+ * `gateRows` and `normaliseSnapshot` live in functions/projection/
+ * tenantSettingsBootstrap.js because the apply path needs the Admin SDK that
+ * functions/ owns. They are pure, so the offline plan the CLI prints is covered
+ * here alongside the policy it composes with. The apply path itself is unit
+ * tested in functions/test/, which runs in plain Node with an injected handle.
+ */
+describe('init-tenant-settings planner round trip', () => {
+  it('proposes a create for a live gym whose settings are known absent', () => {
+    const rows = gateRows(
+      classifyGymsForBootstrap(
+        normaliseSnapshot({
+          gyms: [{ id: 'gym-1', data: { name: 'Crystal gym' }, memberCount: 3, settingsDoc: null }],
+        })
+      )
+    )
+
+    expect(rows).toHaveLength(1)
+    expect(rows[0].writable).toBe(true)
+    expect(rows[0].blockedBy).toEqual([])
+    expect(rows[0].write.gymId).toBe('gym-1')
+    // Still an owner decision after gating.
+    expect(rows[0].write).not.toHaveProperty('receiptPrefix')
+  })
+
+  it('refuses to plan anything from an empty snapshot', () => {
+    expect(() => normaliseSnapshot({ gyms: [] })).toThrow(/no gyms/i)
+  })
+
+  it('blocks a gym whose member count the snapshot never established', () => {
+    const [row] = gateRows(
+      classifyGymsForBootstrap(
+        normaliseSnapshot({ gyms: [{ id: 'gym-1', data: { name: 'Crystal gym' }, settingsDoc: null }] })
+      )
+    )
+
+    expect(row.writable).toBe(false)
+    expect(row.blockedBy.join(' ')).toMatch(/member count unknown/i)
+  })
+
+  it('blocks a gym with no members as a presumed abandoned attempt', () => {
+    const [row] = gateRows(
+      classifyGymsForBootstrap(
+        normaliseSnapshot({
+          gyms: [{ id: 'gym-1', data: { name: 'Crystal gym' }, memberCount: 0, settingsDoc: null }],
+        })
+      )
+    )
+
+    expect(row.writable).toBe(false)
+    expect(row.blockedBy.join(' ')).toMatch(/no members/i)
+  })
+
+  it('blocks an existing gym, so nothing is ever overwritten', () => {
+    const [row] = gateRows(
+      classifyGymsForBootstrap(
+        normaliseSnapshot({
+          gyms: [
+            {
+              id: 'gym-1',
+              data: { name: 'Crystal gym' },
+              memberCount: 9,
+              settingsDoc: { gymName: 'Crystal gym', receiptPrefix: 'CRY' },
+            },
+          ],
+        })
+      )
+    )
+
+    expect(row.classification).toBe('already-configured')
+    expect(row.writable).toBe(false)
+    expect(row.write).toBeNull()
+  })
+
+  it('builds a delete-only rollback listing for exactly the writable rows', () => {
+    const rows = gateRows(
+      classifyGymsForBootstrap(
+        normaliseSnapshot({
+          gyms: [
+            { id: 'gym-1', data: { name: 'Crystal gym' }, memberCount: 3, settingsDoc: null },
+            { id: 'gym-2', data: { name: 'Ghost gym' }, memberCount: 0, settingsDoc: null },
+          ],
+        })
+      )
+    )
+
+    const rollback = buildRollback(rows)
+    expect(rollback.strategy).toBe('delete-only')
+    expect(rollback.paths.map((p) => p.path)).toEqual(['gyms/gym-1/settings/app'])
   })
 })
