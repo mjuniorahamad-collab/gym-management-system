@@ -11,6 +11,7 @@ import { CategoryPie } from '@/components/charts/CategoryPie'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
 import { CSVExportButton } from '@/components/common/CSVExportButton'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { LoadErrorState } from '@/components/ui/LoadErrorState'
 import { Spinner } from '@/components/ui/Spinner'
 import { Input } from '@/components/ui/Input'
 import { Button } from '@/components/ui/Button'
@@ -48,6 +49,8 @@ export default function Reports() {
 
   const loading =
     members.loading || payments.loading || expenses.loading || attendance.loading || plans.loading
+
+  const loadError = members.error || payments.error || expenses.error || attendance.error || plans.error
 
   // Initialise from the current gym-local day. Held in state so a half-typed
   // range (start moved past end) does not blank the report mid-edit.
@@ -132,6 +135,22 @@ export default function Reports() {
   const rangeLabel = range ? `${range.from} to ${range.to}` : ''
 
   if (loading) return <Spinner label="Preparing reports…" />
+
+  if (loadError) {
+    return (
+      <LoadErrorState
+        label="reports"
+        message={loadError}
+        onRetry={() => {
+          members.reload()
+          payments.reload()
+          expenses.reload()
+          attendance.reload()
+          plans.reload()
+        }}
+      />
+    )
+  }
 
   return (
     <div className="space-y-5">

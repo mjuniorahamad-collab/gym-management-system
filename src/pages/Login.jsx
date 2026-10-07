@@ -16,6 +16,43 @@ import { ThemeToggle } from '@/components/layout/ThemeToggle'
 const MODE_SIGNIN = 'signin'
 const MODE_SIGNUP = 'signup'
 
+/**
+ * Map an authentication failure to a stable user-facing message. Raw
+ * Firebase error codes/messages are logged by the caller for debugging but
+ * never rendered, so no implementation detail reaches the UI.
+ */
+function friendlyAuthMessage(e) {
+  const code = typeof e?.code === 'string' ? e.code : ''
+  switch (code) {
+    case 'auth/invalid-credential':
+    case 'auth/wrong-password':
+    case 'auth/user-not-found':
+      return 'Incorrect email or password.'
+    case 'auth/email-already-in-use':
+      return 'An account with this email already exists. Try signing in instead.'
+    case 'auth/user-disabled':
+      return 'This account has been disabled. Please contact support.'
+    case 'auth/network-request-failed':
+      return "Can't reach the server. Check your internet connection and try again."
+    case 'auth/too-many-requests':
+      return 'Too many attempts. Please wait a moment and try again.'
+    case 'auth/weak-password':
+      return 'Password is too weak — use at least 6 characters.'
+    case 'auth/invalid-email':
+      return "That email address isn't valid."
+    case 'auth/operation-not-allowed':
+    case 'auth/configuration-not-found':
+    case 'auth/internal-error':
+      return 'Sign-in is temporarily unavailable. Please try again later.'
+    default:
+      break
+  }
+  if (typeof e?.message === 'string' && e.message.includes('Firebase is not configured')) {
+    return 'Sign-in is temporarily unavailable. Please try again later.'
+  }
+  return 'Something went wrong. Please try again.'
+}
+
 export default function Login() {
   const {
     user,
@@ -34,6 +71,7 @@ export default function Login() {
   const location = useLocation()
   const [mode, setMode] = useState(MODE_SIGNIN)
   const [submitting, setSubmitting] = useState(false)
+  const [authError, setAuthError] = useState(null)
   const [onboardingError, setOnboardingError] = useState(null)
 
   const loginForm = useForm({ resolver: zodResolver(loginSchema) })
@@ -56,11 +94,15 @@ export default function Login() {
 
   const handleSignIn = async (values) => {
     setSubmitting(true)
+    setAuthError(null)
     try {
       await signIn(values.email, values.password)
       // Redirect happens via the effect above (after profile bootstrap binds).
-    } catch {
-      // error surfaced via AuthContext + inline below
+    } catch (e) {
+      // Never swallow an auth failure: log the raw error for debugging and
+      // surface a stable, user-friendly message in the inline banner.
+      console.warn('[Login] sign-in failed', e)
+      setAuthError(friendlyAuthMessage(e))
     } finally {
       setSubmitting(false)
     }
@@ -68,12 +110,14 @@ export default function Login() {
 
   const handleSignUp = async (values) => {
     setSubmitting(true)
+    setAuthError(null)
     try {
       await signUp(values.name, values.email, values.password)
       // After sign-up the user is unbound → pendingOnboarding becomes true and
       // the onboarding step is shown automatically.
-    } catch {
-      // error surfaced via AuthContext + inline below
+    } catch (e) {
+      console.warn('[Login] sign-up failed', e)
+      setAuthError(friendlyAuthMessage(e))
     } finally {
       setSubmitting(false)
     }
@@ -99,8 +143,12 @@ export default function Login() {
 
   const handleDemo = async () => {
     setSubmitting(true)
+    setAuthError(null)
     try {
       await demoSignIn()
+    } catch (e) {
+      console.warn('[Login] demo sign-in failed', e)
+      setAuthError(friendlyAuthMessage(e))
     } finally {
       setSubmitting(false)
     }
@@ -240,7 +288,10 @@ export default function Login() {
           <div className="mb-6 grid grid-cols-2 gap-1 rounded-lg bg-slate-100 p-1 dark:bg-slate-800">
             <button
               type="button"
-              onClick={() => setMode(MODE_SIGNIN)}
+              onClick={() => {
+                setMode(MODE_SIGNIN)
+                setAuthError(null)
+              }}
               className={`flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition ${
                 mode === MODE_SIGNIN
                   ? 'bg-white text-slate-900 shadow dark:bg-slate-700 dark:text-white'
@@ -251,7 +302,10 @@ export default function Login() {
             </button>
             <button
               type="button"
-              onClick={() => setMode(MODE_SIGNUP)}
+              onClick={() => {
+                setMode(MODE_SIGNUP)
+                setAuthError(null)
+              }}
               className={`flex items-center justify-center gap-2 rounded-md px-3 py-2 text-sm font-medium transition ${
                 mode === MODE_SIGNUP
                   ? 'bg-white text-slate-900 shadow dark:bg-slate-700 dark:text-white'
@@ -275,6 +329,12 @@ export default function Login() {
                     to <code className="rounded bg-amber-100 px-1 dark:bg-amber-500/20">.env</code> and add
                     your Firebase keys, then restart the dev server.
                   </p>
+                </div>
+              )}
+
+              {authError && (
+                <div className="mt-5 rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300">
+                  {authError}
                 </div>
               )}
 
@@ -327,6 +387,12 @@ export default function Login() {
                     to <code className="rounded bg-amber-100 px-1 dark:bg-amber-500/20">.env</code> and add
                     your Firebase keys, then restart the dev server.
                   </p>
+                </div>
+              )}
+
+              {authError && (
+                <div className="mt-5 rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300">
+                  {authError}
                 </div>
               )}
 

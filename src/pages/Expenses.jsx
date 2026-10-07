@@ -17,6 +17,7 @@ import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { LoadErrorState } from '@/components/ui/LoadErrorState'
 import { Pagination } from '@/components/ui/Pagination'
 import { TableSkeleton } from '@/components/ui/Skeleton'
 import { EXPENSE_CATEGORIES } from '@/utils/constants'
@@ -30,7 +31,7 @@ export default function Expenses() {
   const { settings } = useSettings()
   const toast = useToast()
 
-  const { items: expenses, loading } = useCollection('expenses')
+  const { items: expenses, loading, error, reload } = useCollection('expenses')
 
   const [search, setSearch] = useState('')
   const [category, setCategory] = useState('all')
@@ -154,6 +155,8 @@ export default function Expenses() {
       <div className="card overflow-hidden">
         {loading ? (
           <TableSkeleton rows={6} cols={4} />
+        ) : error ? (
+          <LoadErrorState label="expenses" message={error} onRetry={reload} />
         ) : shown.length === 0 ? (
           <EmptyState icon={ReceiptIcon} title="No expenses recorded" description="Add your first expense to start tracking." />
         ) : (

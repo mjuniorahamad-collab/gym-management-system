@@ -18,6 +18,7 @@ import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { LoadErrorState } from '@/components/ui/LoadErrorState'
 import { Pagination } from '@/components/ui/Pagination'
 import { TableSkeleton } from '@/components/ui/Skeleton'
 import { PAYMENT_METHODS } from '@/utils/constants'
@@ -32,7 +33,7 @@ export default function Payments() {
   const { settings } = useSettings()
   const toast = useToast()
 
-  const { items: payments, loading } = useCollection('payments')
+  const { items: payments, loading, error, reload } = useCollection('payments')
   const { items: members } = useCollection('members')
   const { items: plans } = useCollection('membershipPlans')
   const { items: memberships } = useCollection('memberships')
@@ -169,6 +170,8 @@ export default function Payments() {
       <div className="card overflow-hidden">
         {loading ? (
           <TableSkeleton rows={6} cols={5} />
+        ) : error ? (
+          <LoadErrorState label="payments" message={error} onRetry={reload} />
         ) : shown.length === 0 ? (
           <EmptyState icon={ReceiptIcon} title="No payments found" description="Record your first payment to get started." />
         ) : (

@@ -23,6 +23,7 @@ import { Button } from '@/components/ui/Button'
 import { Badge, FrozenBadge, StatusBadge } from '@/components/ui/Badge'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { LoadErrorState } from '@/components/ui/LoadErrorState'
 import { Pagination } from '@/components/ui/Pagination'
 import { TableSkeleton } from '@/components/ui/Skeleton'
 import { formatDate } from '@/utils/formatters'
@@ -114,6 +115,7 @@ export default function Members() {
   const {
     items: members,
     loading,
+    error,
     hasMore,
     loadMore,
     reload,
@@ -308,6 +310,8 @@ export default function Members() {
       <div className="card overflow-hidden">
         {loading ? (
           <TableSkeleton rows={6} cols={5} />
+        ) : error ? (
+          <LoadErrorState label="members" message={error} onRetry={reload} />
         ) : members.length === 0 ? (
           <EmptyState
             icon={UserPlus}

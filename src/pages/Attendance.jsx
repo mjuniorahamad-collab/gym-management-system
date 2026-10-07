@@ -11,6 +11,7 @@ import { Card, CardBody, CardHeader } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { LoadErrorState } from '@/components/ui/LoadErrorState'
 import { SearchInput } from '@/components/ui/SearchInput'
 import { Spinner } from '@/components/ui/Spinner'
 import { StatCard } from '@/components/charts/StatCard'
@@ -22,8 +23,14 @@ export default function Attendance() {
   const toast = useToast()
   const { timezone } = useSettings()
 
-  const { items: attendance, loading } = useCollection('attendance')
-  const { items: members } = useCollection('members')
+  const {
+    items: attendance,
+    loading,
+    error: attendanceError,
+    reload: reloadAttendance,
+  } = useCollection('attendance')
+  const { items: members, error: membersError, reload: reloadMembers } = useCollection('members')
+  const loadError = attendanceError || membersError
 
   const [search, setSearch] = useState('')
   const [qrCode, setQrCode] = useState('')
@@ -174,6 +181,19 @@ export default function Attendance() {
   }
 
   if (loading) return <Spinner label="Loading attendance…" />
+
+  if (loadError) {
+    return (
+      <LoadErrorState
+        label="attendance"
+        message={loadError}
+        onRetry={() => {
+          reloadAttendance()
+          reloadMembers()
+        }}
+      />
+    )
+  }
 
   return (
     <div className="space-y-5">

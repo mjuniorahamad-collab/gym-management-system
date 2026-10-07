@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { fetchPage, subscribeCollection } from '@/services/firestore'
 import { useAuth } from '@/context/AuthContext'
+import { safeLoadMessage } from '@/utils/loadErrors'
+
+// The raw Firestore/Firebase error is logged (never rendered) so technical
+// detail stays available for debugging while the UI only ever receives one
+// of the stable user-facing messages from safeLoadMessage().
+function logLoadFailure(scope, name, err) {
+  console.error(`[useFirestore] ${scope} "${name}" load failed`, err)
+}
 
 /** Realtime subscription to a whole collection (best for small collections). */
 export function useCollection(name, options = {}) {
@@ -9,6 +17,7 @@ export function useCollection(name, options = {}) {
   const [items, setItems] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
+  const [refreshKey, setRefreshKey] = useState(0)
 
   useEffect(() => {
     if (disabled) {
@@ -30,7 +39,7 @@ export function useCollection(name, options = {}) {
     if (!profile) {
       setItems([])
       if (authError) {
-        setError(authError)
+        setError(safeLoadMessage(authError))
         setLoading(false)
       } else {
         setError(null)
@@ -50,23 +59,29 @@ export function useCollection(name, options = {}) {
           setLoading(false)
         },
         (err) => {
-          setError(err?.message || 'Failed to load data')
+          logLoadFailure('collection', name, err)
+          setError(safeLoadMessage(err))
           setLoading(false)
         }
       )
     } catch (e) {
       // A synchronous failure (e.g. failed Firestore client) must not leave
       // the UI in a perpetual loading state.
-      setError(e?.message || 'Failed to load data')
+      logLoadFailure('collection', name, e)
+      setError(safeLoadMessage(e))
       setLoading(false)
       return
     }
     return () => {
       if (unsubscribe) unsubscribe()
     }
-  }, [name, disabled, user, profile, authError])
+  }, [name, disabled, user, profile, authError, refreshKey])
 
-  return { items, loading, error }
+  // Re-run the effect above (fresh subscription) after a failure. Without
+  // this a permission/network error would be permanent for the session.
+  const reload = useCallback(() => setRefreshKey((k) => k + 1), [])
+
+  return { items, loading, error, reload }
 }
 
 /**
@@ -97,7 +112,8 @@ export function usePaginatedCollection(name, options = {}) {
       lastRef.current = res.last
       setHasMore(res.hasMore)
     } catch (e) {
-      setError(e?.message || 'Failed to load data')
+      logLoadFailure('page', name, e)
+      setError(safeLoadMessage(e))
     } finally {
       setLoading(false)
     }
@@ -118,7 +134,7 @@ export function usePaginatedCollection(name, options = {}) {
     // denied by the security rules and never retry.
     if (!profile) {
       if (authError) {
-        setError(authError)
+        setError(safeLoadMessage(authError))
         setLoading(false)
       } else {
         setLoading(true)

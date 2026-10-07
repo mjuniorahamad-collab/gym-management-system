@@ -13,6 +13,7 @@ import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { LoadErrorState } from '@/components/ui/LoadErrorState'
 import { TableSkeleton } from '@/components/ui/Skeleton'
 import { formatCurrency, formatDate } from '@/utils/formatters'
 
@@ -20,7 +21,7 @@ export default function Trainers() {
   const { can } = useAuth()
   const toast = useToast()
 
-  const { items: trainers, loading } = useCollection('trainers')
+  const { items: trainers, loading, error, reload } = useCollection('trainers')
 
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState(null)
@@ -87,6 +88,8 @@ export default function Trainers() {
       <div className="card overflow-hidden">
         {loading ? (
           <TableSkeleton rows={5} cols={4} />
+        ) : error ? (
+          <LoadErrorState label="trainers" message={error} onRetry={reload} />
         ) : trainers.length === 0 ? (
           <EmptyState
             icon={UserPlus}
