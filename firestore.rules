@@ -107,6 +107,60 @@ service cloud.firestore {
       return sameGym(resource);
     }
 
+    // ---------- Payment receipt integrity -----------------------------------
+    // A receipt number is a brand, not a label: it is printed on receipts and
+    // persisted onto payment records, so a finance client must not be able to
+    // mint one under a foreign or invented prefix by writing `payments`
+    // directly through the SDK.
+    //
+    // The ONLY authoritative prefix is gyms/{gymId}.receiptPrefix — merged in
+    // at onboarding / by the audited bootstrap and then frozen to clients by
+    // the gyms block (`allow update, delete: if false`). This mirrors, at the
+    // rules layer, the runtime guard in src/services/receiptPrefixGuard.js, so
+    // the invariant no longer depends on the app being the writer.
+    //
+    // NULL-SAFE / FAIL-CLOSED: a missing gym document, a gym with no
+    // receiptPrefix field, or a non-string value yields null, which makes the
+    // create check below false (deny) instead of raising an evaluation error.
+    function gymReceiptPrefix(gymId) {
+      let ref = /databases/$(database)/documents/gyms/$(gymId);
+      return exists(ref) && 'receiptPrefix' in get(ref).data
+        ? get(ref).data.receiptPrefix
+        : null;
+    }
+
+    // True when `no` is exactly "<prefix>-<digits>" for the given prefix. The
+    // prefix is compared by EQUALITY, so an arbitrary brand that merely
+    // satisfies the generic shape is still rejected. The digit run accepts the
+    // canonical 6-digit counter receipt, the wider 13-digit epoch-ms fallback,
+    // and seeded sample receipts; the length cap bounds pathological input.
+    //
+    // Not sequence validation: rules cannot enforce counter uniqueness or
+    // monotonicity (no queries, and the counter read sees its pre-transaction
+    // value). That remains outside this phase.
+    function receiptNoUnderPrefix(no, prefix) {
+      return prefix is string
+        && no is string
+        && no.size() <= 24
+        && no.matches('^[A-Za-z0-9]{1,8}-[0-9]+$')
+        && no.split('-')[0] == prefix;
+    }
+
+    // Create: the new receipt number must be issued under the caller's OWN
+    // authoritative prefix (fail closed when that authority is absent).
+    // Update: the existing receipt number is IMMUTABLE — a client may edit any
+    // other payment field, but may never change, remove, or replace receiptNo.
+    // This also covers historical receipts ("001", "HWG-...", or any legacy
+    // value), which stay updatable for unrelated fields because the update arm
+    // compares receiptNo for equality with its stored value rather than
+    // re-validating its shape.
+    function paymentReceiptIntegrity() {
+      return resource == null
+        ? receiptNoUnderPrefix(request.resource.data.get('receiptNo', null),
+            gymReceiptPrefix(request.resource.data.gymId))
+        : request.resource.data.get('receiptNo', null) == resource.data.get('receiptNo', null);
+    }
+
     // A user may only bind gymId once, only on their own profile, and only to
     // a gym whose owner-of-record is themselves (pre-provisioned in the gyms
     // collection — never client-created). After it is set it is frozen.
@@ -428,7 +482,7 @@ service cloud.firestore {
     // ---------- Payments (financial — owner/admin only) --------------------
     match /payments/{id} {
       allow read: if isFinance() && canReadTenant(resource);
-      allow create, update: if isFinance() && canWriteTenant(resource);
+      allow create, update: if isFinance() && canWriteTenant(resource) && paymentReceiptIntegrity();
       allow delete: if isOwner() && canDeleteTenant(resource);
     }
 
