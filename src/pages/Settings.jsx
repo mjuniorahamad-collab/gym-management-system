@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { Building2, Database, Dumbbell, Loader2, MessageCircle, ShieldCheck, Upload } from 'lucide-react'
-import { settingsSchema, ptSurchargeSchema } from '@/schemas/validationSchemas'
+import { settingsFormSchema, ptSurchargeSchema } from '@/schemas/validationSchemas'
 import { useSettings, DEFAULT_SETTINGS } from '@/context/SettingsContext'
 import { useToast } from '@/context/ToastContext'
 import { uploadGymLogo, isStorageReady } from '@/services/storage'
@@ -77,7 +77,7 @@ export default function Settings() {
     handleSubmit,
     reset,
     formState: { errors },
-  } = useForm({ resolver: zodResolver(settingsSchema), defaultValues: DEFAULT_SETTINGS })
+  } = useForm({ resolver: zodResolver(settingsFormSchema), defaultValues: DEFAULT_SETTINGS })
 
   useEffect(() => {
     reset({
@@ -89,7 +89,6 @@ export default function Settings() {
       tagline: text(settings.tagline),
       currency: text(settings.currency),
       dateFormat: text(settings.dateFormat),
-      receiptPrefix: text(settings.receiptPrefix),
       // A gym created before the timezone field existed has no stored value;
       // show the same default every reader falls back to, so saving cannot
       // silently change the gym's day boundaries.
@@ -461,11 +460,15 @@ export default function Settings() {
                 </FormField>
                 <FormField
                   label="Receipt prefix"
-                  error={errors.receiptPrefix?.message}
                   required
-                  hint="Printed on receipts and stored on payment records. There is no default — choose your gym's own prefix."
+                  hint="Declared when the gym was created and frozen on gyms/{gymId}.receiptPrefix. It is not editable here: changing it would renumber receipts that have already been issued."
                 >
-                  <Input error={errors.receiptPrefix} {...register('receiptPrefix')} />
+                  <Input
+                    readOnly
+                    value={text(settings.receiptPrefix)}
+                    placeholder="Not set"
+                    className="cursor-default bg-slate-50 dark:bg-slate-800/60"
+                  />
                 </FormField>
                 <FormField
                   label="Gym timezone"

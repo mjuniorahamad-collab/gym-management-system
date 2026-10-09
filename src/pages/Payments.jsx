@@ -2,6 +2,7 @@ import { useMemo, useState, useEffect } from 'react'
 import { CreditCard, DollarSign, Plus, Receipt as ReceiptIcon, TrendingUp, Trash2 } from 'lucide-react'
 import { useCollection } from '@/hooks/useFirestore'
 import { recordPayment, deletePayment } from '@/services/payments'
+import { requireReceiptPrefix } from '@/services/receiptPrefixGuard'
 import { getPtSurcharge } from '@/services/pt'
 import { exportPaymentsToCsv } from '@/services/export'
 import { useAuth } from '@/context/AuthContext'
@@ -97,7 +98,7 @@ export default function Payments() {
         values,
         memberName: memberMap[values.memberId]?.name || '',
         planName: planMap[values.planId]?.name || '',
-        receiptPrefix: settings.receiptPrefix,
+        receiptPrefix: await requireReceiptPrefix(settings.receiptPrefix, 'Payments'),
       })
       toast.success('Payment recorded')
       setFormOpen(false)

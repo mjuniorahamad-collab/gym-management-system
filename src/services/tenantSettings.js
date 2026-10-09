@@ -36,13 +36,17 @@
  *                 reader already assumes (see SAFE_DEFAULTS).
  *
  * WHAT MUST NEVER BE SEEDED
- *   - `receiptPrefix` : owner decision, persisted onto payments.
+ *   - `receiptPrefix` : owner decision, persisted onto payments. This module
+ *                 never chooses it; the caller supplies the value already
+ *                 declared on `gyms/{gymId}`, which is the only source allowed
+ *                 to hold it (see services/receiptPrefixGuard).
  *   - `logoPath` / `logoUrl` : there is no object to point at.
  *   - PT surcharge / WhatsApp link : separate documents, finance/business
  *     values, never touched by this module.
  */
 
 import { DEFAULT_GYM_TIMEZONE, isValidTimezone } from '@/utils/gymTime'
+import { isValidReceiptPrefix } from '@/utils/receiptPrefix'
 
 /** Sub-collection + document that hold a gym's own settings. */
 export const TENANT_SETTINGS_SUBCOLLECTION = 'settings'
@@ -67,8 +71,10 @@ export const SAFE_DEFAULTS = Object.freeze({
 })
 
 /**
- * Fields the bootstrap refuses to invent. These require an explicit owner
- * decision in Settings before the gym can be considered configured.
+ * Fields the bootstrap refuses to invent. They are set once, by an owner
+ * decision: `receiptPrefix` is declared at onboarding (or, for a gym migrated
+ * by the operator CLI, recorded in that run's --prefix-approvals) and never
+ * derived here.
  */
 export const OWNER_DECISION_FIELDS = Object.freeze(['receiptPrefix'])
 
@@ -192,8 +198,10 @@ export function buildTenantSettingsSeed({ gymId, gym = null, existing = null } =
     deferred: [...OWNER_DECISION_FIELDS],
     missingRequired: [...OWNER_DECISION_FIELDS],
     reason:
-      `Derived gymName and tagline from gyms/${id}. ` +
-      `receiptPrefix is left unset and must be chosen by the owner.`,
+      `Derived gymName and tagline from gyms/${id}. This seed does not choose receiptPrefix; ` +
+      `the owner-approved prefix is attached when the document is created ` +
+      `(declared on gyms/${id} at onboarding, or supplied by the operator's ` +
+      `--prefix-approvals for a migration run), so the created document is not left without one.`,
   }
 }
 
@@ -214,7 +222,7 @@ export function describeSettingsCompleteness(stored) {
   if (text(data.gymName).length < NAME_MIN) missing.push('gymName')
   if (!text(data.currency)) missing.push('currency')
   if (!text(data.dateFormat)) missing.push('dateFormat')
-  if (!text(data.receiptPrefix)) missing.push('receiptPrefix')
+  if (!isValidReceiptPrefix(data.receiptPrefix)) missing.push('receiptPrefix')
   if (!isValidTimezone(data.timezone)) missing.push('timezone')
 
   return { complete: missing.length === 0, missing }
@@ -288,6 +296,12 @@ export function classifyGymsForBootstrap(gyms) {
       name,
       memberCount: members,
       settingsChecked,
+      // What `gyms/{gymId}` already declares, if anything. Informational for
+      // the plan output; the authoritative comparison happens against live data
+      // immediately before a write. `normaliseSnapshot` puts it at the top level
+      // of each entry under this name.
+      declaredPrefix:
+        typeof gym?.declaredPrefix === 'string' && gym.declaredPrefix ? gym.declaredPrefix : null,
       // Display-name collisions are reported so an operator can eyeball them.
       // They NEVER change the outcome: tenancy is by document id.
       sharesDisplayName: counts.get(name) > 1,

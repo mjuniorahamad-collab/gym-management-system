@@ -118,6 +118,24 @@ const rows = (collection) =>
     .filter(([k]) => k.startsWith(`${collection}/`))
     .map(([key, v]) => ({ id: key.slice(collection.length + 1), ...v }))
 
+/**
+ * Point reads outside a transaction.
+ *
+ * `gyms/{gymId}` is the authoritative home of the receipt prefix and is read by
+ * the receipt-prefix guard before a renewal may start, so it must answer with
+ * the same canonical value the fixture passes in. Everything else (the receipt
+ * counter, in particular) is absent, which is what sends `prepareReceiptFloor`
+ * down its legacy-sequence seed path.
+ */
+function answerReads() {
+  mocks.getDoc.mockImplementation(async (ref) => {
+    if (ref?.__collection === 'gyms') {
+      return { exists: () => true, data: () => ({ receiptPrefix: 'HWG' }) }
+    }
+    return { exists: () => false, data: () => undefined }
+  })
+}
+
 const counter = () => state.docs.get('counters/receiptNo_gym-1')
 
 const plan = { id: 'plan-90', name: '3 Months', durationDays: 90, price: 3500, active: true }
@@ -130,6 +148,7 @@ const renewal = (over = {}) => ({
   paidAmount: 3500,
   method: 'Cash',
   date: '2026-02-01',
+  receiptPrefix: 'HWG',
   ...over,
 })
 
@@ -140,7 +159,7 @@ describe('renewMembership transaction', () => {
     state.autoCounter = 0
     mocks.getGymId.mockReturnValue('gym-1')
     mocks.logAudit.mockResolvedValue(undefined)
-    mocks.getDoc.mockResolvedValue({ exists: () => false, data: () => undefined })
+    answerReads()
     state.docs.set('members/m1', { ...member })
     installTransactionalFirestore()
   })
@@ -352,7 +371,7 @@ describe('renewMembership freeze-tail settlement', () => {
     state.autoCounter = 0
     mocks.getGymId.mockReturnValue('gym-1')
     mocks.logAudit.mockResolvedValue(undefined)
-    mocks.getDoc.mockResolvedValue({ exists: () => false, data: () => undefined })
+    answerReads()
     state.docs.set('members/m1', { ...member })
     installTransactionalFirestore()
   })

@@ -130,6 +130,7 @@ export default function Login() {
       const gymId = await provisionOwnerGym({
         name: values.gymName,
         tagline: values.tagline || '',
+        receiptPrefix: values.receiptPrefix,
       })
       await completeOnboarding(gymId)
       toast.success('Your gym is ready!')
@@ -222,6 +223,20 @@ export default function Login() {
                     {...onboardingForm.register('gymName')}
                   />
                 </div>
+              </FormField>
+
+              <FormField
+                label="Receipt prefix"
+                hint="1-8 letters or digits, e.g. CRY or 001. Printed on every receipt and cannot be changed later."
+                error={onboardingForm.formState.errors.receiptPrefix?.message}
+                required
+              >
+                <Input
+                  placeholder="e.g. CRY"
+                  maxLength={8}
+                  error={onboardingForm.formState.errors.receiptPrefix}
+                  {...onboardingForm.register('receiptPrefix')}
+                />
               </FormField>
 
               <FormField label="Tagline (optional)" error={onboardingForm.formState.errors.tagline?.message}>

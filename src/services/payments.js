@@ -3,6 +3,7 @@ import { logAudit } from './audit'
 import { computeMemberLedger } from '@/utils/dues'
 import { safePaymentAmount } from '@/utils/payments'
 import { nextReceiptNo } from './receipts'
+import { requireReceiptPrefix } from './receiptPrefixGuard'
 
 /**
  * Recompute every membership-period snapshot (amountPaid / amountDue /
@@ -69,7 +70,7 @@ export async function recordPayment({
   values,
   memberName = '',
   planName = '',
-  receiptPrefix = 'HWG',
+  receiptPrefix: suppliedPrefix,
   type = 'membership',
 }) {
   const amount = safePaymentAmount(values.amount)
@@ -77,6 +78,11 @@ export async function recordPayment({
   // space is 1e6 ms — so two payments roughly 16m40s apart with the same
   // sub-second offset minted the SAME receipt number. The per-gym counter
   // transaction makes duplicates impossible and keeps receipts in issue order.
+  //
+  // The prefix is resolved here, before anything is written: the authoritative
+  // value lives on gyms/{gymId}, and a caller holding the settings mirror is
+  // only trusted while the two still agree.
+  const receiptPrefix = await requireReceiptPrefix(suppliedPrefix, 'recordPayment')
   const receiptNo = await nextReceiptNo(receiptPrefix)
 
   let membershipId = values.membershipId || ''

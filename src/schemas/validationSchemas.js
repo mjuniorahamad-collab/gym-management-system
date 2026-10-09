@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { isValidTimezone } from '@/utils/gymTime'
+import { RECEIPT_PREFIX_RULES, receiptPrefixRejection } from '@/utils/receiptPrefix'
 
 const email = z.string().min(1, 'Email is required').email('Enter a valid email')
 const phone = z
@@ -24,9 +25,18 @@ export const signupSchema = z
     path: ['confirmPassword'],
   })
 
+const receiptPrefixField = z
+  .string({ required_error: RECEIPT_PREFIX_RULES, invalid_type_error: RECEIPT_PREFIX_RULES })
+  .superRefine((value, ctx) => {
+    if (receiptPrefixRejection(value) !== null) {
+      ctx.addIssue({ code: 'custom', message: RECEIPT_PREFIX_RULES })
+    }
+  })
+
 export const gymOnboardingSchema = z.object({
   gymName: z.string().min(2, 'Gym name must be at least 2 characters').max(80),
   tagline: z.string().optional().or(z.literal('')),
+  receiptPrefix: receiptPrefixField,
 })
 
 export const ptSurchargeSchema = z
@@ -192,11 +202,13 @@ export const settingsSchema = z.object({
   tagline: z.string().optional().or(z.literal('')),
   currency: z.string().min(1, 'Select a currency'),
   dateFormat: z.string().min(1, 'Select a date format'),
-  receiptPrefix: z.string().min(1, 'Receipt prefix is required').max(8),
+  receiptPrefix: receiptPrefixField,
   timezone: z
     .string()
     .refine(isValidTimezone, { message: 'Select a valid timezone' }),
 })
+
+export const settingsFormSchema = settingsSchema.omit({ receiptPrefix: true })
 
 export const whatsAppLinkSchema = z
   .string()

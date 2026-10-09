@@ -17,6 +17,7 @@ import { useToast } from '@/context/ToastContext'
 import { useCollection } from '@/hooks/useFirestore'
 import { loadSampleData } from '@/services/seedService'
 import { recordPayment } from '@/services/payments'
+import { requireReceiptPrefix } from '@/services/receiptPrefixGuard'
 import { getPtSurcharge } from '@/services/pt'
 import { StatCard } from '@/components/charts/StatCard'
 import { RevenueChart } from '@/components/charts/RevenueChart'
@@ -280,7 +281,7 @@ export default function Dashboard() {
         values,
         memberName,
         planName: planMap[values.planId]?.name || '',
-        receiptPrefix: settings.receiptPrefix,
+        receiptPrefix: await requireReceiptPrefix(settings.receiptPrefix, 'Dashboard'),
       })
       toast.success('Payment recorded')
       setPayTarget(null)

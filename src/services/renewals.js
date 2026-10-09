@@ -10,6 +10,7 @@ import { logAudit } from './audit'
 import { requestReprojection } from './projection'
 import { getGymId } from './ownerContext'
 import { fallbackReceiptNo, mintReceiptNoInTransaction, nextReceiptNo, prepareReceiptFloor } from './receipts'
+import { requireReceiptPrefix } from './receiptPrefixGuard'
 
 function requireValidPlan(plan) {
   if (!plan || !plan.id) throw new Error('Select a valid membership plan')
@@ -83,7 +84,7 @@ export async function renewMembership({
   method,
   date,
   note,
-  receiptPrefix = 'HWG',
+  receiptPrefix: suppliedPrefix,
   effectivePrice,
   isPT = false,
   ptSurcharge = 0,
@@ -276,6 +277,13 @@ export async function renewMembership({
     throw new Error('No gym selected — a renewal cannot be recorded before tenancy is established')
   }
 
+  // Resolve the receipt prefix before any write is staged. The authoritative
+  // value lives on gyms/{gymId}; the caller's copy is the settings mirror, and
+  // it is only accepted while the two still agree. Resolving it here means the
+  // transaction, its fallback path and the demo path all issue under the same
+  // verified prefix.
+  const receiptPrefix = await requireReceiptPrefix(suppliedPrefix, 'renewMembership')
+
   if (!isReady()) {
     // Demo / offline mode. The mock store has no transaction primitive, so the
     // sequential writes stand in; the invariants they are checking are enforced
@@ -340,9 +348,10 @@ export async function renewMembership({
       })
     } catch (err) {
       // A failed transaction has no side effects, so retrying without the
-      // counter is safe. This preserves the rule that a payment is never
-      // refused just because a receipt number could not be minted — the
-      // counter is a convenience, the ledger entry is the record.
+      // counter is safe. Carve-out: a payment is never refused just because a
+      // receipt number could not be minted — the counter is a convenience, the
+      // ledger entry is the record. What is NOT carved out is the prefix: it is
+      // the same one the guard verified above, never a default.
       console.warn('[renewals] receipt counter unavailable; retrying without it', err)
       receiptNo = fallbackReceiptNo(receiptPrefix)
       await runTransaction(db, async (tx) => {

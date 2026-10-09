@@ -735,6 +735,9 @@ describe('renewal receipt linking', () => {
       paidAmount: 3500,
       method: 'Cash',
       date: iso(today()),
+      // Demo prefix: a renewal issues nothing without one now, so the test
+      // names the brand it wants rather than inheriting a default.
+      receiptPrefix: 'HWG',
     })
     const membership = __store.memberships[0]
     const payment = __store.payments[0]
@@ -759,6 +762,7 @@ describe('renewal receipt linking', () => {
       paidAmount: 3500,
       method: 'Cash',
       date: iso(today()),
+      receiptPrefix: 'HWG',
     })
     await renewMembership({
       member: __store.members.find((m) => m.id === member.id),
@@ -767,6 +771,7 @@ describe('renewal receipt linking', () => {
       paidAmount: 3500,
       method: 'Cash',
       date: iso(today()),
+      receiptPrefix: 'HWG',
     })
     const numbers = __store.payments.map((p) => p.receiptNo)
     expect(new Set(numbers).size).toBe(2)

@@ -2,6 +2,7 @@ import { doc, getDoc, runTransaction } from 'firebase/firestore'
 import { db, isFirebaseConfigured } from '@/firebase'
 import { store } from './mockStore'
 import { getGymId } from './ownerContext'
+import { isValidReceiptPrefix } from '@/utils/receiptPrefix'
 
 const ready = () => isFirebaseConfigured && Boolean(db)
 
@@ -20,7 +21,13 @@ const counterRef = () => doc(db, 'counters', counterKey())
 export function formatReceiptNo(prefix, n) {
   const num = Number.parseInt(n, 10)
   if (Number.isNaN(num) || num < 0) return ''
-  return `${prefix || 'HWG'}-${String(num).padStart(RECEIPT_DIGITS, '0')}`
+  // Fail closed: a receipt is never numbered under a prefix nobody declared.
+  // The empty string is this module's "not minted" result — the same sentinel
+  // used for an unparsable sequence — so a caller that somehow reaches here
+  // without a resolved prefix records no receipt number rather than a
+  // plausible-looking one from a default brand.
+  if (!isValidReceiptPrefix(prefix)) return ''
+  return `${prefix}-${String(num).padStart(RECEIPT_DIGITS, '0')}`
 }
 
 export function parseReceiptSeq(value) {
@@ -112,27 +119,33 @@ export async function mintReceiptNoInTransaction(tx, gymId, prefix, floor) {
  * Last-resort receipt when the counter cannot be reached. Made strictly
  * monotonic in-process so two receipts minted in the same millisecond still
  * differ, and so wide (full epoch ms) that the legacy 1e6-value cycle cannot
- * recur. Used instead of throwing because a payment must never be refused just
- * because its receipt number could not be minted — and because a real
- * PERMISSION_DENIED from the payment write itself is a far clearer error for
- * staff than a receipt-numbering failure.
+ * recur. Carve-out: this formats rather than throws, because a payment must
+ * never be refused just because its receipt number could not be minted — and
+ * because a real PERMISSION_DENIED from the payment write itself is a far
+ * clearer error for staff than a receipt-numbering failure. The prefix is never
+ * invented here: it is the one the caller already validated, handed to the same
+ * canonical formatter the happy path uses.
  */
 let lastFallback = 0
 export function fallbackReceiptNo(prefix) {
   const now = Date.now()
   lastFallback = now > lastFallback ? now : lastFallback + 1
-  return `${prefix || 'HWG'}-${lastFallback}`
+  return formatReceiptNo(prefix, lastFallback)
 }
 
 /**
- * Returns the next receipt number for the current gym (e.g. HWG-000001).
+ * Returns the next receipt number for the current gym (e.g. CRY-000001).
  *
  * Real Firestore mode uses the same atomic per-gym counter transaction as member
  * numbering, so two receipts minted in the same millisecond — or by two gym
  * terminals at once — can never collide. The counter never decrements, so a
  * number is never re-issued after a payment is deleted.
+ *
+ * There is no default prefix. Callers resolve theirs through
+ * services/receiptPrefixGuard before they get here, so a receipt is always
+ * issued under a prefix somebody is accountable for.
  */
-export async function nextReceiptNo(prefix = 'HWG') {
+export async function nextReceiptNo(prefix) {
   const gymId = getGymId()
 
   // Genuine demo/offline mode (mirrors nextMemberNo).

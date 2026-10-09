@@ -1,15 +1,15 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
-import { doc, getDoc, onSnapshot, setDoc, updateDoc } from 'firebase/firestore'
+import { doc, getDoc, onSnapshot } from 'firebase/firestore'
 import { db, isFirebaseConfigured } from '@/firebase'
 import { useAuth } from './AuthContext'
 import { useToast } from './ToastContext'
 import { DEFAULT_GYM_TIMEZONE, resolveGymTimezone } from '@/utils/gymTime'
+import { provisionTenantSettings, settingsRef, settingsUpdatePayload, persistSettingsUpdate } from '@/services/tenantSettingsDoc'
 import {
-  TENANT_SETTINGS_DOC,
-  buildTenantSettingsSeed,
   describeSettingsCompleteness,
   withSettingsFallbacks,
 } from '@/services/tenantSettings'
+import { classifyPrefixConsistency } from '@/utils/receiptPrefix'
 
 /**
  * Initial form values only.
@@ -37,30 +37,13 @@ export const DEFAULT_SETTINGS = {
   timezone: DEFAULT_GYM_TIMEZONE,
 }
 
-const SETTINGS_DOC = TENANT_SETTINGS_DOC
-
-/**
- * Settings are tenant-scoped at `gyms/{gymId}/settings/app`.
- *
- * The former global `settings/app` singleton was readable and writable by ANY
- * signed-in user regardless of gym, which meant one tenant's branding,
- * currency and receipt prefix were visible to — and overwritable by — every
- * other tenant. That path is deliberately NOT used as a fallback here: a
- * silent fallback would keep exposing the insecure singleton whenever the
- * scoped document is missing or unreadable, which is exactly the failure this
- * change exists to remove. A missing or denied settings document is surfaced
- * as a loud, explicit error instead.
- */
-function settingsRef(gymId) {
-  return doc(db, 'gyms', gymId, 'settings', SETTINGS_DOC)
-}
-
 const SettingsContext = createContext({
   settings: DEFAULT_SETTINGS,
   loading: true,
   error: null,
   needsConfiguration: false,
   missingRequiredFields: [],
+  pendingProvisioning: false,
   updateSettings: () => {},
 })
 
@@ -69,6 +52,11 @@ export function SettingsProvider({ children }) {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [missingRequiredFields, setMissingRequiredFields] = useState([])
+  // True while the settings document is absent AND the client refused to
+  // create it (no canonical prefix declared on gyms/{gymId}, or an unusable
+  // tenant record). Such a gym must be provisioned by the controlled CLI
+  // migration, never by a hidden generic client create.
+  const [pendingProvisioning, setPendingProvisioning] = useState(false)
   // The gym's own owner-of-record document. Read once per bound gym and used for
   // two things: the trusted source of the bootstrap's gymName/tagline, and a
   // display fallback so a partially configured gym is never rendered under an
@@ -105,6 +93,7 @@ export function SettingsProvider({ children }) {
     setError(null)
     setLoading(true)
     setMissingRequiredFields([])
+    setPendingProvisioning(false)
 
     // Create the settings doc before subscribing (if missing). We avoid
     // calling setDoc from inside the onSnapshot callback — writing to a
@@ -115,42 +104,38 @@ export function SettingsProvider({ children }) {
       // to the gym's own owner-of-record or to staff of that gym, so it is a
       // trustworthy source of the gym's registered name.
       let gym = null
+      // Distinguishes "the read happened and found no gym" from "the read
+      // failed". Only the first is evidence that the authority is missing; a
+      // transient failure must not be reported as an authority/mirror
+      // inconsistency, which would blame the tenant for a network error.
+      let gymEstablished = false
       try {
         const gymSnap = await getDoc(gymRef)
         if (!active) return
+        gymEstablished = true
         gym = gymSnap.exists() ? gymSnap.data() : null
         setGymRecord(gym)
       } catch {
         if (!active) return
       }
 
+      let refusal = null
       try {
-        const snap = await getDoc(ref)
+        await provisionTenantSettings({
+          gymId,
+          gym,
+          receiptPrefix: gym?.receiptPrefix,
+        })
         if (!active) return
-        if (!snap.exists()) {
-          // Safe bootstrap. `gymId` comes from the signed-in users/{uid}
-          // profile, which the rules freeze after the one-time bind, and the
-          // write is additionally gated by firestore.rules:210-213 to an owner
-          // of this gym whose document carries that same gymId.
-          //
-          // The seed deliberately contains NO invented business values:
-          // gymName/tagline are copied from the tenant's own record, and
-          // receiptPrefix is left unset so it cannot reach a printed receipt or
-          // a persisted payment receipt number until an owner chooses it.
-          const seed = buildTenantSettingsSeed({
-            gymId,
-            gym,
-            existing: null,
-          })
-          if (seed.write) {
-            await setDoc(ref, seed.write)
-            if (!active) return
-          }
+        setPendingProvisioning(false)
+      } catch (err) {
+        if (!active) return
+        if (err?.code === 'settings-exists') {
+          setPendingProvisioning(false)
+        } else {
+          refusal = err
+          setPendingProvisioning(true)
         }
-      } catch {
-        // Creating the document is owner-only. A non-owner may still be
-        // permitted to read an existing one, so keep listening either way.
-        if (!active) return
       }
 
       unsubscribe = onSnapshot(
@@ -161,14 +146,28 @@ export function SettingsProvider({ children }) {
             const stored = snap.data()
             setSettings(withSettingsFallbacks(stored, gym?.name))
             setMissingRequiredFields(describeSettingsCompleteness(stored).missing)
-            setError(null)
+            setPendingProvisioning(false)
+            // Authority/mirror consistency is checked here rather than
+            // repaired: with both documents already in memory it costs no
+            // extra read, and a mismatch must surface as an error naming both
+            // paths instead of being silently resolved one way or the other.
+            const consistency = gymEstablished
+              ? classifyPrefixConsistency({
+                  gymId,
+                  authority: gym?.receiptPrefix,
+                  mirror: stored.receiptPrefix,
+                  settingsExists: true,
+                })
+              : null
+            setError(consistency?.blocking ? consistency.message : null)
             setLoading(false)
           } else {
             setSettings(withSettingsFallbacks(null, gym?.name))
             setMissingRequiredFields(describeSettingsCompleteness(null).missing)
             setError(
-              `No settings document exists for this gym (gyms/${gymId}/settings/app). ` +
-                'Settings must be provisioned for every active gym before this gym can be used.'
+              refusal?.message ||
+                `No settings document exists for this gym (gyms/${gymId}/settings/app). ` +
+                  'Settings must be provisioned for every active gym before this gym can be used.'
             )
             setLoading(false)
           }
@@ -176,9 +175,10 @@ export function SettingsProvider({ children }) {
         (err) => {
           if (!active) return
           setError(
-            err?.message
-              ? `Could not load settings for this gym: ${err.message}`
-              : 'Could not load settings for this gym.'
+            refusal?.message ||
+              (err?.message
+                ? `Could not load settings for this gym: ${err.message}`
+                : 'Could not load settings for this gym.')
           )
           setLoading(false)
         }
@@ -204,14 +204,18 @@ export function SettingsProvider({ children }) {
         toast.error('No gym is assigned to this account, so settings cannot be saved.')
         return false
       }
-      const ref = settingsRef(gymId)
       try {
-        // The scoped settings document must carry the owning gymId; the
-        // security rules reject any write that does not match the caller.
-        await updateDoc(ref, { ...data, gymId })
-        setSettings((prev) => ({ ...prev, ...data }))
+        // `receiptPrefix` is stripped by settingsUpdatePayload: it is an
+        // immutable property of the gyms/{gymId} owner-of-record and only the
+        // create-only provisionTenantSettings / CLI migration may ever write it.
+        const writable = settingsUpdatePayload(data)
+        // persistSettingsUpdate uses updateDoc, never setDoc, so a missing
+        // document makes the write fail with NOT_FOUND instead of quietly
+        // creating one outside the create-only provisioning path.
+        await persistSettingsUpdate({ gymId, data })
+        setSettings((prev) => ({ ...prev, ...writable }))
         setMissingRequiredFields(
-          describeSettingsCompleteness({ ...(settings || {}), ...data }).missing
+          describeSettingsCompleteness({ ...(settings || {}), ...writable }).missing
         )
         toast.success('Settings saved')
         return true
@@ -241,6 +245,7 @@ export function SettingsProvider({ children }) {
       error,
       needsConfiguration,
       missingRequiredFields,
+      pendingProvisioning,
       gymRecord,
       updateSettings,
     }),
@@ -251,6 +256,7 @@ export function SettingsProvider({ children }) {
       error,
       needsConfiguration,
       missingRequiredFields,
+      pendingProvisioning,
       gymRecord,
       updateSettings,
     ]

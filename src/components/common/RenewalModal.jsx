@@ -13,6 +13,7 @@ import { useToast } from '@/context/ToastContext'
 import { useSettings } from '@/context/SettingsContext'
 import { renewMembership } from '@/services/renewals'
 import { recordPayment } from '@/services/payments'
+import { requireReceiptPrefix } from '@/services/receiptPrefixGuard'
 import { toDateInputValue } from '@/utils/dateHelpers'
 import { formatCurrency, formatDate } from '@/utils/formatters'
 import { computeMemberLedger } from '@/utils/dues'
@@ -271,8 +272,8 @@ export function RenewalModal({ open, onClose, member, currentPlan, currentExpiry
         paidAmount: values.amount,
         method: values.method,
         date: values.date,
-note: values.note,
-        receiptPrefix: settings.receiptPrefix,
+        note: values.note,
+        receiptPrefix: await requireReceiptPrefix(settings.receiptPrefix, 'RenewalModal'),
         effectivePrice: charge.total,
         isPT: Boolean(member?.isPT),
     ptSurcharge: charge.addon,
@@ -300,7 +301,7 @@ note: values.note,
           },
           memberName: member.name,
           type: 'membership',
-          receiptPrefix: settings.receiptPrefix,
+          receiptPrefix: await requireReceiptPrefix(settings.receiptPrefix, 'RenewalModal'),
         })
       }
 

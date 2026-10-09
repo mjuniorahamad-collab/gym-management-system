@@ -5,6 +5,7 @@ import { QRCodeSVG } from 'qrcode.react'
 import { ArrowLeft, CreditCard, LineChart as LineChartIcon, Pencil, Plus, Printer, QrCode, RefreshCcw, ScrollText, Share2, Trash2 } from 'lucide-react'
 import { getById, updateDocById } from '@/services/firestore'
 import { recordPayment } from '@/services/payments'
+import { requireReceiptPrefix } from '@/services/receiptPrefixGuard'
 import { editMembershipPeriod, deleteMembershipPeriod, applyPTInclusivePriceToPeriod } from '@/services/memberships'
 import { getPtSurcharge } from '@/services/pt'
 import { getWhatsAppLink } from '@/services/whatsappGroup'
@@ -378,7 +379,7 @@ const canWrite = can('members.write')
           plans.items.find((p) => String(p.id) === String(values.planId))?.name ||
           plan?.name ||
           '',
-        receiptPrefix: settings.receiptPrefix,
+        receiptPrefix: await requireReceiptPrefix(settings.receiptPrefix, 'MemberDetail'),
       })
       toast.success('Payment recorded')
       setPayOpen(false)
