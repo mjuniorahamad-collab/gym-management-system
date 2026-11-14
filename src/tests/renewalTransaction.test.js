@@ -55,13 +55,43 @@ vi.mock('@/services/projection', () => ({ requestReprojection: mocks.requestRepr
 // The sequential writes must never be reached once a gym is established. If a
 // change routes a renewal back through them, these throw instead of quietly
 // reintroducing the partial-write window this commit closes.
+const listRows = (name) =>
+  [...state.docs.entries()]
+    .filter(([k]) => k.startsWith(`${name}/`))
+    .map(([key, v]) => ({ id: key.slice(name.length + 1), ...v }))
+
 vi.mock('@/services/firestore', () => ({
   isReady: () => true,
+  // The real primitive stamps gymId on every write (createDoc's behaviour);
+  // this stand-in does the same on top of the transactional harness below, so
+  // the tenant assertions keep their meaning.
+  commitAtomically: (apply) =>
+    mocks.runTransaction({}, async (raw) => {
+      const withGym = (data) => ({ ...data, gymId: mocks.getGymId() })
+      const writer = {
+        get: async (name, id) => {
+          const snap = await raw.get(mocks.doc(null, name, id))
+          return snap.exists() ? snap.data() : null
+        },
+        newId: (name) => mocks.doc({ __collection: name }).id,
+        create: (name, data, id) => {
+          const ref = id ? mocks.doc(null, name, id) : mocks.doc({ __collection: name })
+          raw.set(ref, withGym(data))
+          return ref.id
+        },
+        upsert: (name, id, data) => raw.set(mocks.doc(null, name, id), withGym(data), { merge: true }),
+        update: (name, id, patch) => raw.set(mocks.doc(null, name, id), { ...patch }, { merge: true }),
+        remove: (name, id) => raw.delete(mocks.doc(null, name, id)),
+      }
+      return apply(writer)
+    }),
   createDoc: (...args) => mocks.createDoc(...args),
   updateDocById: (...args) => mocks.updateDocById(...args),
-  // Used only to seed the receipt counter above any legacy receipt numbers.
-  // No legacy rows here, so the first receipt starts at 1.
-  listAll: async () => [],
+  // The renewal reads the member's own ledger before it opens the transaction.
+  getById: async (name, id) => state.docs.get(`${name}/${id}`) || null,
+  // Used for the member's ledger reads and to seed the receipt counter above
+  // any legacy receipt numbers. No legacy rows here, so the first receipt is 1.
+  listAll: async (name) => listRows(name),
 }))
 
 const load = async () => import('@/services/renewals')
@@ -76,15 +106,25 @@ function installTransactionalFirestore({ failOn } = {}) {
       const snapshot = new Map(state.docs)
       const staged = new Map()
 
+      // A rejected write aborts the whole transaction, exactly as the server
+      // does. `failOn` may be a prefix or a predicate over the document path.
+      const fails = (key) =>
+        typeof failOn === 'function' ? failOn(key) : Boolean(failOn) && key.startsWith(failOn)
+
       const tx = {
         get: async (ref) => {
           const key = pathOf(ref)
           const value = staged.has(key) ? staged.get(key) : snapshot.get(key)
           return { exists: () => value !== undefined && value !== null, data: () => value }
         },
+        delete: (ref) => {
+          const key = pathOf(ref)
+          if (fails(key)) throw new Error(`PERMISSION_DENIED: ${key}`)
+          staged.set(key, undefined)
+        },
         set: (ref, value, options) => {
           const key = pathOf(ref)
-          if (failOn && key.startsWith(failOn)) {
+          if (fails(key)) {
             // Firestore evaluates the write against the server; a rejected write
             // aborts the whole transaction.
             throw new Error(`PERMISSION_DENIED: ${key}`)
@@ -100,7 +140,10 @@ function installTransactionalFirestore({ failOn } = {}) {
       }
 
       const result = await callback(tx)
-      for (const [key, value] of staged) state.docs.set(key, value)
+      for (const [key, value] of staged) {
+        if (value === undefined) state.docs.delete(key)
+        else state.docs.set(key, value)
+      }
       return result
     }
 

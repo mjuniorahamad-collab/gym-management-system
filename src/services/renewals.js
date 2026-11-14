@@ -1,15 +1,21 @@
 import { parseDate, toDateInputValue } from '@/utils/dateHelpers'
-import { collection, doc, runTransaction } from 'firebase/firestore'
 import { gymTodayKey } from '@/utils/gymTime'
 import { deriveMemberProjection } from '@/utils/memberProjection'
 import { getMembershipPeriod, getRenewalPaymentSummary } from '@/utils/renewal'
 import { freezeTailCharge, tailRequiresAttention } from '@/utils/freezeTails'
-import { createDoc, isReady, updateDocById } from './firestore'
-import { db } from '@/firebase'
+import { commitAtomically, createDoc, isReady, updateDocById } from './firestore'
 import { logAudit } from './audit'
+import { readLedgerInputs, snapshotPatches } from './memberLedger'
 import { requestReprojection } from './projection'
 import { getGymId } from './ownerContext'
-import { fallbackReceiptNo, mintReceiptNoInTransaction, nextReceiptNo, prepareReceiptFloor } from './receipts'
+import {
+  fallbackReceiptNo,
+  formatReceiptNo,
+  nextReceiptNo,
+  nextReceiptSequence,
+  prepareReceiptFloor,
+  receiptCounterId,
+} from './receipts'
 import { requireReceiptPrefix } from './receiptPrefixGuard'
 
 function requireValidPlan(plan) {
@@ -317,35 +323,64 @@ export async function renewMembership({
       effectiveExpiry: demoDerived.effectiveExpiry ?? undefined,
     })
   } else {
-    // Refs are created up front so the payment's id can be stored on the period
-    // inside a single transaction. Firestore allocates the id client-side when
-    // the reference is built, so nothing is written yet.
-    const membershipRef = doc(collection(db, 'memberships'))
-    const paymentRef = doc(collection(db, 'payments'))
-    membershipId = membershipRef.id
-    paymentId = paymentRef.id
-
-    // `canWriteTenant` (firestore.rules) requires EVERY written document to carry
-    // the caller's own gymId, on a create as well as an update. The demo branch
-    // above gets this stamped for it by createDoc, but these writes go straight
-    // to a raw DocumentReference and bypass that helper, so the field is added
-    // here. Without it the rules reject both the period and the payment with an
-    // opaque PERMISSION_DENIED and the renewal is lost.
-    const membershipPayload = { ...membershipData, gymId }
-    const paymentPayload = { ...paymentData, gymId }
+    // The ledger AS IT WILL BE once this renewal exists, so the snapshots of
+    // the member's OTHER periods are corrected in the same commit. The new
+    // period is excluded from the patch list because it is written directly
+    // from `summary`.
+    const PENDING = 'pending-renewal-period'
+    const inputs = await readLedgerInputs(member.id)
+    const patches = snapshotPatches({
+      ...inputs,
+      payments: [
+        ...inputs.payments,
+        { ...paymentData, id: 'pending-renewal-payment', membershipId: PENDING },
+      ],
+      memberships: [...inputs.memberships, { ...membershipData, id: PENDING }],
+    }).filter((p) => p.id !== PENDING)
 
     // Read the counter floor BEFORE the transaction: the legacy-payments scan
     // must not be repeated on every contention retry.
     const floor = await prepareReceiptFloor()
 
-    try {
-      receiptNo = await runTransaction(db, async (tx) => {
-        const minted = await mintReceiptNoInTransaction(tx, gymId, receiptPrefix, floor)
-        tx.set(membershipRef, { ...membershipPayload, paymentId, receiptNo: minted })
-        tx.set(paymentRef, { ...paymentPayload, membershipId, receiptNo: minted })
-        tx.set(doc(db, 'members', member.id), memberPatch, { merge: true })
-        return minted
+    // Every write the renewal needs, staged once so the counter path and its
+    // fallback commit exactly the same thing. Ids are reserved up front
+    // because the period and its payment reference each other.
+    //
+    // gymId is stamped by commitAtomically, exactly as createDoc does for the
+    // demo path (firestore.rules `canWriteTenant` requires it on every write).
+    const staged = (tx, minted) => {
+      const newMembershipId = tx.newId('memberships')
+      const newPaymentId = tx.newId('payments')
+      tx.create(
+        'memberships',
+        { ...membershipData, paymentId: newPaymentId, receiptNo: minted },
+        newMembershipId
+      )
+      tx.create(
+        'payments',
+        { ...paymentData, membershipId: newMembershipId, receiptNo: minted },
+        newPaymentId
+      )
+      tx.update('members', member.id, memberPatch)
+      for (const patch of patches) tx.update('memberships', patch.id, patch.fields)
+      return { membershipId: newMembershipId, paymentId: newPaymentId, receiptNo: minted }
+    }
+
+    const commit = async (withCounter) =>
+      commitAtomically(async (tx) => {
+        if (!withCounter) return staged(tx, fallbackReceiptNo(receiptPrefix))
+        // Counter read INSIDE the transaction: the receipt number, the period
+        // and the payment committed together, so a number can be neither
+        // burned nor reissued by a failure or a concurrent terminal.
+        const counter = await tx.get('counters', receiptCounterId())
+        const sequence = nextReceiptSequence(counter?.value, floor)
+        tx.upsert('counters', receiptCounterId(), { value: sequence })
+        return staged(tx, formatReceiptNo(receiptPrefix, sequence))
       })
+
+    let written
+    try {
+      written = await commit(true)
     } catch (err) {
       // A failed transaction has no side effects, so retrying without the
       // counter is safe. Carve-out: a payment is never refused just because a
@@ -353,13 +388,11 @@ export async function renewMembership({
       // ledger entry is the record. What is NOT carved out is the prefix: it is
       // the same one the guard verified above, never a default.
       console.warn('[renewals] receipt counter unavailable; retrying without it', err)
-      receiptNo = fallbackReceiptNo(receiptPrefix)
-      await runTransaction(db, async (tx) => {
-        tx.set(membershipRef, { ...membershipPayload, paymentId, receiptNo })
-        tx.set(paymentRef, { ...paymentPayload, membershipId, receiptNo })
-        tx.set(doc(db, 'members', member.id), memberPatch, { merge: true })
-      })
+      written = await commit(false)
     }
+    membershipId = written.membershipId
+    paymentId = written.paymentId
+    receiptNo = written.receiptNo
   }
 
   // Audit is deliberately AFTER the commit. An audit write inside the

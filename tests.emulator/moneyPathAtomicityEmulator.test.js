@@ -50,8 +50,22 @@ vi.mock('@/firebase', () => ({
   },
 }))
 
+const reprojections = []
+vi.mock('@/services/projection', () => ({
+  requestReprojection: async (memberId) => {
+    reprojections.push(memberId)
+    return { ok: true }
+  },
+  requestReprojectionAndConfirm: async (memberId) => {
+    reprojections.push(memberId)
+    return { ok: true, trusted: true }
+  },
+}))
+
 const { setGymId } = await import('@/services/ownerContext')
 const { recordPayment, deletePayment } = await import('@/services/payments')
+const { deleteMembershipPeriod } = await import('@/services/memberships')
+const { renewMembership } = await import('@/services/renewals')
 const { __resetReceiptSeedCache } = await import('@/services/receipts')
 const { __resetTenantReceiptPrefixCache } = await import('@/services/receiptPrefixGuard')
 
@@ -149,6 +163,7 @@ afterAll(async () => {
 beforeEach(() => {
   __resetReceiptSeedCache()
   __resetTenantReceiptPrefixCache()
+  reprojections.length = 0
 })
 
 describe('atomicity — the snapshot write cannot be lost', () => {
@@ -246,5 +261,100 @@ describe('atomicity — the snapshot write cannot be lost', () => {
     // write, so the cash is still on record.
     expect(await readRaw(`payments/${paymentId}`)).toMatchObject({ amount: PRICE })
     expect(await readRaw(`memberships/${ids.periodId}`)).toMatchObject({ amountPaid: PRICE })
+  })
+
+  it('keeps the period and its payment when the delete-time reallocation is rejected', async () => {
+    const ids = freshIds()
+    await seed(ids)
+    const secondPeriodId = `${ids.periodId}-b`
+
+    // A second, fully paid period. Deleting it frees its payment, which FIFO
+    // lands on the first period — so a snapshot write is unavoidable.
+    let paymentId
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      const fs = ctx.firestore()
+      await fs.doc(`memberships/${secondPeriodId}`).set({
+        memberId: ids.memberId,
+        planId: ids.planId,
+        planName: 'Monthly',
+        price: PRICE,
+        startDate: '2026-02-01',
+        expiryDate: '2026-02-28',
+        amountPaid: PRICE,
+        amountDue: 0,
+        paymentStatus: 'paid',
+        gymId: ids.gymId,
+        createdAt: new Date(),
+      })
+      const ref = await fs.collection('payments').add({
+        amount: PRICE,
+        memberId: ids.memberId,
+        membershipId: secondPeriodId,
+        date: '2026-02-05',
+        method: 'Cash',
+        receiptNo: `${PREFIX}-000009`,
+        type: 'membership',
+        gymId: ids.gymId,
+        createdAt: new Date(),
+      })
+      paymentId = ref.id
+    })
+    setGymId(ids.gymId)
+
+    await expect(
+      deleteMembershipPeriod({ periodId: secondPeriodId, memberId: ids.memberId })
+    ).rejects.toThrow(/permission-denied|PERMISSION_DENIED|Missing or insufficient permissions/i)
+
+    // The unlink and the delete were staged beside that rejected write, so the
+    // period and the attribution are exactly as they were.
+    expect(await readRaw(`memberships/${secondPeriodId}`)).toMatchObject({ amountPaid: PRICE })
+    expect(await readRaw(`payments/${paymentId}`)).toMatchObject({ membershipId: secondPeriodId })
+    expect(await readRaw(`memberships/${ids.periodId}`)).toMatchObject({ amountPaid: 0 })
+  })
+
+  it('writes no period, payment or receipt number when the renewal snapshot is rejected', async () => {
+    const ids = freshIds()
+    await seed(ids)
+
+    // Drift the stored snapshot: the ledger says the seeded period is settled
+    // (a payment is allocated to it) while the document still says due. The
+    // renewal therefore MUST rewrite that snapshot — and this ruleset rejects it.
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      const fs = ctx.firestore()
+      await fs.collection('payments').add({
+        amount: PRICE,
+        memberId: ids.memberId,
+        membershipId: ids.periodId,
+        date: '2026-01-05',
+        method: 'Cash',
+        receiptNo: `${PREFIX}-000009`,
+        type: 'membership',
+        gymId: ids.gymId,
+        createdAt: new Date(),
+      })
+    })
+    setGymId(ids.gymId)
+    const member = await readRaw(`members/${ids.memberId}`)
+
+    await expect(
+      renewMembership({
+        member,
+        plan: { id: ids.planId, name: 'Monthly', durationDays: 30, price: PRICE },
+        currentExpiry: '2026-01-31',
+        paidAmount: PRICE,
+        method: 'Cash',
+        date: '2026-02-01',
+        receiptPrefix: PREFIX,
+      })
+    ).rejects.toThrow(/permission-denied|PERMISSION_DENIED|Missing or insufficient permissions/i)
+
+    // No new period, no new payment, no minted number.
+    const periods = await getDocs(
+      query(collection(fb.db, 'memberships'), where('gymId', '==', ids.gymId))
+    )
+    expect(periods.size).toBe(1)
+    expect(await paymentCount(ids)).toBe(1)
+    expect(await readRaw(`counters/receiptNo_${ids.gymId}`)).toBeNull()
+    expect(reprojections).toEqual([])
   })
 })

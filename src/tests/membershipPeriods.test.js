@@ -21,6 +21,25 @@ vi.mock('@/services/firestore', () => {
       return options.limit ? filtered.slice(0, options.limit) : filtered
     },
     getById: async (name, id) => store[name].find((d) => d.id === id) || null,
+    // The money/period writes are atomic in the app; here they simply apply in
+    // order, because this store has no rollback to test.
+    commitAtomically: async (apply) =>
+      apply({
+        get: async (name, id) => store[name]?.find((d) => d.id === id) || null,
+        newId: (name) => `mock-${name}-new`,
+        create: (name, data, id) => {
+          const nid = id || `mock-${name}-${store[name].length + 1}`
+          store[name].push({ id: nid, ...data })
+          return nid
+        },
+        update: (name, id, data) => {
+          const doc = store[name].find((d) => d.id === id)
+          if (doc) Object.assign(doc, data)
+        },
+        remove: (name, id) => {
+          store[name] = store[name].filter((d) => d.id !== id)
+        },
+      }),
     createDoc: async (name, data) => {
       const id = `mock-${name}-${store[name].length + 1}`
       const doc = { id, ...data }

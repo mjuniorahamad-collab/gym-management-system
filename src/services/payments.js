@@ -1,6 +1,6 @@
-import { commitAtomically, getById, listAll, updateDocById } from './firestore'
+import { commitAtomically, getById, updateDocById } from './firestore'
 import { logAudit } from './audit'
-import { computeMemberLedger } from '@/utils/dues'
+import { asWritten, readLedgerInputs, snapshotPatches } from './memberLedger'
 import { safePaymentAmount } from '@/utils/payments'
 import {
   formatReceiptNo,
@@ -9,58 +9,6 @@ import {
   receiptCounterId,
 } from './receipts'
 import { requireReceiptPrefix } from './receiptPrefixGuard'
-
-/**
- * The documents the finance ledger is computed from, read once.
- *
- * These queries happen OUTSIDE the money transaction on purpose: the web SDK's
- * transaction can only fetch individual documents, not run a query, and a
- * member's payment history is a query. The transaction below therefore makes
- * the WRITES atomic (payment + receipt counter + period snapshots commit
- * together or not at all); the figures it writes are the ones computed here.
- */
-async function readLedgerInputs(memberId) {
-  const [member, plans, payments, memberships] = await Promise.all([
-    getById('members', memberId),
-    listAll('membershipPlans'),
-    listAll('payments', { where: { field: 'memberId', value: memberId } }),
-    listAll('memberships', { where: { field: 'memberId', value: memberId } }),
-  ])
-  return { member, plans, payments, memberships }
-}
-
-/**
- * The snapshot fields each stored period needs so the documents match the
- * ledger. Periods already carrying the right figures produce no patch, so a
- * payment only rewrites what it actually changed.
- *
- * `payments` here is the ledger INCLUDING the payment being recorded (or
- * EXCLUDING the one being deleted) — the caller decides.
- */
-function snapshotPatches({ member, plans, payments, memberships }) {
-  const ledger = computeMemberLedger({ member, plans, payments, memberships })
-  const figuresById = new Map(ledger.periods.filter((p) => p.id).map((p) => [p.id, p]))
-
-  const patches = []
-  for (const period of memberships) {
-    if (!period?.id) continue
-    const figures = figuresById.get(period.id)
-    if (!figures) continue
-    const fields = {
-      amountPaid: figures.paid,
-      amountDue: figures.due,
-      paymentStatus: figures.status,
-    }
-    const unchanged =
-      Number(period.amountPaid) === fields.amountPaid &&
-      Number(period.amountDue) === fields.amountDue &&
-      period.paymentStatus === fields.paymentStatus
-    if (!unchanged) patches.push({ id: period.id, fields })
-  }
-  return patches
-}
-
-const asWritten = (patches) => patches.map((p) => ({ id: p.id, ...p.fields }))
 
 /**
  * Recompute every membership-period snapshot (amountPaid / amountDue /

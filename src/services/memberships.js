@@ -1,5 +1,6 @@
-import { getById, listAll, removeDoc, updateDocById } from './firestore'
+import { commitAtomically, getById, listAll, updateDocById } from './firestore'
 import { logAudit } from './audit'
+import { asWritten, readLedgerInputs, snapshotPatches } from './memberLedger'
 import { refreshMembershipSnapshots } from './payments'
 import { requestReprojection } from './projection'
 import { getMembershipCharge, getEffectivePtSurcharge } from '@/utils/pt'
@@ -105,16 +106,21 @@ export async function editMembershipPeriod({ periodId, memberId, patch }) {
 /**
  * Delete a membership period and safely reallocate its payments.
  *
- * Strategy:
- * 1. Find all payments whose `membershipId` points at this period.
+ * Strategy, all in ONE transaction:
+ * 1. Find the payments whose `membershipId` points at this period.
  * 2. Clear their `membershipId` so they become unallocated cash.
  * 3. Delete the membership document itself.
- * 4. Recompute ALL period snapshots — the ledger's FIFO logic will
- *    automatically reassign those now-unallocated payments to the
- *    remaining periods in chronological order.
+ * 4. Write the new snapshots of the remaining periods — the ledger's FIFO
+ *    logic reassigns those now-unallocated payments to them in chronological
+ *    order.
  *
- * Returns { id, affectedPayments } — the list of payments that were
- * reallocated so the UI can inform the operator.
+ * The transaction matters here for the same reason it does for a payment: the
+ * unlinks, the delete and the reallocation used to be separate writes, so a
+ * failure partway left the period gone while its cash was still attributed to
+ * it (or the remaining periods still showed the old dues).
+ *
+ * Returns { id, affectedPayments, memberships } — the affected payments so the
+ * UI can inform the operator, and the snapshots that were rewritten.
  */
 export async function deleteMembershipPeriod({ periodId, memberId }) {
   if (!periodId) throw new Error('A period ID is required')
@@ -126,14 +132,23 @@ export async function deleteMembershipPeriod({ periodId, memberId }) {
     where: { field: 'membershipId', value: periodId },
   })
 
-  for (const payment of affected) {
-    await updateDocById('payments', payment.id, { membershipId: '' })
-  }
+  // The ledger as it WILL be: the period gone and its payments unlinked.
+  const inputs = await readLedgerInputs(memberId)
+  const unlinked = new Set(affected.map((p) => p.id))
+  const patches = snapshotPatches({
+    ...inputs,
+    payments: inputs.payments.map((p) =>
+      unlinked.has(p.id) ? { ...p, membershipId: '' } : p
+    ),
+    memberships: inputs.memberships.filter((p) => p.id !== periodId),
+  })
 
-  await removeDoc('memberships', periodId)
-  // Re-read this member's ledger AFTER the unlink and the delete so the FIFO
-  // reallocation runs against exactly what is now stored.
-  await refreshMembershipSnapshots(memberId)
+  await commitAtomically(async (tx) => {
+    for (const payment of affected) tx.update('payments', payment.id, { membershipId: '' })
+    tx.remove('memberships', periodId)
+    for (const patch of patches) tx.update('memberships', patch.id, patch.fields)
+  })
+
   // Deleting a period can leave the member with NO current period, which is a
   // different projection than a wrong one — and the one most likely to go stale.
   await requestReprojection(memberId)
@@ -148,5 +163,5 @@ export async function deleteMembershipPeriod({ periodId, memberId }) {
     },
   })
 
-  return { id: periodId, affectedPayments: affected }
+  return { id: periodId, affectedPayments: affected, memberships: asWritten(patches) }
 }

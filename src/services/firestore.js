@@ -165,7 +165,10 @@ export async function commitAtomically(apply) {
         if (name === 'counters') mockStoreData.counters[id] = data.value
         else mockUpsert(name, id, { ...data })
       },
-      create: async (name, data) => mockAdd(name, { ...data, gymId: getGymId() || DEMO_GYM_ID }),
+      newId: (name) => `mock-${name}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+      create: async (name, data, id = null) =>
+        id ? mockUpsert(name, id, { ...data, gymId: getGymId() || DEMO_GYM_ID }) || id
+           : mockAdd(name, { ...data, gymId: getGymId() || DEMO_GYM_ID }),
       update: async (name, id, patch) => mockUpdate(name, id, patch),
       remove: async (name, id) => mockRemove(name, id),
     })
@@ -183,12 +186,15 @@ export async function commitAtomically(apply) {
         if (!gymId) throw new Error('No gym selected — write blocked before tenancy is established')
         tx.set(ref(name, id), { ...data, gymId, updatedAt: ts() }, { merge: true })
       },
-      create: (name, data) => {
+      newId: (name) => doc(collection(db, name)).id,
+      create: (name, data, id = null) => {
         const gymId = getGymId()
         if (!gymId) throw new Error('No gym selected — create blocked before tenancy is established')
         // The id is allocated client-side so the caller (and the audit entry)
-        // know it before the transaction commits.
-        const target = doc(collection(db, name))
+        // know it before the transaction commits. `id` lets a caller that must
+        // cross-reference two new documents (a period and its payment) reserve
+        // both ids up front with `newId`.
+        const target = id ? doc(db, name, id) : doc(collection(db, name))
         tx.set(target, { ...data, gymId, createdAt: ts(), updatedAt: ts() })
         return target.id
       },

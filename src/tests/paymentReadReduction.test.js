@@ -17,6 +17,7 @@ const { mocks } = vi.hoisted(() => ({
     createDoc: vi.fn(),
     updateDocById: vi.fn(),
     removeDoc: vi.fn(),
+    commitAtomically: vi.fn(),
     logAudit: vi.fn(),
   },
 }))
@@ -27,6 +28,7 @@ vi.mock('@/services/firestore', () => ({
   createDoc: mocks.createDoc,
   updateDocById: mocks.updateDocById,
   removeDoc: mocks.removeDoc,
+  commitAtomically: mocks.commitAtomically,
 }))
 
 vi.mock('@/services/audit', () => ({ logAudit: mocks.logAudit }))
@@ -97,14 +99,35 @@ describe('refreshMembershipSnapshots reads', () => {
   })
 })
 
-describe('deleteMembershipPeriod reads', () => {
-  beforeEach(() => {
-    mocks.removeDoc.mockImplementation(async (name, id) => {
-      if (name === 'memberships') {
-        remainingMemberships = remainingMemberships.filter((p) => p.id !== id)
-      }
-    })
+/** Everything the service stages inside the one transaction. */
+let staged = []
+
+beforeEach(() => {
+  staged = []
+  mocks.commitAtomically.mockImplementation(async (apply) => {
+    const tx = {
+      get: async () => null,
+      newId: (name) => `new-${name}`,
+      create: (name, data, id) => staged.push({ op: 'create', name, id: id || `new-${name}`, data }),
+      update: (name, id, data) => {
+        staged.push({ op: 'update', name, id, data })
+        if (name === 'memberships') {
+          const doc = remainingMemberships.find((p) => p.id === id)
+          if (doc) Object.assign(doc, data)
+        }
+      },
+      remove: (name, id) => {
+        staged.push({ op: 'remove', name, id })
+        if (name === 'memberships') {
+          remainingMemberships = remainingMemberships.filter((p) => p.id !== id)
+        }
+      },
+    }
+    return apply(tx)
   })
+})
+
+describe('deleteMembershipPeriod reads', () => {
 
   it('reads payments once, scoped to the deleted period', async () => {
     await deleteMembershipPeriod({ periodId: 'ms1', memberId: 'm1' })
@@ -120,16 +143,31 @@ describe('deleteMembershipPeriod reads', () => {
   it('unlinks only the payments that targeted the deleted period', async () => {
     const result = await deleteMembershipPeriod({ periodId: 'ms1', memberId: 'm1' })
     expect(result.affectedPayments.map((p) => p.id)).toEqual(['pay1'])
-    expect(mocks.updateDocById).toHaveBeenCalledWith('payments', 'pay1', { membershipId: '' })
-    expect(mocks.updateDocById).not.toHaveBeenCalledWith('payments', 'pay2', expect.anything())
+
+    const unlinks = staged.filter((s) => s.op === 'update' && s.name === 'payments')
+    expect(unlinks).toEqual([{ op: 'update', name: 'payments', id: 'pay1', data: { membershipId: '' } }])
   })
 
-  it('recomputes snapshots after the delete, not before', async () => {
+  it('stages the unlink, the delete and the re-snapshots in ONE transaction', async () => {
     await deleteMembershipPeriod({ periodId: 'ms1', memberId: 'm1' })
-    expect(mocks.removeDoc).toHaveBeenCalledWith('memberships', 'ms1')
-    const removeOrder = mocks.removeDoc.mock.invocationCallOrder[0]
-    expect(remainingMemberships.map((p) => p.id)).toEqual(['ms2'])
-    expect(removeOrder).toBeLessThan(mocks.updateDocById.mock.invocationCallOrder.at(-1))
+
+    expect(mocks.commitAtomically).toHaveBeenCalledTimes(1)
+    // The period delete and the unlinks are no longer separate writes...
+    expect(staged.filter((s) => s.op === 'remove')).toEqual([
+      { op: 'remove', name: 'memberships', id: 'ms1' },
+    ])
+    // ...and the snapshots they imply are staged in the same unit. pay1's 1000
+    // is freed by the unlink, but it is dated BEFORE the remaining period, so
+    // the ledger reconstructs an implicit origin period for it (utils/dues.js)
+    // instead of overpaying ms2 — ms2 keeps only its own 250.
+    expect(staged.filter((s) => s.op === 'update' && s.name === 'memberships')).toEqual([
+      {
+        op: 'update',
+        name: 'memberships',
+        id: 'ms2',
+        data: { amountPaid: 250, amountDue: 750, paymentStatus: 'partial' },
+      },
+    ])
   })
 
   it('still requires both ids', async () => {
