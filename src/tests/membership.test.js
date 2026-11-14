@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { addDays, toDateInputValue } from '@/utils/dateHelpers'
 import {
   buildWhatsAppGroupInviteMessage,
@@ -12,6 +12,19 @@ import {
 } from '@/utils/membership'
 
 const MONTHLY = { id: 'plan-1', name: 'Monthly', durationDays: 30 }
+
+// `getDaysRemaining` answers in the GYM's timezone while these fixtures build
+// their dates from the device clock. Late in the UTC day the two calendars
+// disagree (Karachi is already tomorrow), which made every expectation here
+// off by one — a test that only passes during part of the day. Freezing the
+// clock at a mid-morning instant keeps both calendars on the same date.
+beforeEach(() => {
+  vi.useFakeTimers({ now: new Date('2026-06-15T09:00:00Z'), toFake: ['Date'] })
+})
+
+afterEach(() => {
+  vi.useRealTimers()
+})
 
 /** Builds a member whose membership expires exactly `days` from today. */
 function memberExpiringIn(days, overrides = {}) {

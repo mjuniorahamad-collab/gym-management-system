@@ -14,6 +14,14 @@ import { computeOutstandingDues, computeMemberLedger } from '@/utils/dues'
 import { findOverlappingPeriods } from '@/utils/memberships'
 import { __store } from '@/services/firestore'
 
+// The expiry buckets below are answered in the GYM's timezone while the
+// fixtures are built from the device clock, so after 19:00 UTC the two
+// calendars are a day apart and the "tomorrow" expectation flips. Freezing the
+// clock keeps this suite independent of the hour it runs.
+beforeEach(() => {
+  vi.useFakeTimers({ now: new Date('2026-06-15T09:00:00Z'), toFake: ['Date'] })
+})
+
 vi.mock('@/services/firestore', () => {
   const store = { memberships: [], payments: [], members: [], auditLog: [] }
   return {

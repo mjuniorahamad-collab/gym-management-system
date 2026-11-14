@@ -120,23 +120,20 @@ export async function deleteMembershipPeriod({ periodId, memberId }) {
   if (!periodId) throw new Error('A period ID is required')
   if (!memberId) throw new Error('A member ID is required')
 
-  const allPayments = await listAll('payments')
-  const affected = allPayments.filter((p) => p && p.id && p.membershipId === periodId)
+  // Only payments ATTRIBUTED to this period matter here, so query them by
+  // membershipId instead of reading the whole payments collection.
+  const affected = await listAll('payments', {
+    where: { field: 'membershipId', value: periodId },
+  })
 
   for (const payment of affected) {
     await updateDocById('payments', payment.id, { membershipId: '' })
   }
 
   await removeDoc('memberships', periodId)
-  // `allPayments` was read above to find the reallocated payments, and those
-  // payments have since been unlinked. Reflect that in the in-memory copy so it
-  // is identical to what a fresh read would return, then hand it over instead
-  // of reading the whole collection a second time in the same operation.
-  const unlinkedIds = new Set(affected.map((p) => p.id))
-  const paymentsAfterUnlink = allPayments.map((p) =>
-    unlinkedIds.has(p.id) ? { ...p, membershipId: '' } : p
-  )
-  await refreshMembershipSnapshots(memberId, { payments: paymentsAfterUnlink })
+  // Re-read this member's ledger AFTER the unlink and the delete so the FIFO
+  // reallocation runs against exactly what is now stored.
+  await refreshMembershipSnapshots(memberId)
   // Deleting a period can leave the member with NO current period, which is a
   // different projection than a wrong one — and the one most likely to go stale.
   await requestReprojection(memberId)

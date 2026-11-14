@@ -10,7 +10,16 @@ vi.mock('@/services/firestore', () => {
   return {
     __store: store,
     isReady: () => true,
-    listAll: async (name) => store[name],
+    // Mirrors the real `listAll(name, { where, limit })` contract: the services
+    // now narrow a read to one member/period instead of pulling the collection.
+    listAll: async (name, options = {}) => {
+      const rows = store[name] || []
+      const filter = options.where
+      const filtered = filter
+        ? rows.filter((d) => d && d[filter.field] === filter.value)
+        : rows
+      return options.limit ? filtered.slice(0, options.limit) : filtered
+    },
     getById: async (name, id) => store[name].find((d) => d.id === id) || null,
     createDoc: async (name, data) => {
       const id = `mock-${name}-${store[name].length + 1}`

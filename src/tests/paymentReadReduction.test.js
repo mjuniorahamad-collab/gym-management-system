@@ -1,7 +1,16 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 
-const { mocks, captured } = vi.hoisted(() => ({
-  captured: [],
+/**
+ * Read-shape contract for the two finance services after the collection-scan
+ * removal.
+ *
+ * Both used to answer a one-member / one-period question by pulling the whole
+ * `payments` and `memberships` collections. They now ask Firestore for exactly
+ * what they need (`listAll(name, { where: { field, value } })`). This file pins
+ * that shape, because a regression here is invisible in the UI and only shows
+ * up as a Firestore bill and a slow screen once a gym has real history.
+ */
+const { mocks } = vi.hoisted(() => ({
   mocks: {
     getById: vi.fn(),
     listAll: vi.fn(),
@@ -22,20 +31,6 @@ vi.mock('@/services/firestore', () => ({
 
 vi.mock('@/services/audit', () => ({ logAudit: mocks.logAudit }))
 
-// Call through to the real implementation while recording what
-// deleteMembershipPeriod hands it, so the override is observed rather than
-// re-derived inside the test.
-vi.mock('@/services/payments', async (importOriginal) => {
-  const actual = await importOriginal()
-  return {
-    ...actual,
-    refreshMembershipSnapshots: (...args) => {
-      captured.push(args)
-      return actual.refreshMembershipSnapshots(...args)
-    },
-  }
-})
-
 const { refreshMembershipSnapshots } = await import('@/services/payments')
 const { deleteMembershipPeriod } = await import('@/services/memberships')
 
@@ -54,24 +49,30 @@ const PAYMENTS = [
 
 let remainingMemberships = PERIODS.map((p) => ({ ...p }))
 
+/** Honours the new `listAll` options, exactly like the Firestore implementation. */
 function stubCollections() {
   mocks.getById.mockImplementation(async (name, id) =>
     name === 'members' ? { ...MEMBER, id } : null
   )
-  mocks.listAll.mockImplementation(async (name) => {
-    if (name === 'payments') return PAYMENTS.map((p) => ({ ...p }))
-    if (name === 'memberships') return remainingMemberships.map((p) => ({ ...p }))
-    if (name === 'membershipPlans') return [PLAN]
-    return []
+  mocks.listAll.mockImplementation(async (name, options = {}) => {
+    const rows =
+      name === 'payments'
+        ? PAYMENTS.map((p) => ({ ...p }))
+        : name === 'memberships'
+          ? remainingMemberships.map((p) => ({ ...p }))
+          : name === 'membershipPlans'
+            ? [{ ...PLAN }]
+            : []
+    const filter = options.where
+    const filtered = filter ? rows.filter((d) => d && d[filter.field] === filter.value) : rows
+    return options.limit ? filtered.slice(0, options.limit) : filtered
   })
 }
 
-const paymentReads = () => mocks.listAll.mock.calls.filter((c) => c[0] === 'payments').length
-const collectionsRead = () => mocks.listAll.mock.calls.map((c) => c[0])
+const callsFor = (name) => mocks.listAll.mock.calls.filter((c) => c[0] === name)
 
 beforeEach(() => {
   vi.clearAllMocks()
-  captured.length = 0
   remainingMemberships = PERIODS.map((p) => ({ ...p }))
   stubCollections()
   mocks.updateDocById.mockResolvedValue()
@@ -79,40 +80,14 @@ beforeEach(() => {
   mocks.logAudit.mockResolvedValue()
 })
 
-describe('refreshMembershipSnapshots payment reads', () => {
-  it('reads the payments collection when no override is supplied', async () => {
+describe('refreshMembershipSnapshots reads', () => {
+  it("reads this member's payments and memberships once each, scoped by memberId", async () => {
     await refreshMembershipSnapshots('m1')
-    expect(paymentReads()).toBe(1)
-  })
 
-  it('does not read payments when the caller supplies them', async () => {
-    await refreshMembershipSnapshots('m1', { payments: PAYMENTS.map((p) => ({ ...p })) })
-    expect(paymentReads()).toBe(0)
-  })
-
-  it('still reads memberships and plans when payments are supplied', async () => {
-    await refreshMembershipSnapshots('m1', { payments: [] })
-    const names = collectionsRead()
-    expect(names).toContain('memberships')
-    expect(names).toContain('membershipPlans')
-    expect(names).not.toContain('payments')
-  })
-
-  it('writes identical snapshots with and without the override', async () => {
-    const supplied = await refreshMembershipSnapshots('m1', {
-      payments: PAYMENTS.map((p) => ({ ...p })),
-    })
-    const suppliedWrites = mocks.updateDocById.mock.calls.map((c) => c.slice(0, 3))
-
-    vi.clearAllMocks()
-    mocks.updateDocById.mockResolvedValue()
-    stubCollections()
-    const fetched = await refreshMembershipSnapshots('m1')
-    const fetchedWrites = mocks.updateDocById.mock.calls.map((c) => c.slice(0, 3))
-
-    expect(supplied).toEqual(fetched)
-    expect(suppliedWrites).toEqual(fetchedWrites)
-    expect(suppliedWrites.length).toBeGreaterThan(0)
+    expect(callsFor('payments')).toHaveLength(1)
+    expect(callsFor('memberships')).toHaveLength(1)
+    expect(callsFor('payments')[0][1]).toEqual({ where: { field: 'memberId', value: 'm1' } })
+    expect(callsFor('memberships')[0][1]).toEqual({ where: { field: 'memberId', value: 'm1' } })
   })
 
   it('returns without reading anything for a missing member id', async () => {
@@ -122,7 +97,7 @@ describe('refreshMembershipSnapshots payment reads', () => {
   })
 })
 
-describe('deleteMembershipPeriod payment reads', () => {
+describe('deleteMembershipPeriod reads', () => {
   beforeEach(() => {
     mocks.removeDoc.mockImplementation(async (name, id) => {
       if (name === 'memberships') {
@@ -131,9 +106,15 @@ describe('deleteMembershipPeriod payment reads', () => {
     })
   })
 
-  it('reads the payments collection once instead of twice', async () => {
+  it('reads payments once, scoped to the deleted period', async () => {
     await deleteMembershipPeriod({ periodId: 'ms1', memberId: 'm1' })
-    expect(paymentReads()).toBe(1)
+
+    const byPeriod = callsFor('payments').filter((c) => c[1]?.where?.field === 'membershipId')
+    expect(byPeriod).toHaveLength(1)
+    expect(byPeriod[0][1]).toEqual({ where: { field: 'membershipId', value: 'ms1' } })
+    // No unfiltered payments read: the whole-collection scan is gone. (The
+    // follow-up ledger refresh reads by memberId, never the collection.)
+    expect(callsFor('payments').filter((c) => !c[1]?.where)).toHaveLength(0)
   })
 
   it('unlinks only the payments that targeted the deleted period', async () => {
@@ -141,39 +122,6 @@ describe('deleteMembershipPeriod payment reads', () => {
     expect(result.affectedPayments.map((p) => p.id)).toEqual(['pay1'])
     expect(mocks.updateDocById).toHaveBeenCalledWith('payments', 'pay1', { membershipId: '' })
     expect(mocks.updateDocById).not.toHaveBeenCalledWith('payments', 'pay2', expect.anything())
-  })
-
-  it('hands the refresh a payments copy with the deleted period unlinked', async () => {
-    await deleteMembershipPeriod({ periodId: 'ms1', memberId: 'm1' })
-
-    expect(captured).toHaveLength(1)
-    const [, options] = captured[0]
-    expect(options).toBeDefined()
-    // Mirrors the state a fresh read would observe: the deleted period's id no
-    // longer appears as a membershipId, and no other payment is disturbed.
-    expect(options.payments).toEqual([
-      { ...PAYMENTS[0], membershipId: '' },
-      PAYMENTS[1],
-    ])
-    // The override must be the whole collection, never pre-filtered to a member,
-    // because the ledger does its own memberId filtering.
-    expect(options.payments).toHaveLength(PAYMENTS.length)
-  })
-
-  it('leaves other members payments untouched in the override', async () => {
-    const other = { id: 'pay9', memberId: 'm2', membershipId: 'msX', amount: 500, date: '2026-01-06', gymId: 'g1' }
-    mocks.listAll.mockImplementation(async (name) => {
-      if (name === 'payments') return [...PAYMENTS.map((p) => ({ ...p })), { ...other }]
-      if (name === 'memberships') return remainingMemberships.map((p) => ({ ...p }))
-      if (name === 'membershipPlans') return [PLAN]
-      return []
-    })
-
-    await deleteMembershipPeriod({ periodId: 'ms1', memberId: 'm1' })
-
-    const [, options] = captured[0]
-    expect(options.payments).toContainEqual(other)
-    expect(options.payments).not.toContainEqual(expect.objectContaining({ id: 'pay1', membershipId: 'ms1' }))
   })
 
   it('recomputes snapshots after the delete, not before', async () => {

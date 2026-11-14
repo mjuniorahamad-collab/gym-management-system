@@ -234,10 +234,37 @@ service cloud.firestore {
     }
 
     match /gyms/{gymId} {
-      allow read: if isSignedIn()
+      // `get` and `list` are separated on purpose, and the split is a clarity /
+      // hardening choice — NOT a fix for an observed denial.
+      //
+      // Measured, not assumed: `getDocs(query(collection('gyms'),
+      // where('ownerUid','==',uid)))` — the query `discoverOwnGym()` in
+      // `src/context/AuthContext.jsx` runs at first sign-in — SUCCEEDS on the
+      // emulator against the previous combined `read` rule as well as against
+      // this split one (see tests.emulator/gymsOwnerDiscoveryEmulator.test.js).
+      // The emulator evaluates a list rule against a hypothetical document that
+      // matches the query, so a `resource != null` presence test there is
+      // satisfiable. An earlier draft of this comment claimed the combined rule
+      // denied that query; the emulator disproved it and the claim was removed.
+      //
+      // What the split buys: the list path no longer depends on a presence test
+      // whose behaviour differs between the emulator and the documented
+      // canonical "rules are not filters" semantics, and `list` is explicitly
+      // limited to the caller's own owner-of-record documents instead of
+      // reusing a read predicate written for single-document access.
+      //
+      // Production list semantics were never probed; nothing here should be read
+      // as evidence about the live project.
+      allow get: if isSignedIn()
         && resource != null
         && 'ownerUid' in resource.data
         && (resource.data.ownerUid == request.auth.uid || (hasGym() && gymOf(request.auth.uid) == gymId));
+      // List is admitted ONLY for the caller's own owner-of-record documents.
+      // Rules are not filters, so the client query MUST constrain ownerUid to
+      // its own uid for this to be provable; an unconstrained list is denied.
+      // No presence test is referenced here — the query itself proves the
+      // result set consists of documents whose ownerUid is the caller.
+      allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
       allow create: if isSignedIn()
         && request.resource.data.ownerUid == request.auth.uid
         && isAutoId(gymId);

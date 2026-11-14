@@ -54,6 +54,15 @@ let seedCache = null
 async function highestExistingSequence() {
   if (seedCache !== null) return seedCache
   const { listAll } = await import('./firestore')
+  // A gym with no payments has no legacy receipt numbers to avoid, so the
+  // whole-collection read is replaced by a one-document probe. Every fresh
+  // deployment takes this path. Only a gym that already issued receipts before
+  // the counter existed pays for the legacy scan, once per session.
+  const probe = await listAll('payments', { limit: 1 })
+  if (probe.length === 0) {
+    seedCache = 0
+    return 0
+  }
   const payments = await listAll('payments')
   let max = 0
   for (const p of payments) {

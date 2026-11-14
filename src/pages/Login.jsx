@@ -60,8 +60,10 @@ export default function Login() {
     loading,
     isConfigured,
     pendingOnboarding,
+    error: profileError,
     signIn,
     signUp,
+    signOut,
     completeOnboarding,
     demoSignIn,
   } = useAuth()
@@ -350,6 +352,24 @@ export default function Login() {
               {authError && (
                 <div className="mt-5 rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300">
                   {authError}
+                </div>
+              )}
+
+              {/* A signed-in user whose profile/gym could not be loaded. This
+                  is a failure, NOT a cue to offer onboarding: creating a gym
+                  here would fabricate a second tenant and orphan the real one.
+                  Show the real error and give the user a way out. */}
+              {user && profileError && (
+                <div className="mt-5 rounded-lg border border-red-300 bg-red-50 p-4 text-sm text-red-700 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300">
+                  <p className="font-semibold">Your account could not be loaded.</p>
+                  <p className="mt-1">{profileError}</p>
+                  <button
+                    type="button"
+                    onClick={() => signOut()}
+                    className="mt-3 font-semibold underline underline-offset-2"
+                  >
+                    Sign out and try again
+                  </button>
                 </div>
               )}
 

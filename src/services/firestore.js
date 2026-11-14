@@ -34,10 +34,40 @@ function scopedConstraints() {
   return gymId ? [where('gymId', '==', gymId)] : [where('__unbound__', '==', '__impossible__')]
 }
 
-export async function listAll(name) {
-  if (!isReady()) return mockList(name)
-  const q = query(collection(db, name), ...scopedConstraints(), orderBy('createdAt', 'desc'))
-  const snap = await getDocs(q)
+/**
+ * List a collection, optionally narrowed to one equality match and/or one row.
+ *
+ * `where` exists so callers that only need one member's or one period's
+ * documents stop pulling the whole collection: the query is served by
+ * Firestore's automatic single-field index. When `where` is supplied there is
+ * deliberately NO orderBy, because `field == x` plus an orderBy needs a
+ * composite index that `firestore.indexes.json` does not declare — and a
+ * missing composite index fails in production with FAILED_PRECONDITION. Every
+ * caller that filters either sorts the result itself or does not care about
+ * order.
+ *
+ * `limit` is for existence probes (`limit: 1` answers "does this gym have any
+ * rows here?" for the cost of one document read).
+ *
+ * Both options are additive: `listAll(name)` keeps its exact previous
+ * behaviour and ordering.
+ */
+export async function listAll(name, options = {}) {
+  const { where: filter = null, limit: max = null } = options
+
+  if (!isReady()) {
+    let rows = mockList(name)
+    if (filter) rows = rows.filter((d) => d && d[filter.field] === filter.value)
+    if (max) rows = rows.slice(0, max)
+    return rows
+  }
+
+  const constraints = [...scopedConstraints()]
+  if (filter) constraints.push(where(filter.field, '==', filter.value))
+  else constraints.push(orderBy('createdAt', 'desc'))
+  if (max) constraints.push(limit(max))
+
+  const snap = await getDocs(query(collection(db, name), ...constraints))
   return snap.docs.map((d) => ({ id: d.id, ...d.data() }))
 }
 

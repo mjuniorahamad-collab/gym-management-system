@@ -54,7 +54,17 @@ npm run dev                 # http://localhost:5173
 
 The very first account that signs in on a fresh project automatically becomes the **Owner**.
 Create that user in Firebase Console → Authentication, then sign in with it in the app.
-Add more staff under **Settings → Load sample data / manage roles** (update `users/{uid}` role docs).
+There is **no staff-invite screen**. Adding a staff member is an administrative (Console / Admin SDK)
+step, by design: a client can never create another account's profile, and a role can never be changed
+after it is written (`firestore.rules` → `roleWriteOnce()`). To add staff:
+
+1. Firebase Console → Authentication → **Add user** (email + password). Copy the new **UID**.
+2. Firestore → collection `users` → document with that UID:
+   `{ name, email, role: 'admin' | 'front-desk' | 'trainer', gymId: '<your gymId>' }`.
+3. The role is now permanent for that account; to change it, delete the auth user and recreate.
+
+Use the same `gymId` as the owner's `users/{uid}.gymId`. Any other value isolates the staff member
+from the gym's data.
 
 ## Scripts
 
@@ -175,6 +185,38 @@ firebase deploy --only functions
 
 > ⚠️ Before deploying, set your project in `.firebaserc` (or via `firebase use`) and make sure
 > the first admin user exists so rules don't lock you out.
+
+## Production deployment checklist
+
+Run this in order. Rules and functions deploy **separately** from the frontend, and a `git push`
+deploys nothing.
+
+```bash
+npm ci && npm run lint && npm run build && npm test     # 1. gate
+firebase emulators:exec --project demo-himalye-gym --only firestore \
+  "vitest run --config vitest.emulator.js"              # 2. rules suite (needs Java)
+firebase deploy --only hosting                          # 3. frontend
+firebase deploy --only firestore:rules,firestore:indexes # 4. security rules + indexes
+firebase deploy --only storage                          # 5. storage rules (FIRST-TIME: verify uploads)
+firebase deploy --only functions                        # 6. scheduled jobs + callable
+```
+
+Before step 4/5, confirm in the Firebase Console:
+
+- [ ] Storage rules have been released at least once (`Rules` tab shows a ruleset). If the bucket
+      has never had rules, client uploads are denied and member photos / logos do not work.
+- [ ] `gyms/{gymId}` exists for every gym, with `ownerUid` and `receiptPrefix` (required before any
+      receipt can be issued — `receiptPrefixGuard` fails closed).
+- [ ] `users/{uid}` exists for every staff account with `role` + `gymId`.
+- [ ] Cloud Functions are deployed, otherwise membership `status` is never derived server-side,
+      expiry reminders never run and there is no nightly backup.
+- [ ] Build `.env` from `.env.example`. `VITE_ENABLE_SEEDING` must stay `false` in production.
+- [ ] After the hosting deploy, load the app once and check the browser console for CSP violations
+      (`firebase.json` now ships a Content-Security-Policy).
+
+> Data reset: the audit branch contains no production data. To start clean, delete the test
+> collections from Firestore (or use a fresh Firebase project) **before** creating the first real
+> gym, then provision `gyms/{gymId}` as described above.
 
 ## Cloud Functions
 

@@ -16,25 +16,30 @@ import { requireReceiptPrefix } from './receiptPrefixGuard'
  *
  * Returns the list of period snapshots that were written.
  *
- * `payments` may be supplied by a caller that has already read the collection
- * in the same operation, to avoid a second identical full read. It must be the
- * complete, unfiltered collection - the ledger filters by memberId itself.
+ * Reads are scoped to this member: `payments` and `memberships` are queried by
+ * `memberId`, not pulled collection-wide. `computeMemberLedger` only ever looks
+ * at this member's documents (dues.js filters by `member.id`), so the result is
+ * identical while the read count scales with the member's own history instead
+ * of the whole gym's. `membershipPlans` stays a full read because plans are a
+ * small, bounded configuration collection.
  */
-export async function refreshMembershipSnapshots(memberId, { payments: paymentsOverride } = {}) {
+export async function refreshMembershipSnapshots(memberId) {
   if (!memberId) return []
   const [member, plans, payments, memberships] = await Promise.all([
     getById('members', memberId),
     listAll('membershipPlans'),
-    paymentsOverride ? Promise.resolve(paymentsOverride) : listAll('payments'),
-    listAll('memberships'),
+    listAll('payments', { where: { field: 'memberId', value: memberId } }),
+    listAll('memberships', { where: { field: 'memberId', value: memberId } }),
   ])
 
-  const ownPeriods = memberships.filter((m) => m && m.id && m.memberId === memberId)
   const ledger = computeMemberLedger({ member, plans, payments, memberships })
   const figuresById = new Map(ledger.periods.filter((p) => p.id).map((p) => [p.id, p]))
 
   const updated = []
-  for (const period of ownPeriods) {
+  // `memberships` is already this member's set (the query filtered it) and
+  // computeMemberLedger filters by memberId again, so no local re-filter here.
+  for (const period of memberships) {
+    if (!period?.id) continue
     const figures = figuresById.get(period.id)
     if (!figures) continue
     const patch = {

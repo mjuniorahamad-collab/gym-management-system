@@ -25,8 +25,12 @@ export const signupSchema = z
     path: ['confirmPassword'],
   })
 
+// zod 4 removed `required_error` / `invalid_type_error`; both are silently
+// IGNORED there, which would surface zod's raw "Invalid input: expected string,
+// received undefined" in the form. The v4 equivalent for every non-string input
+// is a single `error` param.
 const receiptPrefixField = z
-  .string({ required_error: RECEIPT_PREFIX_RULES, invalid_type_error: RECEIPT_PREFIX_RULES })
+  .string({ error: RECEIPT_PREFIX_RULES })
   .superRefine((value, ctx) => {
     if (receiptPrefixRejection(value) !== null) {
       ctx.addIssue({ code: 'custom', message: RECEIPT_PREFIX_RULES })
@@ -41,7 +45,7 @@ export const gymOnboardingSchema = z.object({
 
 export const ptSurchargeSchema = z
   .coerce
-  .number({ invalid_type_error: 'PT surcharge must be a number' })
+  .number({ error: 'PT surcharge must be a number' })
   .min(0, 'PT surcharge cannot be negative')
   .max(100000000, 'PT surcharge is too large')
 
@@ -88,7 +92,7 @@ export const trainerSchema = z.object({
 export const planSchema = z.object({
   name: z.string().min(2, 'Plan name is required').max(80),
   durationDays: z.coerce
-    .number({ invalid_type_error: 'Duration must be a number' })
+    .number({ error: 'Duration must be a number' })
     .int()
     .min(1, 'Duration must be at least 1 day')
     .max(3650),
@@ -112,7 +116,7 @@ export const renewalSchema = z
     planId: z.string().min(1, 'Select a membership plan'),
     effectiveMode: z
       .enum(['previous-expiry', 'today', 'custom'], {
-        errorMap: () => ({ message: 'Select a renewal start' }),
+        error: 'Select a renewal start',
       })
       .default('previous-expiry'),
     customDate: z.string().optional().or(z.literal('')),
@@ -131,7 +135,7 @@ export const membershipPeriodSchema = z
   .object({
     planId: z.string().min(1, 'Select a membership plan'),
     price: z.coerce
-      .number({ invalid_type_error: 'Period fee must be a number' })
+      .number({ error: 'Period fee must be a number' })
       .min(0, 'Period fee cannot be negative')
       .max(100000000),
     startDate: z.string().min(1, 'Start date is required'),
@@ -177,7 +181,7 @@ export const classSchema = z.object({
 export const weightRecordSchema = z
   .object({
     weight: z.coerce
-      .number({ invalid_type_error: 'Weight must be a number' })
+      .number({ error: 'Weight must be a number' })
       .positive('Weight must be positive')
       .max(500, 'Weight seems too high'),
     date: z.string().min(1, 'Date is required'),
@@ -190,7 +194,7 @@ export const weightRecordSchema = z
 export const fitnessGoalSchema = z.object({
   fitnessGoal: z.string().optional().or(z.literal('')),
   targetWeight: z.coerce
-    .number({ invalid_type_error: 'Target weight must be a number' })
+    .number({ error: 'Target weight must be a number' })
     .positive('Target weight must be positive')
     .max(500, 'Target weight seems too high')
     .optional()
