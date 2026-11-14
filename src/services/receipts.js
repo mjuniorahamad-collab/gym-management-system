@@ -10,13 +10,24 @@ const RECEIPT_DIGITS = 6
 
 // A single monotonic sequence per gym, independent of the receipt prefix, so a
 // gym that later changes its prefix can never re-issue a number it already used.
-const counterKey = () => {
+/**
+ * Id of this gym's receipt counter document.
+ *
+ * Exported because the money transaction reads and increments the counter by
+ * id inside the same commit as the payment (see services/payments.js).
+ */
+export function receiptCounterId() {
   const id = getGymId() || 'none'
   const normalized = String(id).replace(/[^a-zA-Z0-9_-]/g, '_')
   return `receiptNo_${normalized}`
 }
 
-const counterRef = () => doc(db, 'counters', counterKey())
+/** The value the counter must take for the next receipt. */
+export function nextReceiptSequence(storedValue, floor) {
+  return (typeof storedValue === 'number' ? storedValue : Number(floor) || 0) + 1
+}
+
+const counterRef = () => doc(db, 'counters', receiptCounterId())
 
 export function formatReceiptNo(prefix, n) {
   const num = Number.parseInt(n, 10)
@@ -103,6 +114,8 @@ export function receiptCounterRef() {
  * retry would turn a busy counter into an expensive one.
  */
 export async function prepareReceiptFloor() {
+  // Demo/offline mode keeps its counter in memory and has no legacy receipts.
+  if (!ready()) return 0
   const current = await getDoc(counterRef()).catch(() => null)
   if (current?.exists?.()) return 0
   return highestExistingSequence()
@@ -118,8 +131,7 @@ export async function prepareReceiptFloor() {
 export async function mintReceiptNoInTransaction(tx, gymId, prefix, floor) {
   const snap = await tx.get(counterRef())
   const stored = snap.data()?.value
-  const base = typeof stored === 'number' ? stored : Number(floor) || 0
-  const next = base + 1
+  const next = nextReceiptSequence(stored, floor)
   tx.set(counterRef(), { value: next, gymId }, { merge: true })
   return formatReceiptNo(prefix, next)
 }
@@ -160,9 +172,9 @@ export async function nextReceiptNo(prefix) {
   // Genuine demo/offline mode (mirrors nextMemberNo).
   if (!ready()) {
     store.counters ??= {}
-    store.counters[counterKey()] ??= 0
-    store.counters[counterKey()] += 1
-    return formatReceiptNo(prefix, store.counters[counterKey()])
+    store.counters[receiptCounterId()] ??= 0
+    store.counters[receiptCounterId()] += 1
+    return formatReceiptNo(prefix, store.counters[receiptCounterId()])
   }
 
   // Firebase is configured but tenancy is not established. The payment write is
@@ -177,7 +189,7 @@ export async function nextReceiptNo(prefix) {
     const n = await runTransaction(db, async (tx) => {
       const snap = await tx.get(counterRef())
       const stored = snap.data()?.value
-      const next = (typeof stored === 'number' ? stored : seed) + 1
+      const next = nextReceiptSequence(stored, seed)
       tx.set(counterRef(), { value: next, gymId }, { merge: true })
       return next
     })

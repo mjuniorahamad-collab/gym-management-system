@@ -23,11 +23,42 @@ beforeEach(() => {
 })
 
 vi.mock('@/services/firestore', () => {
-  const store = { memberships: [], payments: [], members: [], auditLog: [] }
+  const store = { memberships: [], payments: [], members: [], membershipPlans: [], auditLog: [] }
+  // Mirrors commitAtomically(): counters are a value map, everything else is a
+  // collection. Used by recordPayment.
+  const counters = {}
+  const commitAtomically = async (apply) =>
+    apply({
+      get: async (name, id) =>
+        name === 'counters'
+          ? (typeof counters[id] === 'number' ? { id, value: counters[id] } : null)
+          : store[name].find((d) => d.id === id) || null,
+      upsert: (name, id, data) => {
+        if (name === 'counters') counters[id] = data.value
+        else {
+          const doc = store[name].find((d) => d.id === id)
+          if (doc) Object.assign(doc, data)
+          else store[name].push({ id, ...data })
+        }
+      },
+      create: (name, data) => {
+        const id = `mock-${name}-${store[name].length + 1}`
+        store[name].push({ id, ...data })
+        return id
+      },
+      update: (name, id, data) => {
+        const doc = store[name].find((d) => d.id === id)
+        if (doc) Object.assign(doc, data)
+      },
+      remove: (name, id) => {
+        store[name] = store[name].filter((d) => d.id !== id)
+      },
+    })
   return {
     __store: store,
     isReady: () => false,
-    listAll: async (name) => store[name],
+    commitAtomically,
+    listAll: async (name) => store[name] || [],
     getById: async (name, id) => store[name].find((d) => d.id === id) || null,
     createDoc: async (name, data) => {
       const id = `mock-${name}-${store[name].length + 1}`

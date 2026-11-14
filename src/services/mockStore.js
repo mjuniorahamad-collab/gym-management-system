@@ -295,6 +295,15 @@ export function mockUpdate(name, id, data) {
   }
 }
 
+/** Create-or-merge a document at a known id (the mock twin of `setDoc(..., {merge:true})`). */
+export function mockUpsert(name, id, data) {
+  ensure()
+  const now = iso(Date.now())
+  const doc = store[name].find((x) => x.id === id)
+  if (doc) Object.assign(doc, data, { updatedAt: now })
+  else store[name].unshift({ id, ...data, updatedAt: now })
+}
+
 export function mockRemove(name, id) {
   ensure()
   store[name] = store[name].filter((x) => x.id !== id)
