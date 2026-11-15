@@ -10,6 +10,12 @@ import { computeMemberLedger } from '@/utils/dues'
  * memberships.js and renewals.js therefore make the WRITES atomic (payment,
  * period, counter and the period snapshots commit together or not at all); the
  * figures they write are the ones computed from these reads.
+ *
+ * Atomicity alone is not isolation: two terminals could each read the same
+ * history, compute different snapshots, and the later commit would overwrite
+ * the other's — a period showing less money than the ledger holds. The
+ * revision guard below closes that window, and `readLedgerSnapshot` is the
+ * entry point that pairs the reads with the revision they are valid for.
  */
 export async function readLedgerInputs(memberId) {
   const [member, plans, payments, memberships] = await Promise.all([
@@ -19,6 +25,75 @@ export async function readLedgerInputs(memberId) {
     listAll('memberships', { where: { field: 'memberId', value: memberId } }),
   ])
   return { member, plans, payments, memberships }
+}
+
+/**
+ * A concurrent money write moved this member's ledger between the read and the
+ * commit. Nothing was written: the caller re-reads and recomputes.
+ */
+export class LedgerConflictError extends Error {
+  constructor(message) {
+    super(message)
+    this.name = 'LedgerConflictError'
+  }
+}
+
+/**
+ * The ledger inputs PLUS the revision they were read at.
+ *
+ * The revision lives on the member document itself (`ledgerRevision`), which is
+ * already part of the ledger read: no extra query, no new collection and no new
+ * permission — the roles that may record money are exactly the roles allowed to
+ * update a member. Every writer of a period snapshot increments it inside its
+ * own transaction, so "revision still the same" means "nobody wrote this
+ * member's money or snapshots since I read them".
+ */
+export async function readLedgerSnapshot(memberId) {
+  const inputs = await readLedgerInputs(memberId)
+  const stored = Number(inputs.member?.ledgerRevision)
+  return { ...inputs, revision: Number.isFinite(stored) && stored > 0 ? stored : 0 }
+}
+
+/**
+ * FIRST read of a money transaction: refuse to write figures that are already
+ * stale. Must run before any write, because the web SDK requires all reads to
+ * precede all writes inside a transaction.
+ */
+export async function assertLedgerFresh(tx, memberId, revision) {
+  const member = await tx.get('members', memberId)
+  const stored = Number(member?.ledgerRevision)
+  const current = Number.isFinite(stored) && stored > 0 ? stored : 0
+  if (current !== revision) {
+    throw new LedgerConflictError(
+      `member ledger moved from revision ${revision} to ${current} since it was read`
+    )
+  }
+}
+
+/** Stage the revision bump that tells later readers the ledger changed. */
+export function bumpLedgerRevision(tx, memberId, revision) {
+  tx.update('members', memberId, { ledgerRevision: revision + 1 })
+}
+
+/**
+ * Run `attempt` against a fresh ledger read, retrying when a concurrent write
+ * bumped the revision first. `attempt` receives the inputs AND the revision, so
+ * a retry recomputes the figures from the new history rather than replaying the
+ * stale ones. Any other error propagates unchanged: this is not a retry loop
+ * for permission failures.
+ */
+export async function withLedgerRevision(memberId, attempt, { retries = 3 } = {}) {
+  let conflict = null
+  for (let i = 0; i < retries; i += 1) {
+    const inputs = await readLedgerSnapshot(memberId)
+    try {
+      return await attempt(inputs)
+    } catch (err) {
+      if (!(err instanceof LedgerConflictError)) throw err
+      conflict = err
+    }
+  }
+  throw conflict
 }
 
 /**

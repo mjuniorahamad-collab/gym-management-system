@@ -5,7 +5,13 @@ import { getMembershipPeriod, getRenewalPaymentSummary } from '@/utils/renewal'
 import { freezeTailCharge, tailRequiresAttention } from '@/utils/freezeTails'
 import { commitAtomically, createDoc, isReady, updateDocById } from './firestore'
 import { logAudit } from './audit'
-import { readLedgerInputs, snapshotPatches } from './memberLedger'
+import {
+  assertLedgerFresh,
+  bumpLedgerRevision,
+  LedgerConflictError,
+  snapshotPatches,
+  withLedgerRevision,
+} from './memberLedger'
 import { requestReprojection } from './projection'
 import { getGymId } from './ownerContext'
 import {
@@ -323,73 +329,90 @@ export async function renewMembership({
       effectiveExpiry: demoDerived.effectiveExpiry ?? undefined,
     })
   } else {
-    // The ledger AS IT WILL BE once this renewal exists, so the snapshots of
-    // the member's OTHER periods are corrected in the same commit. The new
-    // period is excluded from the patch list because it is written directly
-    // from `summary`.
-    const PENDING = 'pending-renewal-period'
-    const inputs = await readLedgerInputs(member.id)
-    const patches = snapshotPatches({
-      ...inputs,
-      payments: [
-        ...inputs.payments,
-        { ...paymentData, id: 'pending-renewal-payment', membershipId: PENDING },
-      ],
-      memberships: [...inputs.memberships, { ...membershipData, id: PENDING }],
-    }).filter((p) => p.id !== PENDING)
-
     // Read the counter floor BEFORE the transaction: the legacy-payments scan
     // must not be repeated on every contention retry.
     const floor = await prepareReceiptFloor()
 
-    // Every write the renewal needs, staged once so the counter path and its
-    // fallback commit exactly the same thing. Ids are reserved up front
-    // because the period and its payment reference each other.
-    //
-    // gymId is stamped by commitAtomically, exactly as createDoc does for the
-    // demo path (firestore.rules `canWriteTenant` requires it on every write).
-    const staged = (tx, minted) => {
-      const newMembershipId = tx.newId('memberships')
-      const newPaymentId = tx.newId('payments')
-      tx.create(
-        'memberships',
-        { ...membershipData, paymentId: newPaymentId, receiptNo: minted },
-        newMembershipId
-      )
-      tx.create(
-        'payments',
-        { ...paymentData, membershipId: newMembershipId, receiptNo: minted },
-        newPaymentId
-      )
-      tx.update('members', member.id, memberPatch)
-      for (const patch of patches) tx.update('memberships', patch.id, patch.fields)
-      return { membershipId: newMembershipId, paymentId: newPaymentId, receiptNo: minted }
+    /**
+     * One renewal attempt against a freshly read ledger.
+     *
+     * The ledger AS IT WILL BE once this renewal exists, so the snapshots of
+     * the member's OTHER periods are corrected in the same commit. The new
+     * period is excluded from the patch list because it is written directly
+     * from `summary`.
+     *
+     * `withLedgerRevision` retries this whole closure when a concurrent money
+     * write bumped the revision first: the patches are recomputed from the new
+     * history rather than committed stale.
+     */
+    const attempt = async (inputs) => {
+      const PENDING = 'pending-renewal-period'
+      const patches = snapshotPatches({
+        ...inputs,
+        payments: [
+          ...inputs.payments,
+          { ...paymentData, id: 'pending-renewal-payment', membershipId: PENDING },
+        ],
+        memberships: [...inputs.memberships, { ...membershipData, id: PENDING }],
+      }).filter((p) => p.id !== PENDING)
+
+      // Every write the renewal needs, staged once so the counter path and its
+      // fallback commit exactly the same thing. Ids are reserved up front
+      // because the period and its payment reference each other.
+      //
+      // gymId is stamped by commitAtomically, exactly as createDoc does for the
+      // demo path (firestore.rules `canWriteTenant` requires it on every write).
+      const staged = (tx, minted) => {
+        const newMembershipId = tx.newId('memberships')
+        const newPaymentId = tx.newId('payments')
+        tx.create(
+          'memberships',
+          { ...membershipData, paymentId: newPaymentId, receiptNo: minted },
+          newMembershipId
+        )
+        tx.create(
+          'payments',
+          { ...paymentData, membershipId: newMembershipId, receiptNo: minted },
+          newPaymentId
+        )
+        tx.update('members', member.id, memberPatch)
+        bumpLedgerRevision(tx, member.id, inputs.revision)
+        for (const patch of patches) tx.update('memberships', patch.id, patch.fields)
+        return { membershipId: newMembershipId, paymentId: newPaymentId, receiptNo: minted }
+      }
+
+      const commit = async (withCounter) =>
+        commitAtomically(async (tx) => {
+          // First read: the patches above are only valid while the ledger holds.
+          await assertLedgerFresh(tx, member.id, inputs.revision)
+          if (!withCounter) return staged(tx, fallbackReceiptNo(receiptPrefix))
+          // Counter read INSIDE the transaction: the receipt number, the period
+          // and the payment committed together, so a number can be neither
+          // burned nor reissued by a failure or a concurrent terminal.
+          const counter = await tx.get('counters', receiptCounterId())
+          const sequence = nextReceiptSequence(counter?.value, floor)
+          tx.upsert('counters', receiptCounterId(), { value: sequence })
+          return staged(tx, formatReceiptNo(receiptPrefix, sequence))
+        })
+
+      try {
+        return await commit(true)
+      } catch (err) {
+        // A stale ledger is NOT a missing counter: retrying without the counter
+        // would commit the very figures this guard exists to reject, so let the
+        // revision loop re-read and recompute instead.
+        if (err instanceof LedgerConflictError) throw err
+        // A failed transaction has no side effects, so retrying without the
+        // counter is safe. Carve-out: a payment is never refused just because a
+        // receipt number could not be minted — the counter is a convenience, the
+        // ledger entry is the record. What is NOT carved out is the prefix: it is
+        // the same one the guard verified above, never a default.
+        console.warn('[renewals] receipt counter unavailable; retrying without it', err)
+        return await commit(false)
+      }
     }
 
-    const commit = async (withCounter) =>
-      commitAtomically(async (tx) => {
-        if (!withCounter) return staged(tx, fallbackReceiptNo(receiptPrefix))
-        // Counter read INSIDE the transaction: the receipt number, the period
-        // and the payment committed together, so a number can be neither
-        // burned nor reissued by a failure or a concurrent terminal.
-        const counter = await tx.get('counters', receiptCounterId())
-        const sequence = nextReceiptSequence(counter?.value, floor)
-        tx.upsert('counters', receiptCounterId(), { value: sequence })
-        return staged(tx, formatReceiptNo(receiptPrefix, sequence))
-      })
-
-    let written
-    try {
-      written = await commit(true)
-    } catch (err) {
-      // A failed transaction has no side effects, so retrying without the
-      // counter is safe. Carve-out: a payment is never refused just because a
-      // receipt number could not be minted — the counter is a convenience, the
-      // ledger entry is the record. What is NOT carved out is the prefix: it is
-      // the same one the guard verified above, never a default.
-      console.warn('[renewals] receipt counter unavailable; retrying without it', err)
-      written = await commit(false)
-    }
+    const written = await withLedgerRevision(member.id, attempt)
     membershipId = written.membershipId
     paymentId = written.paymentId
     receiptNo = written.receiptNo

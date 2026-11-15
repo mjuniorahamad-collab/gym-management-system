@@ -1,6 +1,12 @@
 import { commitAtomically, getById, listAll, updateDocById } from './firestore'
 import { logAudit } from './audit'
-import { asWritten, readLedgerInputs, snapshotPatches } from './memberLedger'
+import {
+  asWritten,
+  assertLedgerFresh,
+  bumpLedgerRevision,
+  snapshotPatches,
+  withLedgerRevision,
+} from './memberLedger'
 import { refreshMembershipSnapshots } from './payments'
 import { requestReprojection } from './projection'
 import { getMembershipCharge, getEffectivePtSurcharge } from '@/utils/pt'
@@ -126,28 +132,40 @@ export async function deleteMembershipPeriod({ periodId, memberId }) {
   if (!periodId) throw new Error('A period ID is required')
   if (!memberId) throw new Error('A member ID is required')
 
-  // Only payments ATTRIBUTED to this period matter here, so query them by
-  // membershipId instead of reading the whole payments collection.
-  const affected = await listAll('payments', {
-    where: { field: 'membershipId', value: periodId },
-  })
+  // Everything this operation decides from — the period's payments and the
+  // member's ledger — is read per attempt, inside the revision guard: a
+  // concurrent money write bumps the revision, the transaction refuses to
+  // commit figures computed before it, and the retry re-reads both.
+  const attempt = async (inputs) => {
+    // Only payments ATTRIBUTED to this period matter here, so query them by
+    // membershipId instead of reading the whole payments collection.
+    const affected = await listAll('payments', {
+      where: { field: 'membershipId', value: periodId },
+    })
 
-  // The ledger as it WILL be: the period gone and its payments unlinked.
-  const inputs = await readLedgerInputs(memberId)
-  const unlinked = new Set(affected.map((p) => p.id))
-  const patches = snapshotPatches({
-    ...inputs,
-    payments: inputs.payments.map((p) =>
-      unlinked.has(p.id) ? { ...p, membershipId: '' } : p
-    ),
-    memberships: inputs.memberships.filter((p) => p.id !== periodId),
-  })
+    // The ledger as it WILL be: the period gone and its payments unlinked.
+    const unlinked = new Set(affected.map((p) => p.id))
+    const patches = snapshotPatches({
+      ...inputs,
+      payments: inputs.payments.map((p) =>
+        unlinked.has(p.id) ? { ...p, membershipId: '' } : p
+      ),
+      memberships: inputs.memberships.filter((p) => p.id !== periodId),
+    })
 
-  await commitAtomically(async (tx) => {
-    for (const payment of affected) tx.update('payments', payment.id, { membershipId: '' })
-    tx.remove('memberships', periodId)
-    for (const patch of patches) tx.update('memberships', patch.id, patch.fields)
-  })
+    await commitAtomically(async (tx) => {
+      // First read: the figures above are only valid while the ledger holds.
+      await assertLedgerFresh(tx, memberId, inputs.revision)
+      for (const payment of affected) tx.update('payments', payment.id, { membershipId: '' })
+      tx.remove('memberships', periodId)
+      bumpLedgerRevision(tx, memberId, inputs.revision)
+      for (const patch of patches) tx.update('memberships', patch.id, patch.fields)
+    })
+
+    return { affected, patches }
+  }
+
+  const { affected, patches } = await withLedgerRevision(memberId, attempt)
 
   // Deleting a period can leave the member with NO current period, which is a
   // different projection than a wrong one — and the one most likely to go stale.
