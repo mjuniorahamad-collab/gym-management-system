@@ -62,6 +62,8 @@ jobs:
       - name: Install Firebase CLI
         run: npm install --global firebase-tools@15
 
+      # GATING suites. The two frozen baselines are excluded from them (see
+      # vitest.emulator.js / vitest.storage.js) and run in the `baseline` job.
       - name: Firestore rules suite
         run: npm run test:rules
 
@@ -70,3 +72,38 @@ jobs:
 
       - name: Projection writer suite (Admin SDK)
         run: npm run test:functions
+
+  # Frozen historical baselines. They are expected to be red by design, so this
+  # job reports (continue-on-error) instead of gating: the pipeline's verdict is
+  # decided by `app` and `rules`, and a regression in the live suites can no
+  # longer hide behind a permanently red baseline.
+  baseline:
+    name: Frozen baselines (informational, non-gating)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install app dependencies
+        run: npm ci
+
+      - name: Install Firebase CLI
+        run: npm install --global firebase-tools@15
+
+      # Phase 0.5A vulnerable Firestore baseline (26 known-red assertions).
+      - name: Frozen Firestore baseline
+        run: npm run test:rules:frozen
+
+      # Pre-Phase-3A Storage baseline (32 known-red assertions).
+      - name: Frozen Storage baseline
+        run: npm run test:storage:frozen

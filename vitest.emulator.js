@@ -1,6 +1,15 @@
 import { defineConfig } from 'vitest/config'
 import { fileURLToPath, URL } from 'node:url'
 
+// `firestoreSecurityEmulator.test.js` is the frozen Phase 0.5A vulnerable
+// baseline: its own header declares the failing tests to be the deliverable and
+// forbids "fixing" firestore.rules to make them pass. It therefore cannot live
+// in the gating suite - a permanently red baseline would make the whole
+// pipeline red for a reason nobody is allowed to act on. Set
+// FROZEN_BASELINES=1 (npm run test:rules:frozen) to run it deliberately; CI runs
+// it in a separate, non-gating job.
+const includeFrozenBaselines = process.env.FROZEN_BASELINES === '1'
+
 export default defineConfig({
   // The emulator suites used to test `firestore.rules` as text through raw SDK
   // calls. `moneyPathEmulator.test.js` drives the REAL service layer
@@ -20,7 +29,10 @@ export default defineConfig({
     // abort on `assertEmulatorRunning` and turn a green Firestore gate red for a
     // reason that has nothing to do with Firestore. They have their own config
     // and script: `npm run test:storage` -> vitest.storage.js.
-    exclude: ['tests.emulator/storage*.test.js'],
+    exclude: [
+      'tests.emulator/storage*.test.js',
+      ...(includeFrozenBaselines ? [] : ['tests.emulator/firestoreSecurityEmulator.test.js']),
+    ],
     testTimeout: 30000,
     // @firebase/rules-unit-testing v6 opens the emulator connection with an
     // extra round-trip inside beforeAll; the 10s default hook timeout started

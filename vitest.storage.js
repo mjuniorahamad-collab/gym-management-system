@@ -1,5 +1,12 @@
 import { defineConfig } from 'vitest/config'
 
+// `storageBaselineEmulator.test.js` characterizes the PRE-Phase-3A ruleset and
+// is DELIBERATELY KEPT RED (its header says so): all 32 remaining failures are
+// permissions that were intentionally revoked. It is history, not a gate, so it
+// runs only with FROZEN_BASELINES=1 (npm run test:storage:frozen) and in CI's
+// separate non-gating job.
+const includeFrozenBaselines = process.env.FROZEN_BASELINES === '1'
+
 /**
  * Config for the Cloud Storage rules suites.
  *
@@ -20,6 +27,7 @@ export default defineConfig({
     environment: 'node',
     globals: true,
     include: ['tests.emulator/storage*.test.js'],
+    exclude: includeFrozenBaselines ? [] : ['tests.emulator/storageBaselineEmulator.test.js'],
     testTimeout: 30000,
     hookTimeout: 30000,
     // These files share ONE Storage emulator and therefore one object namespace.
