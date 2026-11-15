@@ -375,8 +375,9 @@ export async function renewMembership({
           { ...paymentData, membershipId: newMembershipId, receiptNo: minted },
           newPaymentId
         )
-        tx.update('members', member.id, memberPatch)
-        bumpLedgerRevision(tx, member.id, inputs.revision)
+        // One write on the member document: the plan/joinDate patch and the
+        // ledger revision bump travel together.
+        bumpLedgerRevision(tx, member.id, inputs.revision, memberPatch)
         for (const patch of patches) tx.update('memberships', patch.id, patch.fields)
         return { membershipId: newMembershipId, paymentId: newPaymentId, receiptNo: minted }
       }

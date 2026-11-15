@@ -134,14 +134,12 @@ export async function recordPayment({
       if (period) membership = { ...period, ...(targetPatch?.fields || {}) }
     }
 
-    return { id, receiptNo, membership }
+    return { id, receiptNo, membership, membershipId }
   }
 
   // A payment with no member has no ledger to be stale against (the target
   // period check above still applies), so it commits once, unguarded.
-  const written = values.memberId
-    ? await withLedgerRevision(values.memberId, attempt)
-    : await attempt(null)
+  const written = await withLedgerRevision(values.memberId, attempt)
 
   await logAudit({
     action: 'create',
@@ -150,7 +148,7 @@ export async function recordPayment({
     details: {
       member: memberName || undefined,
       amount,
-      membershipId: written.membership?.id || undefined,
+      membershipId: written.membershipId || undefined,
     },
   })
 
@@ -191,9 +189,7 @@ export async function deletePayment({ payment }) {
     return patches
   }
 
-  const patches = payment.memberId
-    ? await withLedgerRevision(payment.memberId, attempt)
-    : await attempt(null)
+  const patches = await withLedgerRevision(payment.memberId, attempt)
 
   await logAudit({
     action: 'delete',

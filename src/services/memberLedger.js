@@ -38,6 +38,12 @@ export class LedgerConflictError extends Error {
   }
 }
 
+/** A member document's stored revision, or 0 when it is absent or not usable. */
+const revisionOf = (member) => {
+  const stored = Number(member?.ledgerRevision)
+  return Number.isFinite(stored) && stored > 0 ? stored : 0
+}
+
 /**
  * The ledger inputs PLUS the revision they were read at.
  *
@@ -50,19 +56,23 @@ export class LedgerConflictError extends Error {
  */
 export async function readLedgerSnapshot(memberId) {
   const inputs = await readLedgerInputs(memberId)
-  const stored = Number(inputs.member?.ledgerRevision)
-  return { ...inputs, revision: Number.isFinite(stored) && stored > 0 ? stored : 0 }
+  return { ...inputs, revision: revisionOf(inputs.member) }
 }
 
 /**
  * FIRST read of a money transaction: refuse to write figures that are already
  * stale. Must run before any write, because the web SDK requires all reads to
  * precede all writes inside a transaction.
+ *
+ * The member document is guaranteed present here: `readLedgerSnapshot` has
+ * already read it, and `firestore.rules` denies reading a member document that
+ * does not exist (`sameGym`/`legacy` are both false for a missing document), so
+ * a deleted member fails before any transaction opens. The bump below is
+ * therefore unconditional.
  */
 export async function assertLedgerFresh(tx, memberId, revision) {
   const member = await tx.get('members', memberId)
-  const stored = Number(member?.ledgerRevision)
-  const current = Number.isFinite(stored) && stored > 0 ? stored : 0
+  const current = revisionOf(member)
   if (current !== revision) {
     throw new LedgerConflictError(
       `member ledger moved from revision ${revision} to ${current} since it was read`
@@ -70,9 +80,14 @@ export async function assertLedgerFresh(tx, memberId, revision) {
   }
 }
 
-/** Stage the revision bump that tells later readers the ledger changed. */
-export function bumpLedgerRevision(tx, memberId, revision) {
-  tx.update('members', memberId, { ledgerRevision: revision + 1 })
+/**
+ * Stage the revision bump that tells later readers the ledger changed.
+ *
+ * `patch` is for a caller that already updates the member document: folding the
+ * bump into that write keeps one write per transaction instead of two.
+ */
+export function bumpLedgerRevision(tx, memberId, revision, patch = {}) {
+  tx.update('members', memberId, { ...patch, ledgerRevision: revision + 1 })
 }
 
 /**
@@ -81,19 +96,20 @@ export function bumpLedgerRevision(tx, memberId, revision) {
  * a retry recomputes the figures from the new history rather than replaying the
  * stale ones. Any other error propagates unchanged: this is not a retry loop
  * for permission failures.
+ *
+ * A payment can be recorded against no member at all; there is then no ledger
+ * to be stale against, so it is attempted once with `null`.
  */
 export async function withLedgerRevision(memberId, attempt, { retries = 3 } = {}) {
-  let conflict = null
-  for (let i = 0; i < retries; i += 1) {
+  if (!memberId) return attempt(null)
+  for (let i = 1; ; i += 1) {
     const inputs = await readLedgerSnapshot(memberId)
     try {
       return await attempt(inputs)
     } catch (err) {
-      if (!(err instanceof LedgerConflictError)) throw err
-      conflict = err
+      if (!(err instanceof LedgerConflictError) || i >= retries) throw err
     }
   }
-  throw conflict
 }
 
 /**
