@@ -271,6 +271,35 @@ describe('ledger isolation — the figures cannot be stale', () => {
     expect(await readRaw(`members/${ids.memberId}`)).toMatchObject({ ledgerRevision: 1 })
   })
 
+  it("refuses to edit another member's period", async () => {
+    const ids = freshIds()
+    await seed(ids)
+    const otherMemberId = `${ids.memberId}-other`
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await ctx.firestore().doc(`members/${otherMemberId}`).set({
+        name: 'Other Member',
+        gymId: ids.gymId,
+        membershipPlanId: ids.planId,
+        joinDate: '2026-01-01',
+        createdAt: new Date(),
+      })
+    })
+    setGymId(ids.gymId)
+
+    // Same gym, different member: the period is not in that member's ledger, so
+    // it must not be re-priced (nor their dues recomputed from it).
+    await expect(
+      editMembershipPeriod({ periodId: ids.periodId, memberId: otherMemberId, patch: { price: 9999 } })
+    ).rejects.toThrow(/Membership period not found/)
+
+    expect(await readRaw(`memberships/${ids.periodId}`)).toMatchObject({
+      price: PRICE,
+      amountDue: PRICE,
+    })
+    // Nothing was written, so no revision bump either.
+    expect((await readRaw(`members/${otherMemberId}`))?.ledgerRevision).toBeUndefined()
+  })
+
   it('does not let a price edit overwrite a payment taken at the same time', async () => {
     const ids = freshIds()
     await seed(ids)

@@ -120,6 +120,11 @@ export async function applyPTInclusivePriceToPeriod({
 /**
  * Edit an existing membership period's plan, price, start/expiry dates.
  *
+ * The period is validated against THIS member's own periods first (the same
+ * check the PT flow makes): a stale form — the member was switched, or the
+ * period was deleted — must not re-price someone else's period and then
+ * recompute the caller's dues from the edit.
+ *
  * The patch and ALL of this member's recomputed period snapshots are written in
  * ONE guarded transaction — the dates/price a payment is allocated against and
  * the resulting dues can never disagree, and a payment recorded while the form
@@ -140,6 +145,11 @@ export async function editMembershipPeriod({ periodId, memberId, patch }) {
   if (Object.keys(safe).length === 0) throw new Error('No valid fields to update')
 
   await withLedgerRevision(memberId, async (inputs) => {
+    // Ownership first: the period must be one of THIS member's periods.
+    const period = inputs.memberships.find((p) => p.id === periodId) || null
+    if (!period) throw new Error('Membership period not found')
+    if (period.memberId !== memberId) throw new Error('Period does not belong to this member')
+
     await writePeriodAndSnapshots({ memberId, inputs, periodId, patch: safe })
   })
   await requestReprojection(memberId)

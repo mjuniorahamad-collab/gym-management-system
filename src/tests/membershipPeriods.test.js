@@ -271,6 +271,18 @@ describe('editMembershipPeriod', () => {
     expect(doc.price).toBe(9999)
   })
 
+  it('refuses to edit a period that is not this member\'s', async () => {
+    // A stale form: the operator switched member (or the period was deleted).
+    // Without the ownership check this would re-price m1's period and then
+    // recompute m2's dues from it.
+    await expect(
+      editMembershipPeriod({ periodId: 'ms-1', memberId: 'm2', patch: { price: 9999 } })
+    ).rejects.toThrow('Membership period not found')
+
+    const doc = __store.memberships.find((m) => m.id === 'ms-1')
+    expect(doc.price).toBe(12000)
+  })
+
   it('throws on missing periodId', async () => {
     await expect(
       editMembershipPeriod({ periodId: '', memberId: 'm1', patch: { price: 100 } })
