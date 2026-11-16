@@ -21,6 +21,7 @@
  */
 import { onSchedule } from 'firebase-functions/v2/scheduler'
 import { firestore, storage } from './projection/admin.js'
+import { exportAllCollections } from './projection/backup.js'
 import { runExpiryReminderJob, REMINDER_WINDOW_DAYS } from './projection/reminders.js'
 
 /**
@@ -44,18 +45,18 @@ export const dailyBackup = onSchedule(
   async () => {
     const db = firestore()
     const dateFolder = new Date().toISOString().slice(0, 10)
-    const collections = await db.listCollections()
+    // One export path for the job and the restore drill: a drill that verified
+    // different code from the one that backs up would prove nothing.
+    const dump = await exportAllCollections(db)
 
-    for (const col of collections) {
-      const snap = await col.get()
-      const data = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+    for (const [name, data] of Object.entries(dump)) {
       const bucket = storage().bucket()
-      const file = bucket.file(`${STORAGE_BACKUP_PREFIX}/${dateFolder}/${col.id}.json`)
+      const file = bucket.file(`${STORAGE_BACKUP_PREFIX}/${dateFolder}/${name}.json`)
       await file.save(JSON.stringify(data, null, 2), {
         contentType: 'application/json',
         resumable: false,
       })
-      console.log(`Backed up ${col.id}: ${data.length} docs`)
+      console.log(`Backed up ${name}: ${data.length} docs`)
     }
 
     await db.collection('auditLog').add({

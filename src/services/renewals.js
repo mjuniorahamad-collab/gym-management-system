@@ -23,6 +23,7 @@ import {
   receiptCounterId,
 } from './receipts'
 import { requireReceiptPrefix } from './receiptPrefixGuard'
+import { assertOnline } from './connectivity'
 
 function requireValidPlan(plan) {
   if (!plan || !plan.id) throw new Error('Select a valid membership plan')
@@ -109,6 +110,7 @@ export async function renewMembership({
   currency = 'INR',
 }) {
   if (!member || !member.id) throw new Error('A valid member is required to renew')
+  assertOnline('Recording a renewal')
   const { price: basePrice } = requireValidPlan(plan)
   const paid = requirePaidAmount(paidAmount)
   // Payment date = when money was actually received. It is stored on the

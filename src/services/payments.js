@@ -15,6 +15,7 @@ import {
   receiptCounterId,
 } from './receipts'
 import { requireReceiptPrefix } from './receiptPrefixGuard'
+import { assertOnline } from './connectivity'
 
 /**
  * Recompute every membership-period snapshot (amountPaid / amountDue /
@@ -87,6 +88,10 @@ export async function recordPayment({
   receiptPrefix: suppliedPrefix,
   type = 'membership',
 }) {
+  // Before a receipt number is minted or anything is staged: an offline write
+  // would be queued by the SDK and land later against a ledger that moved on.
+  assertOnline('Recording a payment')
+
   const amount = safePaymentAmount(values.amount)
   // Resolved before anything is written: the authoritative prefix lives on
   // gyms/{gymId}, and a caller holding the settings mirror is only trusted
@@ -184,6 +189,7 @@ export async function recordPayment({
  */
 export async function deletePayment({ payment }) {
   if (!payment?.id) throw new Error('A payment reference is required')
+  assertOnline('Deleting a payment')
 
   const attempt = async (inputs) => {
     const patches = inputs

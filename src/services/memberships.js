@@ -8,6 +8,7 @@ import {
   withLedgerRevision,
 } from './memberLedger'
 import { requestReprojection } from './projection'
+import { assertOnline } from './connectivity'
 import { getMembershipCharge, getEffectivePtSurcharge } from '@/utils/pt'
 
 /**
@@ -65,6 +66,7 @@ export async function applyPTInclusivePriceToPeriod({
 }) {
   if (!periodId) throw new Error('A period ID is required')
   if (!memberId) throw new Error('A member ID is required')
+  assertOnline('Applying a PT price')
 
   const attempt = async (inputs) => {
     const period = inputs.memberships.find((p) => p.id === periodId) || null
@@ -143,6 +145,7 @@ export async function editMembershipPeriod({ periodId, memberId, patch }) {
     if (key in patch) safe[key] = patch[key]
   }
   if (Object.keys(safe).length === 0) throw new Error('No valid fields to update')
+  assertOnline('Editing a membership period')
 
   await withLedgerRevision(memberId, async (inputs) => {
     // Ownership first: the period must be one of THIS member's periods.
@@ -186,6 +189,7 @@ export async function editMembershipPeriod({ periodId, memberId, patch }) {
 export async function deleteMembershipPeriod({ periodId, memberId }) {
   if (!periodId) throw new Error('A period ID is required')
   if (!memberId) throw new Error('A member ID is required')
+  assertOnline('Deleting a membership period')
 
   // Everything this operation decides from — the period's payments and the
   // member's ledger — is read per attempt, inside the revision guard: a
