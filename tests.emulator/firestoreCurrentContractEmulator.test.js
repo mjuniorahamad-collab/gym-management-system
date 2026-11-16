@@ -1,27 +1,32 @@
 /**
- * CURRENT CONTRACT — the scenarios the frozen baseline pins the OLD behaviour of.
+ * CURRENT CONTRACT — the frozen baseline's scenarios, expressed against today's rules.
  *
- * `tests.emulator/firestoreSecurityEmulator.test.js` is a Phase 0.5A record of
- * the rules as they were before tenancy and field hardening; its 26 red
- * assertions describe what the old ruleset permitted (or wrongly required).
- * That file is deliberately kept as-is and runs only in the non-gating CI job.
+ * `tests.emulator/firestoreSecurityEmulator.test.js` is a Phase 0.5A record of the
+ * rules as they were before tenancy and field hardening; its 26 red assertions
+ * describe what the old ruleset permitted (or wrongly required). That file is
+ * deliberately kept as-is and runs only in the non-gating CI job.
  *
- * This file is the same 26 scenarios expressed against TODAY'S rules, so the
- * security intent has a green, gating test instead of only a red historical one:
+ * This file closes the one thing that was still missing: a GREEN, gating test for
+ * the security intent. It deliberately does NOT duplicate the intents that
+ * already have green, gating assertions elsewhere — after review, 13 of the 26
+ * stayed here and the rest are mapped to their existing owner below. Adding a
+ * second copy would only make two tests fail together and neither explain which
+ * one is canonical.
  *
- *   - the 14 "an unscoped/foreign-filtered query must FAIL" assertions become
- *     CONTAINMENT assertions — Firestore never rejects a list because some
- *     documents are off-limits (rules are not filters), so the contract is
- *     "the query succeeds and returns nothing from another tenant";
- *   - the 3 `payments.create` assertions gain the `receiptNo` the rules now
- *     require (under the gym's own prefix), and the negative cases are pinned
- *     beside them;
- *   - the 5 `bookings.create` assertions seed the member and class they
- *     reference, which the rules now require to exist in the caller's gym;
- *   - the 3 `member.status` assertions become DENIALS (server-owned projection
- *     field) with a control write proving the denial is about that field;
- *   - the `settings/app` singleton assertion becomes per-gym settings isolation
- *     (`gyms/{gymId}/settings/app`), which replaced the shared document.
+ *   frozen scenario                          | asserted green in
+ *   -----------------------------------------|------------------------------------------------
+ *   J1 ×11 (unscoped collection read)        | HERE — "query isolation" (11 collections)
+ *   J5  (filter aimed at a foreign tenant)   | HERE — same block, second assertion
+ *   E8  (audit log enumeration)              | HERE
+ *   F12 (staff cancel their own gym booking) | HERE
+ *   F1–F4 (each staff role books own gym)    | firestoreSecurityRemediation: "every staff role,
+ *                                            |   trainer included, can still book inside their own gym"
+ *   F forged/foreign/missing booking refs    | firestoreSecurityRemediation: booking tenant block
+ *   SEC-M payments.create (needs receiptNo)  | firestoreReceiptIntegrityEmulator (owner/admin allow,
+ *                                            |   foreign prefix, missing number, non-finance, immutable)
+ *   SEC-I member.status (server-owned)       | firestoreSecurityRemediation: "CURRENT POLICY" block
+ *                                            |   + "members.write roles keep every other field writable"
+ *   SEC-C C6/C7 (settings singleton)         | firestoreSecurityRemediation: per-gym settings block
  *
  * Every id is `cc-` prefixed and every gym is unique, because the emulator
  * database is shared with the other suites.
@@ -53,16 +58,13 @@ const rules = readFileSync(join(process.cwd(), 'firestore.rules'), 'utf8')
 
 const GYM_A = 'cc-gym-a'
 const GYM_B = 'cc-gym-b'
-const PREFIX_A = 'CCA'
-const PREFIX_B = 'CCB'
 
 const OWNER_A = 'cc-owner-a'
-const ADMIN_A = 'cc-admin-a'
 const FRONTDESK_A = 'cc-frontdesk-a'
 const TRAINER_A = 'cc-trainer-a'
 const OWNER_B = 'cc-owner-b'
 
-/** One doc per gym per collection, so an unscoped read has something to leak. */
+/** One doc per gym per collection, so a leaked read has something to reveal. */
 const COLLECTIONS = [
   'members',
   'payments',
@@ -81,7 +83,6 @@ const tenantDoc = (gymId) => ({ gymId, createdAt: new Date() })
 
 let env
 let dbA
-let dbAdminA
 let dbFrontdeskA
 let dbTrainerA
 let dbB
@@ -90,23 +91,15 @@ async function seed() {
   await env.withSecurityRulesDisabled(async (ctx) => {
     const fs = ctx.firestore()
 
-    for (const [gymId, ownerUid, name, receiptPrefix] of [
-      [GYM_A, OWNER_A, 'Current Contract Gym A', PREFIX_A],
-      [GYM_B, OWNER_B, 'Current Contract Gym B', PREFIX_B],
+    for (const [gymId, ownerUid, name] of [
+      [GYM_A, OWNER_A, 'Current Contract Gym A'],
+      [GYM_B, OWNER_B, 'Current Contract Gym B'],
     ]) {
-      await fs.doc(`gyms/${gymId}`).set({ ownerUid, name, receiptPrefix, createdAt: new Date() })
-      await fs.doc(`gyms/${gymId}/settings/app`).set({
-        gymId,
-        gymName: name,
-        currency: 'INR',
-        receiptPrefix,
-        createdAt: new Date(),
-      })
+      await fs.doc(`gyms/${gymId}`).set({ ownerUid, name, createdAt: new Date() })
     }
 
     for (const [uid, role, gymId] of [
       [OWNER_A, 'owner', GYM_A],
-      [ADMIN_A, 'admin', GYM_A],
       [FRONTDESK_A, 'front-desk', GYM_A],
       [TRAINER_A, 'trainer', GYM_A],
       [OWNER_B, 'owner', GYM_B],
@@ -114,12 +107,12 @@ async function seed() {
       await fs.doc(`users/${uid}`).set({ role, gymId, createdAt: new Date() })
     }
 
-    // A member and a class in each gym: bookings now require both to exist in
-    // the caller's own gym.
-    await fs.doc(`members/cc-member-a`).set({ name: 'Member A', phone: '9000000001', ...tenantDoc(GYM_A) })
-    await fs.doc(`members/cc-member-b`).set({ name: 'Member B', phone: '9000000002', ...tenantDoc(GYM_B) })
-    await fs.doc(`classes/cc-class-a`).set({ name: 'Class A', ...tenantDoc(GYM_A) })
-    await fs.doc(`classes/cc-class-b`).set({ name: 'Class B', ...tenantDoc(GYM_B) })
+    // A member and a class in gym A: the booking cancel needs a real booking.
+    await fs.doc('members/cc-member-a').set({ name: 'Member A', ...tenantDoc(GYM_A) })
+    await fs.doc('classes/cc-class-a').set({ name: 'Class A', ...tenantDoc(GYM_A) })
+    await fs
+      .doc('bookings/cc-booking-a')
+      .set({ memberId: 'cc-member-a', classId: 'cc-class-a', date: '2026-03-01', status: 'booked', ...tenantDoc(GYM_A) })
 
     for (const name of COLLECTIONS) {
       await fs.doc(`${name}/cc-${name}-a`).set({ ...tenantDoc(GYM_A) })
@@ -139,7 +132,6 @@ beforeAll(async () => {
   })
   await seed()
   dbA = env.authenticatedContext(OWNER_A).firestore()
-  dbAdminA = env.authenticatedContext(ADMIN_A).firestore()
   dbFrontdeskA = env.authenticatedContext(FRONTDESK_A).firestore()
   dbTrainerA = env.authenticatedContext(TRAINER_A).firestore()
   dbB = env.authenticatedContext(OWNER_B).firestore()
@@ -170,10 +162,10 @@ describe('query isolation — the app-shaped scoped query (frozen J1/J5/E8)', ()
    * fidelity limit, not a rules decision — production evaluates the rule per
    * document, where a foreign document fails both `sameGym` and `legacy`.
    *
-   * What is enforceable, and what the app actually relies on, is asserted below:
+   * What is enforceable, and what the app actually relies on, is asserted here:
    * every read goes through a `gymId` equality filter (`listAll` adds
    * `where('gymId','==',callerGym)`), that scoped query returns only the caller's
-   * documents, and a query/filter aimed at another tenant is DENIED.
+   * documents, and a query aimed at another tenant is DENIED.
    */
   for (const name of COLLECTIONS) {
     it(`a gym-scoped ${name} query returns this gym's rows and no other tenant's`, async () => {
@@ -201,133 +193,30 @@ describe('query isolation — the app-shaped scoped query (frozen J1/J5/E8)', ()
     await assertFails(
       getDocs(query(collection(dbA, 'auditLog'), where('gymId', '==', GYM_B)))
     )
-    // A trainer is staff but not finance: no audit log at all.
+    // A trainer is staff but not finance: no audit log, list or direct read.
     await assertFails(getDocs(query(collection(dbTrainerA, 'auditLog'), where('gymId', '==', GYM_A))))
-    // ...and the direct read of the caller's own audit row is not a substitute.
     await assertFails(getDoc(doc(dbTrainerA, 'auditLog/cc-audit-a')))
   })
 })
 
-describe('settings are per gym (frozen C6/C7)', () => {
-  it('the owner renames only their own gym, and another owner cannot read it', async () => {
-    await assertSucceeds(updateDoc(doc(dbA, `gyms/${GYM_A}/settings/app`), { gymName: 'Renamed A' }))
-
-    await assertFails(getDoc(doc(dbB, `gyms/${GYM_A}/settings/app`)))
-
-    const own = await assertSucceeds(getDoc(doc(dbA, `gyms/${GYM_A}/settings/app`)))
-    expect(own.data().gymName).toBe('Renamed A')
-  })
-
-  it("another gym's settings are untouched by that write", async () => {
-    const own = await assertSucceeds(getDoc(doc(dbB, `gyms/${GYM_B}/settings/app`)))
-    expect(own.data()).toMatchObject({ gymId: GYM_B, gymName: 'Current Contract Gym B' })
-
-    // Only the owner may write settings, and only their own gym's document.
-    await assertFails(updateDoc(doc(dbFrontdeskA, `gyms/${GYM_A}/settings/app`), { gymName: 'x' }))
-    await assertFails(updateDoc(doc(dbA, `gyms/${GYM_B}/settings/app`), { gymName: 'x' }))
-  })
-})
-
-describe('member.status is server-owned (frozen SEC-I)', () => {
-  for (const [label, context] of [
-    ['owner', () => dbA],
-    ['admin', () => dbAdminA],
-    ['front-desk', () => dbFrontdeskA],
-  ]) {
-    it(`the ${label} cannot write member.status, but can edit an ordinary field`, async () => {
-      const db = context()
-      // members.write is granted to these roles, and it still does not include
-      // the projection field: the server derives it from the ledger.
-      await assertFails(updateDoc(doc(db, 'members/cc-member-a'), { status: 'expired' }))
-
-      // Control: the denial is about the field, not about the whole document.
-      await assertSucceeds(updateDoc(doc(db, 'members/cc-member-a'), { phone: '9111111111' }))
-    })
-  }
-})
-
-describe('bookings: staff CRUD inside their own gym (frozen SEC-F)', () => {
-  const booking = (over = {}) => ({
-    memberId: 'cc-member-a',
-    classId: 'cc-class-a',
-    date: '2026-03-01',
-    status: 'booked',
-    gymId: GYM_A,
-    ...over,
-  })
-
-  for (const [label, context] of [
-    ['owner', () => dbA],
-    ['admin', () => dbAdminA],
-    ['trainer', () => dbTrainerA],
-    ['front-desk', () => dbFrontdeskA],
-  ]) {
-    it(`${label} creates a booking for an existing member and class of their gym`, async () => {
-      const ref = await assertSucceeds(addDoc(collection(context(), 'bookings'), booking()))
-      expect(ref.id).toBeTruthy()
-    })
-  }
-
-  it('a staff member manages and cancels any booking inside their own gym', async () => {
-    const created = await assertSucceeds(addDoc(collection(dbFrontdeskA, 'bookings'), booking()))
-    await assertSucceeds(updateDoc(doc(dbFrontdeskA, `bookings/${created.id}`), { status: 'cancelled' }))
+describe('bookings: staff manage their own gym (frozen F12)', () => {
+  it('front-desk cancels a booking inside their own gym', async () => {
+    // The create paths and the forged/foreign references are covered by
+    // firestoreSecurityRemediation's booking block; what the frozen baseline
+    // pinned here and nothing else asserted is the manage/cancel path.
+    const created = await assertSucceeds(
+      addDoc(collection(dbFrontdeskA, 'bookings'), {
+        memberId: 'cc-member-a',
+        classId: 'cc-class-a',
+        date: '2026-03-02',
+        status: 'booked',
+        gymId: GYM_A,
+      })
+    )
+    await assertSucceeds(
+      updateDoc(doc(dbFrontdeskA, `bookings/${created.id}`), { status: 'cancelled' })
+    )
     const stored = await assertSucceeds(getDoc(doc(dbA, `bookings/${created.id}`)))
     expect(stored.data().status).toBe('cancelled')
-  })
-
-  it('a booking whose member or class belongs to another gym is refused', async () => {
-    // The referenced documents must exist in the CALLER's gym; a member id from
-    // another tenant is rejected (the frozen baseline failed to seed either).
-    await assertFails(
-      addDoc(collection(dbA, 'bookings'), booking({ memberId: 'cc-member-b' }))
-    )
-    await assertFails(addDoc(collection(dbA, 'bookings'), booking({ classId: 'cc-class-b' })))
-    // A reference that does not exist at all is refused too.
-    await assertFails(addDoc(collection(dbA, 'bookings'), booking({ memberId: 'cc-nobody' })))
-    // Cross-tenant writes are refused on tenancy alone.
-    await assertFails(
-      addDoc(collection(dbA, 'bookings'), booking({ gymId: GYM_B, memberId: 'cc-member-b', classId: 'cc-class-b' }))
-    )
-  })
-})
-
-describe('payments: receipt integrity on create (frozen SEC-M)', () => {
-  const payment = (over = {}) => ({
-    memberId: 'cc-member-a',
-    amount: 2000,
-    method: 'Cash',
-    date: '2026-01-05',
-    type: 'membership',
-    receiptNo: `${PREFIX_A}-000101`,
-    gymId: GYM_A,
-    ...over,
-  })
-
-  for (const [label, context] of [
-    ['owner', () => dbA],
-    ['admin', () => dbAdminA],
-  ]) {
-    it(`${label} of the gym creates a payment with a receipt under the gym's prefix`, async () => {
-      const ref = await assertSucceeds(addDoc(collection(context(), 'payments'), payment()))
-      expect(ref.id).toBeTruthy()
-    })
-  }
-
-  it('refuses a payment without a receipt number, under a foreign prefix, or for another gym', async () => {
-    // The receipt number became mandatory when the counter was introduced.
-    const withoutReceipt = payment()
-    delete withoutReceipt.receiptNo
-    await assertFails(addDoc(collection(dbA, 'payments'), withoutReceipt))
-    // A number minted under another gym's prefix is not this gym's receipt.
-    await assertFails(addDoc(collection(dbA, 'payments'), payment({ receiptNo: `${PREFIX_B}-000101` })))
-    // Tenancy: the payment must belong to the caller's gym.
-    await assertFails(addDoc(collection(dbA, 'payments'), payment({ gymId: GYM_B })))
-    // And the receipt number is immutable once written.
-    const ref = await assertSucceeds(addDoc(collection(dbA, 'payments'), payment()))
-    await assertFails(updateDoc(doc(dbA, `payments/${ref.id}`), { receiptNo: `${PREFIX_A}-000999` }))
-  })
-
-  it('a trainer (not finance) cannot create a payment', async () => {
-    await assertFails(addDoc(collection(dbTrainerA, 'payments'), payment()))
   })
 })
