@@ -61,7 +61,8 @@ vi.mock('@/services/projection', () => ({
 const { setGymId } = await import('@/services/ownerContext')
 const { commitAtomically } = await import('@/services/firestore')
 const { assertLedgerFresh, readLedgerSnapshot } = await import('@/services/memberLedger')
-const { recordPayment } = await import('@/services/payments')
+const { recordPayment, refreshMembershipSnapshots } = await import('@/services/payments')
+const { editMembershipPeriod } = await import('@/services/memberships')
 const { __resetReceiptSeedCache } = await import('@/services/receipts')
 const { __resetTenantReceiptPrefixCache } = await import('@/services/receiptPrefixGuard')
 
@@ -251,5 +252,81 @@ describe('ledger isolation — the figures cannot be stale', () => {
 
     // Both writers took part in the revision protocol.
     expect(await readRaw(`members/${ids.memberId}`)).toMatchObject({ ledgerRevision: 2 })
+  })
+
+  it('commits a period edit together with the dues it implies, and bumps the revision', async () => {
+    const ids = freshIds()
+    await seed(ids)
+    setGymId(ids.gymId)
+
+    await editMembershipPeriod({ periodId: ids.periodId, memberId: ids.memberId, patch: { price: 2500 } })
+
+    // The period's OWN dues follow the edit: before it was 2000, now 2500.
+    expect(await readRaw(`memberships/${ids.periodId}`)).toMatchObject({
+      price: 2500,
+      amountPaid: 0,
+      amountDue: 2500,
+      paymentStatus: 'due',
+    })
+    expect(await readRaw(`members/${ids.memberId}`)).toMatchObject({ ledgerRevision: 1 })
+  })
+
+  it('does not let a price edit overwrite a payment taken at the same time', async () => {
+    const ids = freshIds()
+    await seed(ids)
+    setGymId(ids.gymId)
+
+    // The operator re-prices the period while the desk takes ₹1000 for it.
+    await Promise.all([
+      recordPayment({
+        values: paymentValues(ids, { amount: 1000 }),
+        memberName: 'Imran Shah',
+        receiptPrefix: PREFIX,
+      }),
+      editMembershipPeriod({ periodId: ids.periodId, memberId: ids.memberId, patch: { price: 2500 } }),
+    ])
+
+    // Whichever landed first, the stored figures describe BOTH facts: the new
+    // price and the money actually received. A pre-payment recompute would have
+    // said "2500 due, nothing paid".
+    const period = await readRaw(`memberships/${ids.periodId}`)
+    expect(period).toMatchObject({ price: 2500, amountPaid: 1000, amountDue: 1500, paymentStatus: 'partial' })
+
+    const payments = await getDocs(
+      query(collection(fb.db, 'payments'), where('gymId', '==', ids.gymId))
+    )
+    const ledger = computeMemberLedger({
+      member: await readRaw(`members/${ids.memberId}`),
+      plans: [await readRaw(`membershipPlans/${ids.planId}`)],
+      payments: payments.docs.map((d) => ({ id: d.id, ...d.data() })),
+      memberships: [period],
+    })
+    const expected = ledger.periods.find((p) => p.id === ids.periodId)
+    expect(period.amountPaid).toBe(expected.paid)
+    expect(period.amountDue).toBe(expected.due)
+  })
+
+  it('repairs a drifted snapshot on the same guard, and a no-op refresh writes nothing', async () => {
+    const ids = freshIds()
+    await seed(ids)
+    // A snapshot that does not match the ledger: the period claims ₹500 paid,
+    // but there is no payment on record.
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      await ctx.firestore().doc(`memberships/${ids.periodId}`).update({
+        amountPaid: 500,
+        amountDue: 1500,
+        paymentStatus: 'partial',
+      })
+    })
+    setGymId(ids.gymId)
+
+    const written = await refreshMembershipSnapshots(ids.memberId)
+    expect(written).toEqual([{ id: ids.periodId, amountPaid: 0, amountDue: PRICE, paymentStatus: 'due' }])
+    expect(await readRaw(`members/${ids.memberId}`)).toMatchObject({ ledgerRevision: 1 })
+
+    // Already correct: no writes, so no revision bump for other terminals to
+    // retry against.
+    expect(await refreshMembershipSnapshots(ids.memberId)).toEqual([])
+    expect(await readRaw(`members/${ids.memberId}`)).toMatchObject({ ledgerRevision: 1 })
   })
 })

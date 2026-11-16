@@ -1,10 +1,9 @@
-import { commitAtomically, getById, updateDocById } from './firestore'
+import { commitAtomically, getById } from './firestore'
 import { logAudit } from './audit'
 import {
   asWritten,
   assertLedgerFresh,
   bumpLedgerRevision,
-  readLedgerInputs,
   snapshotPatches,
   withLedgerRevision,
 } from './memberLedger'
@@ -22,19 +21,34 @@ import { requireReceiptPrefix } from './receiptPrefixGuard'
  * paymentStatus) for one member from the finance ledger — the same single
  * source of truth used by all UI screens — without touching a payment.
  *
- * `recordPayment`/`deletePayment` do this inside their own transaction; this
- * entry point is for the period-editing flows (PT pricing, period edits,
- * period deletion), which do not move money themselves.
+ * Runs on the same ledger-revision guard as the money paths: the figures are
+ * computed from one read, the transaction refuses to write them if the member's
+ * ledger moved in the meantime, and the retry recomputes from the new history.
+ * A repair therefore cannot overwrite a payment recorded a second earlier —
+ * which is exactly what the old "recompute, then write each period" loop could
+ * do.
  *
  * Returns the list of period snapshots that were written.
  */
 export async function refreshMembershipSnapshots(memberId) {
   if (!memberId) return []
-  const patches = snapshotPatches(await readLedgerInputs(memberId))
-  for (const patch of patches) {
-    await updateDocById('memberships', patch.id, patch.fields)
+
+  const attempt = async (inputs) => {
+    const patches = snapshotPatches(inputs)
+    // Nothing to write, nothing to guard: a no-op refresh must not bump the
+    // revision and make every other terminal retry.
+    if (patches.length === 0) return patches
+
+    await commitAtomically(async (tx) => {
+      await assertLedgerFresh(tx, memberId, inputs.revision)
+      bumpLedgerRevision(tx, memberId, inputs.revision)
+      for (const patch of patches) tx.update('memberships', patch.id, patch.fields)
+    })
+
+    return patches
   }
-  return asWritten(patches)
+
+  return asWritten(await withLedgerRevision(memberId, attempt))
 }
 
 /**

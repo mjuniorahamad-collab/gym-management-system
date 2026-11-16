@@ -1,4 +1,4 @@
-import { commitAtomically, getById, listAll, updateDocById } from './firestore'
+import { commitAtomically, listAll } from './firestore'
 import { logAudit } from './audit'
 import {
   asWritten,
@@ -7,9 +7,36 @@ import {
   snapshotPatches,
   withLedgerRevision,
 } from './memberLedger'
-import { refreshMembershipSnapshots } from './payments'
 import { requestReprojection } from './projection'
 import { getMembershipCharge, getEffectivePtSurcharge } from '@/utils/pt'
+
+/**
+ * ONE guarded transaction for a period edit: the period's own patch, the
+ * snapshots the ledger now implies for every one of the member's periods, and
+ * the revision bump that tells other writers the ledger moved.
+ *
+ * One update per document: the edited period's own recomputed figures are
+ * merged into its patch instead of being written twice.
+ */
+async function writePeriodAndSnapshots({ memberId, inputs, periodId, patch }) {
+  // The period as it will be once the patch lands, so its own dues are
+  // recomputed too and not only its siblings'.
+  const patched = inputs.memberships.map((p) => (p.id === periodId ? { ...p, ...patch } : p))
+  const snapshots = snapshotPatches({ ...inputs, memberships: patched })
+
+  const fieldsById = new Map()
+  for (const snapshot of snapshots) fieldsById.set(snapshot.id, { ...snapshot.fields })
+  fieldsById.set(periodId, { ...(fieldsById.get(periodId) || {}), ...patch })
+
+  await commitAtomically(async (tx) => {
+    // First read: the figures above are only valid while the ledger holds.
+    await assertLedgerFresh(tx, memberId, inputs.revision)
+    for (const [id, fields] of fieldsById) tx.update('memberships', id, fields)
+    bumpLedgerRevision(tx, memberId, inputs.revision)
+  })
+
+  return snapshots
+}
 
 /**
  * Apply PT-inclusive pricing to ONE membership period (the owner's explicit,
@@ -21,6 +48,11 @@ import { getMembershipCharge, getEffectivePtSurcharge } from '@/utils/pt'
  * record (basePrice / ptSurcharge / isPT), and recomputes that member's dues
  * from the finance ledger. It NEVER touches older or closed periods, and
  * NEVER rewrites a payment record.
+ *
+ * The re-price and the recomputed figures are ONE guarded transaction: the
+ * period's own `amountDue` follows its new price, and a payment recorded while
+ * the operator was on the form cannot be overwritten by the figures computed
+ * before it landed.
  *
  * Returns the updated period document. Throws on invalid input or write failure.
  */
@@ -34,31 +66,41 @@ export async function applyPTInclusivePriceToPeriod({
   if (!periodId) throw new Error('A period ID is required')
   if (!memberId) throw new Error('A member ID is required')
 
-  const period = await getById('memberships', periodId)
-  if (!period) throw new Error('Membership period not found')
-  if (period.memberId !== memberId) throw new Error('Period does not belong to this member')
+  const attempt = async (inputs) => {
+    const period = inputs.memberships.find((p) => p.id === periodId) || null
+    if (!period) throw new Error('Membership period not found')
+    if (period.memberId !== memberId) throw new Error('Period does not belong to this member')
 
-  const plans = await listAll('membershipPlans')
-  const plan = plans.find((p) => String(p.id) === String(period.planId)) || null
+    const plan = inputs.plans.find((p) => String(p.id) === String(period.planId)) || null
 
-  let charge
-  if (plan) {
-    charge = getMembershipCharge({ plan, isPT, ptSurcharge, ptSurchargeOverride })
-  } else {
-    const rawBase = Number(period.price)
-    const base = Number.isFinite(rawBase) && rawBase > 0 ? rawBase : 0
-    const addon = isPT ? getEffectivePtSurcharge({ ptSurcharge, ptSurchargeOverride }) : 0
-    charge = { base, addon, total: base + addon }
+    let charge
+    if (plan) {
+      charge = getMembershipCharge({ plan, isPT, ptSurcharge, ptSurchargeOverride })
+    } else {
+      const rawBase = Number(period.price)
+      const base = Number.isFinite(rawBase) && rawBase > 0 ? rawBase : 0
+      const addon = isPT ? getEffectivePtSurcharge({ ptSurcharge, ptSurchargeOverride }) : 0
+      charge = { base, addon, total: base + addon }
+    }
+
+    const patch = {
+      price: charge.total,
+      basePrice: charge.base,
+      ptSurcharge: charge.addon,
+      isPT: Boolean(isPT),
+    }
+
+    await writePeriodAndSnapshots({
+      memberId,
+      inputs,
+      periodId,
+      patch,
+    })
+
+    return { period, patch }
   }
 
-  const patch = {
-    price: charge.total,
-    basePrice: charge.base,
-    ptSurcharge: charge.addon,
-    isPT: Boolean(isPT),
-  }
-  await updateDocById('memberships', periodId, patch)
-  await refreshMembershipSnapshots(memberId)
+  const { period, patch } = await withLedgerRevision(memberId, attempt)
 
   // The period changed, so the member's projection is now stale. The browser
   // never writes it; it asks the server to. Never awaited-thrown — see
@@ -78,8 +120,10 @@ export async function applyPTInclusivePriceToPeriod({
 /**
  * Edit an existing membership period's plan, price, start/expiry dates.
  *
- * After writing the patch, ALL period snapshots for this member are
- * recomputed from the finance ledger so payment allocations stay correct.
+ * The patch and ALL of this member's recomputed period snapshots are written in
+ * ONE guarded transaction — the dates/price a payment is allocated against and
+ * the resulting dues can never disagree, and a payment recorded while the form
+ * was open survives instead of being overwritten by pre-payment figures.
  *
  * Returns the updated document. Throws on invalid input or write failure.
  */
@@ -95,8 +139,9 @@ export async function editMembershipPeriod({ periodId, memberId, patch }) {
   }
   if (Object.keys(safe).length === 0) throw new Error('No valid fields to update')
 
-  await updateDocById('memberships', periodId, safe)
-  await refreshMembershipSnapshots(memberId)
+  await withLedgerRevision(memberId, async (inputs) => {
+    await writePeriodAndSnapshots({ memberId, inputs, periodId, patch: safe })
+  })
   await requestReprojection(memberId)
 
   await logAudit({
