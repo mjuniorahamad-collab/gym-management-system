@@ -1,6 +1,7 @@
 import { useMemo, useState, useEffect } from 'react'
 import { CreditCard, DollarSign, Plus, Receipt as ReceiptIcon, TrendingUp, Trash2 } from 'lucide-react'
 import { useCollection } from '@/hooks/useFirestore'
+import { useOnline } from '@/hooks/useOnline'
 import { recordPayment, deletePayment } from '@/services/payments'
 import { requireReceiptPrefix } from '@/services/receiptPrefixGuard'
 import { getPtSurcharge } from '@/services/pt'
@@ -33,6 +34,7 @@ export default function Payments() {
   const { can } = useAuth()
   const { settings } = useSettings()
   const toast = useToast()
+  const online = useOnline()
 
   const { items: payments, loading, error, reload } = useCollection('payments')
   const { items: members } = useCollection('members')
@@ -136,6 +138,8 @@ export default function Payments() {
         actions={
           canWrite && (
             <Button
+              disabled={!online}
+              title={online ? undefined : 'Unavailable while offline'}
               onClick={() => {
                 setReceipt(null)
                 setFormOpen(true)
@@ -220,7 +224,8 @@ export default function Payments() {
                                 variant="ghost"
                                 size="icon"
                                 className="text-red-500 hover:bg-red-50 dark:hover:bg-red-500/10"
-                                title="Delete"
+                                title={online ? 'Delete' : 'Unavailable while offline'}
+                                disabled={!online}
                                 onClick={() => setDeleting(p)}
                               >
                                 <Trash2 size={16} />

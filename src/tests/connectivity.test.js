@@ -15,7 +15,9 @@ vi.mock('@/firebase', () => ({
   db: null,
 }))
 
-const { OfflineError, assertOnline, isOffline } = await import('@/services/connectivity')
+const { OfflineError, assertOnline, isOffline, isOfflineError } = await import(
+  '@/services/connectivity'
+)
 
 const setOnLine = (value) => {
   Object.defineProperty(globalThis.navigator, 'onLine', { value, configurable: true })
@@ -47,6 +49,15 @@ describe('isOffline', () => {
     expect(isOffline()).toBe(false)
     expect(() => assertOnline('Recording a payment')).not.toThrow()
   })
+
+  it('stays false when the browser exposes no usable onLine flag', () => {
+    // Older embedded webviews omit it. "Unknown" must not be treated as offline,
+    // because that would disable every money action on a working connection.
+    const original = Object.getOwnPropertyDescriptor(globalThis.navigator, 'onLine')
+    Object.defineProperty(globalThis.navigator, 'onLine', { value: undefined, configurable: true })
+    expect(isOffline()).toBe(false)
+    if (original) Object.defineProperty(globalThis.navigator, 'onLine', original)
+  })
 })
 
 describe('assertOnline', () => {
@@ -69,6 +80,28 @@ describe('assertOnline', () => {
   it('does nothing while online', () => {
     setOnLine(true)
     expect(() => assertOnline('Recording a payment')).not.toThrow()
+  })
+})
+
+describe('isOfflineError', () => {
+  it('recognises the refusal by class, name or code', () => {
+    setOnLine(false)
+    let thrown = null
+    try {
+      assertOnline('Recording a payment')
+    } catch (err) {
+      thrown = err
+    }
+    expect(isOfflineError(thrown)).toBe(true)
+    // A page in another chunk can hold its own copy of the class.
+    expect(isOfflineError({ code: 'offline' })).toBe(true)
+    expect(isOfflineError({ name: 'OfflineError', message: 'x' })).toBe(true)
+  })
+
+  it('does not claim an ordinary failure is an offline failure', () => {
+    expect(isOfflineError(new Error('validation failed'))).toBe(false)
+    expect(isOfflineError(undefined)).toBe(false)
+    expect(isOfflineError(null)).toBe(false)
   })
 })
 

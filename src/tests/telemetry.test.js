@@ -1,12 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import {
-  __resetErrorReporter,
-  reportError,
-  setErrorReporter,
-} from '@/services/telemetry'
+import { reportError, setErrorReporter } from '@/services/telemetry'
 
 afterEach(() => {
-  __resetErrorReporter()
+  setErrorReporter(null)
   vi.restoreAllMocks()
 })
 
@@ -14,7 +10,6 @@ describe('reportError', () => {
   it('sends the error and its context to the installed reporter', () => {
     const reporter = vi.fn()
     setErrorReporter(reporter)
-    vi.spyOn(console, 'error').mockImplementation(() => {})
 
     const error = new Error('boom')
     const payload = reportError(error, { source: 'ErrorBoundary' })
@@ -27,25 +22,36 @@ describe('reportError', () => {
     expect(payload.message).toBe('boom')
   })
 
-  it('never throws when the reporter itself throws', () => {
+  it('does not also log to the console when a provider is installed', () => {
+    setErrorReporter(() => {})
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    reportError(new Error('once only'))
+    expect(logged).not.toHaveBeenCalled()
+  })
+
+  it('falls back to the console when the provider throws, instead of swallowing the error', () => {
     setErrorReporter(() => {
       throw new Error('provider down')
     })
-    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
 
     expect(() => reportError(new Error('original'))).not.toThrow()
+    expect(logged).toHaveBeenCalledTimes(1)
+    expect(logged.mock.calls[0][1]).toBe('original')
   })
 
   it('still logs when no provider is installed, so development is unchanged', () => {
     const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
     reportError('string failure')
-    expect(logged).toHaveBeenCalled()
+    expect(logged).toHaveBeenCalledTimes(1)
     expect(logged.mock.calls[0][1]).toBe('string failure')
   })
 
   it('treats a non-function reporter as "no provider"', () => {
     expect(setErrorReporter('nope')).toBeNull()
-    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
     expect(() => reportError(new Error('x'))).not.toThrow()
+    expect(logged).toHaveBeenCalledTimes(1)
   })
 })

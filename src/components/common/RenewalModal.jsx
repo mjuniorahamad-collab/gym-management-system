@@ -10,6 +10,8 @@ import { Select } from '@/components/ui/Select'
 import { Button } from '@/components/ui/Button'
 import { Badge, StatusBadge } from '@/components/ui/Badge'
 import { useToast } from '@/context/ToastContext'
+import { useOnline } from '@/hooks/useOnline'
+import { OfflineActionsNotice } from '@/components/ui/OfflineActionsNotice'
 import { useSettings } from '@/context/SettingsContext'
 import { renewMembership } from '@/services/renewals'
 import { recordPayment } from '@/services/payments'
@@ -44,6 +46,7 @@ function defaultsFor(currentPlan) {
 
 export function RenewalModal({ open, onClose, member, currentPlan, currentExpiry, plans, payments = [], memberships = [], freezes = [], onRenewed, ptSurcharge = 0 }) {
   const toast = useToast()
+  const online = useOnline()
   const { settings, timezone } = useSettings()
   const {
     register,
@@ -332,13 +335,20 @@ export function RenewalModal({ open, onClose, member, currentPlan, currentExpiry
           <Button variant="secondary" onClick={onClose} disabled={submitting}>
             Cancel
           </Button>
-          <Button type="submit" form="renewal-form" loading={submitting} disabled={tailBlocked}>
+          <Button
+            type="submit"
+            form="renewal-form"
+            loading={submitting}
+            disabled={tailBlocked || !online}
+            title={online ? undefined : 'Unavailable while offline'}
+          >
             <RefreshCcw size={16} /> Renew &amp; charge
           </Button>
         </>
       }
     >
       <form id="renewal-form" aria-label="Renewal form" onSubmit={handleSubmit(submit)} className="space-y-5" noValidate>
+        <OfflineActionsNotice />
         {/* Current membership */}
         <section className="rounded-xl border border-slate-200 p-4 dark:border-slate-800">
           <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Current membership</h4>

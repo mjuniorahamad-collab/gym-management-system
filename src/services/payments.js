@@ -32,6 +32,7 @@ import { assertOnline } from './connectivity'
  * Returns the list of period snapshots that were written.
  */
 export async function refreshMembershipSnapshots(memberId) {
+  assertOnline('Recalculating balances')
   if (!memberId) return []
 
   const attempt = async (inputs) => {

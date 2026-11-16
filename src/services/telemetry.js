@@ -1,19 +1,21 @@
 /**
  * ERROR REPORTING SEAM.
  *
- * Today the app has an ErrorBoundary that `console.error`s. In production that
- * means the first time a user hits a crash, nobody finds out unless they call.
- * This module is the seam a real provider plugs into (Sentry and friends all
- * reduce to "call this function with an error and some context"), kept
- * dependency-free so the app does not grow a vendor SDK before one is chosen.
+ * Today the app has an ErrorBoundary. In production that means the first time a
+ * user hits a crash, nobody finds out unless they call. This module is the seam
+ * a real provider plugs into (Sentry and friends all reduce to "call this
+ * function with an error and some context"), kept dependency-free so the app
+ * does not grow a vendor SDK before one is chosen.
  *
  * Rules:
  * - `reportError` NEVER throws and never awaits: a reporting failure must not
  *   become a second user-facing failure, and a crash handler is the worst place
  *   to add latency.
- * - Without a reporter it logs, so the behaviour is unchanged in development.
- * - `setErrorReporter(null)` removes the provider (used by tests and by a
- *   provider that fails to initialise).
+ * - It logs only when there is no reporter. With a provider installed, the
+ *   provider ships the error and logging it as well would duplicate every crash
+ *   in the console.
+ * - `setErrorReporter(null)` removes the provider (tests, or a provider that
+ *   failed to initialise).
  */
 let reporter = null
 
@@ -38,8 +40,15 @@ export function reportError(error, context = {}) {
     try {
       reporter(payload)
     } catch {
-      // A broken reporter must never mask the original error.
+      // A broken reporter must never mask the original error. Fall through to
+      // the console so the error is not lost entirely.
+      try {
+        console.error('[telemetry]', payload.message, payload.context)
+      } catch {
+        // A missing console is not a reason to fail.
+      }
     }
+    return payload
   }
 
   try {
@@ -49,9 +58,4 @@ export function reportError(error, context = {}) {
   }
 
   return payload
-}
-
-/** Test-only: reset the provider between cases. */
-export function __resetErrorReporter() {
-  reporter = null
 }
