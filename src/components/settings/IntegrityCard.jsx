@@ -54,9 +54,14 @@ export function IntegrityCard() {
   const { status, report, reason } = state
   // A partial report covers a slice of a large gym and is resumed next run. It
   // must never be rendered as "clean" — only a complete cycle can say that.
+  // `coverage` is how much of the gym the cycle has looked at; `evidence` is what
+  // the latest read confirmed. The card always says which is which, because a
+  // cumulative coverage next to this-run drift reads as a contradiction.
+  const coverage = report?.coverage || { membersScanned: 0, periodsScanned: 0 }
+  const evidence = report?.evidence || { scope: 'cycle', members: 0, periods: 0, sample: [] }
   const partial = Boolean(report) && report.complete === false
   const clean = Boolean(report) && report.complete !== false && report.clean === true
-  const driftedPeriods = Number(report?.driftedPeriods) || 0
+  const driftedPeriods = Number(evidence.periods) || 0
 
   return (
     <Card>
@@ -91,8 +96,9 @@ export function IntegrityCard() {
           <div className="rounded-lg border border-sky-300 bg-sky-50 p-3 text-sm text-sky-900 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-200">
             <p className="font-semibold">Partial check — large gym</p>
             <p className="mt-1 text-xs">
-              {report.membersScanned} member{report.membersScanned === 1 ? '' : 's'} scanned so far; the
-              next scheduled run continues from here. This is not an all-clear.
+              {coverage.membersScanned} member{coverage.membersScanned === 1 ? '' : 's'} scanned so far; the
+              next scheduled run continues from here. Any drift below is from this run&rsquo;s page only, and
+              this is not an all-clear.
             </p>
           </div>
         )}
@@ -103,8 +109,8 @@ export function IntegrityCard() {
             <div>
               <p className="font-semibold">No drift found</p>
               <p className="mt-1 text-xs">
-                {report.periodsScanned} membership period{report.periodsScanned === 1 ? '' : 's'} across{' '}
-                {report.membersScanned} member{report.membersScanned === 1 ? '' : 's'} match the ledger.
+                {coverage.periodsScanned} membership period{coverage.periodsScanned === 1 ? '' : 's'} across{' '}
+                {coverage.membersScanned} member{coverage.membersScanned === 1 ? '' : 's'} match the ledger.
                 Last checked {formatWhen(report.generatedAt)}.
               </p>
             </div>
@@ -120,7 +126,8 @@ export function IntegrityCard() {
                   {driftedPeriods} period{driftedPeriods === 1 ? '' : 's'} disagree with the ledger
                 </p>
                 <p className="mt-1 text-xs">
-                  Across {report.driftedMembers} member{report.driftedMembers === 1 ? '' : 's'}.
+                  Across {evidence.members} member{evidence.members === 1 ? '' : 's'}
+                  {partial ? ' in this run’s page' : ''}.
                   Last checked {formatWhen(report.generatedAt)}. Nothing has been changed — a deliberate
                   price edit is not drift, so these need a human to look before anything is rewritten.
                 </p>
@@ -138,7 +145,7 @@ export function IntegrityCard() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {(report.sample || []).slice(0, MAX_ROWS).map((row) => (
+                  {(evidence.sample || []).slice(0, MAX_ROWS).map((row) => (
                     <tr key={`${row.memberId}-${row.periodId}`} className="align-top">
                       <td className="px-3 py-2">
                         <p className="font-medium text-slate-800 dark:text-slate-100">
@@ -161,9 +168,9 @@ export function IntegrityCard() {
                 </tbody>
               </table>
             </div>
-            {(report.sample || []).length > MAX_ROWS && (
+            {(evidence.sample || []).length > MAX_ROWS && (
               <p className="text-xs text-slate-400">
-                Showing {MAX_ROWS} of {(report.sample || []).length} sampled periods.
+                Showing {MAX_ROWS} of {(evidence.sample || []).length} sampled periods.
               </p>
             )}
           </div>

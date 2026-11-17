@@ -100,8 +100,8 @@ describe('a clean gym', () => {
     const report = await readReport(GYM_A)
     expect(report).not.toBeNull()
     expect(report.clean).toBe(true)
-    expect(report.driftedPeriods).toBe(0)
-    expect(report.sample).toEqual([])
+    expect(report.coverage).toEqual({ membersScanned: 1, periodsScanned: 1 })
+    expect(report.evidence).toMatchObject({ scope: 'cycle', periods: 0, sample: [] })
     expect(typeof report.generatedAt).toBe('string')
   })
 })
@@ -120,8 +120,8 @@ describe('a drifted period', () => {
 
     const report = await readReport(GYM_A)
     expect(report.clean).toBe(false)
-    expect(report.sample).toHaveLength(1)
-    expect(report.sample[0]).toMatchObject({
+    expect(report.evidence.sample).toHaveLength(1)
+    expect(report.evidence.sample[0]).toMatchObject({
       memberId,
       periodId,
       fields: ['amountDue', 'paymentStatus'],
@@ -177,7 +177,7 @@ describe('tenant isolation', () => {
     expect(summary.driftedPeriods).toBe(0)
 
     const report = await readReport(GYM_A)
-    expect(report.sample).toEqual([])
+    expect(report.evidence.sample).toEqual([])
     expect(JSON.stringify(report)).not.toContain(foreign.memberId)
   })
 
@@ -267,7 +267,9 @@ describe('dry run and repeatability', () => {
     expect(partialReport.complete).toBe(false)
     expect(partialReport.clean).toBeUndefined()
     expect(typeof partialReport.nextCursor).toBe('string')
-    expect(partialReport.driftedPeriods).toBe(1)
+    // Scopes are separate: coverage is the cycle, evidence is this page.
+    expect(partialReport.coverage).toEqual({ membersScanned: 1, periodsScanned: 1 })
+    expect(partialReport.evidence).toMatchObject({ scope: 'page', members: 1, periods: 1 })
 
     const second = await runDuesDriftJob(db, { gymId: GYM_A, log: silent, maxMembersPerRun: 1 })
     expect(second.partial).toBe(0)
@@ -275,9 +277,9 @@ describe('dry run and repeatability', () => {
     const finalReport = await readReport(GYM_A)
     expect(finalReport.complete).toBe(true)
     expect(finalReport.clean).toBe(false)
-    expect(finalReport.membersScanned).toBe(2)
-    // The first member's drift survives the cycle boundary.
-    expect(finalReport.driftedPeriods).toBe(2)
+    expect(finalReport.coverage.membersScanned).toBe(2)
+    // The first member's drift survives the cycle boundary (re-read, not carried).
+    expect(finalReport.evidence).toMatchObject({ scope: 'cycle', members: 2, periods: 2 })
   })
 
   it('drops drift that was repaired before the cycle closed', async () => {
@@ -291,7 +293,7 @@ describe('dry run and repeatability', () => {
     const runOne = await runDuesDriftJob(db, { gymId: GYM_A, log: silent, maxMembersPerRun: 1 })
     expect(runOne.partial).toBe(1)
     const partial = await readReport(GYM_A)
-    expect(partial.driftedPeriods).toBe(1)
+    expect(partial.evidence.periods).toBe(1)
     expect(partial.pendingMemberIds).toContain(first.memberId)
 
     // Repair the drifted period the way the app would: price unchanged, figures correct.
@@ -306,9 +308,9 @@ describe('dry run and repeatability', () => {
 
     const finalReport = await readReport(GYM_A)
     expect(finalReport.complete).toBe(true)
-    expect(finalReport.driftedPeriods).toBe(0)
+    expect(finalReport.evidence.periods).toBe(0)
     expect(finalReport.clean).toBe(true)
-    expect(finalReport.sample).toEqual([])
+    expect(finalReport.evidence.sample).toEqual([])
   })
 
   it('produces the same counts on a second run and keeps one report document', async () => {

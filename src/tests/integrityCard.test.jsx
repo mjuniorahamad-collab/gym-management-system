@@ -5,32 +5,40 @@ import { render, screen, waitFor } from '@testing-library/react'
  * DATA INTEGRITY CARD.
  *
  * The states matter more than the styling: "no report yet" must never read as
- * "all clear", drift must name what disagrees, and a read failure must not imply
- * health.
+ * "all clear", drift must name what disagrees, a read failure must not imply
+ * health, and a partial cycle must keep coverage and evidence visibly separate.
  */
 const mocks = vi.hoisted(() => ({ fetchDuesDriftReport: vi.fn() }))
 vi.mock('@/services/integrity', () => ({ fetchDuesDriftReport: mocks.fetchDuesDriftReport }))
 
 const { IntegrityCard } = await import('@/components/settings/IntegrityCard')
 
+const report = (over = {}) => ({
+  gymId: 'g1',
+  complete: true,
+  generatedAt: '2026-11-17T03:30:00.000Z',
+  coverage: { membersScanned: 4, periodsScanned: 6 },
+  evidence: { scope: 'cycle', members: 0, periods: 0, sample: [] },
+  clean: true,
+  ...over,
+})
+
+const driftedRow = {
+  memberId: 'm1',
+  memberName: 'Bibek Magar',
+  periodId: 'p1',
+  fields: ['amountDue', 'paymentStatus'],
+  stored: { amountPaid: 0, amountDue: 0, paymentStatus: 'paid' },
+  expected: { amountPaid: 0, amountDue: 2500, paymentStatus: 'due' },
+}
+
 beforeEach(() => {
   mocks.fetchDuesDriftReport.mockReset()
 })
 
 describe('IntegrityCard', () => {
-  it('says a clean report is clean, with what was scanned', async () => {
-    mocks.fetchDuesDriftReport.mockResolvedValue({
-      ok: true,
-      report: {
-        clean: true,
-        membersScanned: 4,
-        periodsScanned: 6,
-        driftedMembers: 0,
-        driftedPeriods: 0,
-        generatedAt: '2026-11-17T03:30:00.000Z',
-        sample: [],
-      },
-    })
+  it('says a clean report is clean, with what was covered', async () => {
+    mocks.fetchDuesDriftReport.mockResolvedValue({ ok: true, report: report() })
     render(<IntegrityCard />)
 
     expect(await screen.findByText('No drift found')).toBeTruthy()
@@ -40,24 +48,10 @@ describe('IntegrityCard', () => {
   it('names the drifted periods and says nothing was changed', async () => {
     mocks.fetchDuesDriftReport.mockResolvedValue({
       ok: true,
-      report: {
+      report: report({
         clean: false,
-        membersScanned: 1,
-        periodsScanned: 1,
-        driftedMembers: 1,
-        driftedPeriods: 1,
-        generatedAt: '2026-11-17T03:30:00.000Z',
-        sample: [
-          {
-            memberId: 'm1',
-            memberName: 'Bibek Magar',
-            periodId: 'p1',
-            fields: ['amountDue', 'paymentStatus'],
-            stored: { amountPaid: 0, amountDue: 0, paymentStatus: 'paid' },
-            expected: { amountPaid: 0, amountDue: 2500, paymentStatus: 'due' },
-          },
-        ],
-      },
+        evidence: { scope: 'cycle', members: 1, periods: 1, sample: [driftedRow] },
+      }),
     })
     render(<IntegrityCard />)
 
@@ -72,22 +66,38 @@ describe('IntegrityCard', () => {
   it('never presents a partial (large-gym) check as clean', async () => {
     mocks.fetchDuesDriftReport.mockResolvedValue({
       ok: true,
-      report: {
+      report: report({
         complete: false,
+        clean: undefined,
         nextCursor: 'member-400',
-        membersScanned: 400,
-        periodsScanned: 520,
-        driftedMembers: 0,
-        driftedPeriods: 0,
-        generatedAt: '2026-11-17T03:30:00.000Z',
-        sample: [],
-      },
+        coverage: { membersScanned: 400, periodsScanned: 520 },
+        evidence: { scope: 'page', members: 0, periods: 0, sample: [] },
+      }),
     })
     render(<IntegrityCard />)
 
     expect(await screen.findByText(/Partial check/)).toBeTruthy()
     expect(screen.getByText(/not an all-clear/)).toBeTruthy()
     expect(screen.queryByText('No drift found')).toBeNull()
+  })
+
+  it('labels coverage and evidence separately on a partial cycle', async () => {
+    mocks.fetchDuesDriftReport.mockResolvedValue({
+      ok: true,
+      report: report({
+        complete: false,
+        clean: undefined,
+        nextCursor: 'member-400',
+        coverage: { membersScanned: 400, periodsScanned: 520 },
+        evidence: { scope: 'page', members: 1, periods: 2, sample: [driftedRow] },
+      }),
+    })
+    render(<IntegrityCard />)
+
+    // Coverage is cumulative, evidence is this page — the card must not blend them.
+    expect(await screen.findByText(/400 members scanned so far/)).toBeTruthy()
+    expect(screen.getByText(/this run’s page only/)).toBeTruthy()
+    expect(screen.getByText(/2 periods disagree with the ledger/)).toBeTruthy()
   })
 
   it('does not present a missing report as healthy', async () => {

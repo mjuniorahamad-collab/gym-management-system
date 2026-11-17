@@ -31,12 +31,24 @@
  * night's sample forward would then report a period that is now correct.
  *
  * So:
- * - a partial report shows only the page scanned by THIS run (counts + sample),
- *   plus the ids still needing verification next time;
+ * - a partial report's `evidence` is only the page scanned by THIS run, plus the
+ *   ids still needing verification next time;
  * - the run that finishes the cycle RE-READS every member implicated during the
- *   cycle before writing the final report, and reports what is true now.
+ *   cycle before writing `evidence`, and reports what is true now.
  *
  * Only those final, re-read rows can make a cycle `clean` or dirty.
+ *
+ * ## Two differently-scoped things, named as such
+ *
+ * A report carries two numbers that answer different questions, so they are not
+ * placed side by side as if they were comparable:
+ *
+ *   coverage  — how much of the gym this cycle has looked at (cumulative)
+ *   evidence  — what the latest read confirmed (this page, or the cycle's
+ *               re-read), with `scope` saying which
+ *
+ * The earlier shape mixed a cumulative `membersScanned` with this-run drift
+ * counts, which read as "1 member scanned, 2 periods drifted".
  *
  * What it writes: ONE report document per gym at
  * `systemReports/duesDrift-<gymId>`, overwritten on every run. Nothing is fixed,
@@ -248,11 +260,14 @@ export async function runDuesDriftJob(
     try {
       const previous = writeReport ? await readReport(db, gym.id) : null
       const resuming = Boolean(previous && previous.complete === false && previous.nextCursor)
+      // Coverage lives under `coverage`; a report written before that split kept
+      // it at the top level, so accept both when resuming a cycle.
+      const priorCoverage = previous?.coverage ?? previous ?? {}
       const cycle = resuming
         ? {
             afterId: previous.nextCursor,
-            membersScanned: Number(previous.membersScanned) || 0,
-            periodsScanned: Number(previous.periodsScanned) || 0,
+            membersScanned: Number(priorCoverage.membersScanned) || 0,
+            periodsScanned: Number(priorCoverage.periodsScanned) || 0,
             pendingIds: Array.isArray(previous.pendingMemberIds) ? previous.pendingMemberIds : [],
           }
         : { afterId: null, membersScanned: 0, periodsScanned: 0, pendingIds: [] }
@@ -284,11 +299,19 @@ export async function runDuesDriftJob(
           gymId: gym.id,
           complete,
           generatedAt,
-          membersScanned: coverage.membersScanned,
-          periodsScanned: coverage.periodsScanned,
-          driftedMembers: evidence.driftedMembers,
-          driftedPeriods: evidence.driftedPeriods,
-          sample: evidence.sample,
+          // How much of the gym this cycle has covered so far (cumulative).
+          coverage: {
+            membersScanned: coverage.membersScanned,
+            periodsScanned: coverage.periodsScanned,
+          },
+          // What the LATEST read confirmed: this page while partial, the whole
+          // cycle's re-read when complete. `scope` states which.
+          evidence: {
+            scope: complete ? 'cycle' : 'page',
+            members: evidence.driftedMembers,
+            periods: evidence.driftedPeriods,
+            sample: evidence.sample,
+          },
         }
         if (complete) {
           report.clean = evidence.driftedPeriods === 0
