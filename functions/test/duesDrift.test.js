@@ -280,6 +280,37 @@ describe('dry run and repeatability', () => {
     expect(finalReport.driftedPeriods).toBe(2)
   })
 
+  it('drops drift that was repaired before the cycle closed', async () => {
+    // Night one finds drift on the first member; someone fixes it before the
+    // cycle completes. The completed report must show what is true NOW, not the
+    // evidence carried over from the earlier run.
+    await seedGym(GYM_A)
+    const first = await seedHolding(GYM_A, { amountDue: 0, paymentStatus: 'paid' })
+    await seedHolding(GYM_A)
+
+    const runOne = await runDuesDriftJob(db, { gymId: GYM_A, log: silent, maxMembersPerRun: 1 })
+    expect(runOne.partial).toBe(1)
+    const partial = await readReport(GYM_A)
+    expect(partial.driftedPeriods).toBe(1)
+    expect(partial.pendingMemberIds).toContain(first.memberId)
+
+    // Repair the drifted period the way the app would: price unchanged, figures correct.
+    await db.doc(`memberships/${first.periodId}`).update({
+      amountPaid: 0,
+      amountDue: 2500,
+      paymentStatus: 'due',
+    })
+
+    const runTwo = await runDuesDriftJob(db, { gymId: GYM_A, log: silent, maxMembersPerRun: 1 })
+    expect(runTwo.partial).toBe(0)
+
+    const finalReport = await readReport(GYM_A)
+    expect(finalReport.complete).toBe(true)
+    expect(finalReport.driftedPeriods).toBe(0)
+    expect(finalReport.clean).toBe(true)
+    expect(finalReport.sample).toEqual([])
+  })
+
   it('produces the same counts on a second run and keeps one report document', async () => {
     await seedGym(GYM_A)
     await seedHolding(GYM_A, { amountDue: 0, paymentStatus: 'paid' })

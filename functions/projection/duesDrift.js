@@ -1,5 +1,5 @@
 /**
- * DUES DRIFT RECONCILIATION — report only, never repair. Bounded per run.
+ * DUES DRIFT RECONCILIATION — report only, never repair. Bounded, latest evidence.
  *
  * The detector is the canonical `src/utils/duesDrift.js`, and the grouping is
  * the bundled `findDuesDrift`. A second copy of the ledger math OR of the
@@ -10,35 +10,39 @@
  *
  * This job used to read `payments` and `memberships` with `where('gymId','==',gymId)`.
  * The ledger does not: `readLedgerInputs` reads them by **memberId only**, and
- * plans with no filter at all. A payment carrying no `gymId` (recorded by a
- * script, or written before per-gym isolation) was therefore invisible to the
- * job but counted by the ledger — and the job reported drift where there was
- * none. A false report is worse than no report: it teaches people to ignore the
- * next one. So the job partitions by MEMBER and reads each member's payments and
- * periods exactly as the ledger does.
+ * plans with no filter at all. A payment carrying no `gymId` was therefore
+ * invisible to the job but counted by the ledger — and the job reported drift
+ * where there was none. A false report is worse than no report. So the job
+ * partitions by MEMBER and reads each member's payments and periods exactly as
+ * the ledger does.
  *
  * ## Why a run is bounded
  *
- * That per-member read is correct but linear: two queries per member. A gym with
- * a few thousand members would spend the whole scheduled window reading, and the
- * run would be killed rather than finish — leaving a report that looks current
- * but is not. So each run scans at most `DRIFT_MAX_MEMBERS_PER_RUN` members and
- * stores the cursor it stopped at. The next run resumes from that cursor, and
- * the report keeps accumulating this cycle's counts and sample.
+ * That per-member read is correct but linear: two queries per member. A large gym
+ * would spend the whole scheduled window reading and be killed, leaving a report
+ * that looks current but is not. Each run therefore scans at most
+ * `DRIFT_MAX_MEMBERS_PER_RUN` members and stores the cursor it stopped at; the
+ * next run resumes there. `complete: false` means PARTIAL and never claims clean.
  *
- * What that means for the report:
- * - `complete: false` → a PARTIAL check. `nextCursor` is where it resumes. This
- *   must never be read as "clean": only part of the gym has been looked at.
- * - `complete: true` → the whole gym was covered; `clean` is only written here.
+ * ## Why evidence never accumulates
+ *
+ * A cycle spanning several runs is the dangerous case: drift found on night one
+ * may be REPAIRED by the time night three completes the gym. Carrying last
+ * night's sample forward would then report a period that is now correct.
+ *
+ * So:
+ * - a partial report shows only the page scanned by THIS run (counts + sample),
+ *   plus the ids still needing verification next time;
+ * - the run that finishes the cycle RE-READS every member implicated during the
+ *   cycle before writing the final report, and reports what is true now.
+ *
+ * Only those final, re-read rows can make a cycle `clean` or dirty.
  *
  * What it writes: ONE report document per gym at
- * `systemReports/duesDrift-<gymId>`, overwritten on every run so the latest
- * answer is always the document. Nothing is fixed, and no membership, payment or
- * member document is touched.
- *
- * Why report instead of repair: a period whose snapshots disagree may have been
- * edited by a script on purpose, and rewriting it would silently discard a
- * decision a human made.
+ * `systemReports/duesDrift-<gymId>`, overwritten on every run. Nothing is fixed,
+ * and no membership, payment or member document is touched — a period whose
+ * figures disagree may have been re-priced on purpose, and rewriting it would
+ * silently discard a decision a human made.
  */
 import { FieldPath } from 'firebase-admin/firestore'
 import { findDuesDrift } from '../vendor/projection.mjs'
@@ -57,6 +61,9 @@ export const DRIFT_SAMPLE_LIMIT = 25
  */
 export const DRIFT_MAX_MEMBERS_PER_RUN = 400
 
+/** Members re-read when a cycle completes. A cap keeps that pass bounded too. */
+export const DRIFT_REVERIFY_LIMIT = 200
+
 /** Member-level reads run a few at a time; a page must not open 400 sockets. */
 const READ_CONCURRENCY = 5
 
@@ -70,11 +77,11 @@ async function readAllPlans(db) {
 /**
  * One page of a gym's members, in document-id order, resuming after `afterId`.
  * `nextCursor` is null when this page reached the end of the gym.
+ *
+ * Asks for one extra document: a FULL page cannot tell you whether it was the
+ * last one, which made a gym of exactly N members need an extra empty run.
  */
 async function readMemberPage(db, gymId, { afterId = null, limit }) {
-  // Ask for one extra document: a FULL page cannot tell you whether it was the
-  // last one, which made a gym of exactly N members take an extra empty run
-  // before the cycle could be called complete.
   // Explicit document-id order: a cursor has to match the query's ordering, and
   // a value that does not is rejected rather than silently ignored.
   let query = db
@@ -120,37 +127,8 @@ async function mapWithConcurrency(items, worker, limit = READ_CONCURRENCY) {
   return results
 }
 
-/** Merge samples by period, keeping the cap. Later evidence wins on duplicates. */
-function mergeSample(existing, incoming) {
-  const merged = new Map()
-  for (const row of [...(existing || []), ...(incoming || [])]) {
-    merged.set(`${row.memberId}|${row.periodId}`, row)
-  }
-  return Array.from(merged.values()).slice(0, DRIFT_SAMPLE_LIMIT)
-}
-
-/**
- * Drift for ONE PAGE of a gym: counts plus a capped sample. Reads only.
- */
-export async function collectGymDuesDrift(
-  db,
-  gymId,
-  { plans, afterId = null, limit = DRIFT_MAX_MEMBERS_PER_RUN } = {}
-) {
-  const allPlans = plans ?? (await readAllPlans(db))
-  const { members, nextCursor } = await readMemberPage(db, gymId, { afterId, limit })
-
-  const perMember = await mapWithConcurrency(members, (member) =>
-    member?.id ? readMemberInputs(db, member.id) : { payments: [], memberships: [] }
-  )
-
-  const result = findDuesDrift({
-    members,
-    plans: allPlans,
-    payments: perMember.flatMap((entry) => entry.payments),
-    memberships: perMember.flatMap((entry) => entry.memberships),
-  })
-
+/** Flatten `findDuesDrift` output into the report's evidence shape. */
+function toEvidence(result) {
   const sample = []
   for (const entry of result.driftedMembers) {
     for (const row of entry.periods) {
@@ -166,16 +144,59 @@ export async function collectGymDuesDrift(
     }
     if (sample.length >= DRIFT_SAMPLE_LIMIT) break
   }
-
   return {
-    gymId,
     membersScanned: result.membersScanned,
     periodsScanned: result.periodsScanned,
     driftedMembers: result.driftedMembers.length,
     driftedPeriods: result.driftedPeriods,
     sample,
-    nextCursor,
+    driftedMemberIds: result.driftedMembers.map((entry) => entry.memberId),
   }
+}
+
+/** Drift for one page of members, read exactly like the ledger. */
+async function driftForMembers(db, members, plans) {
+  const perMember = await mapWithConcurrency(members, (member) =>
+    member?.id ? readMemberInputs(db, member.id) : { payments: [], memberships: [] }
+  )
+  return findDuesDrift({
+    members,
+    plans,
+    payments: perMember.flatMap((entry) => entry.payments),
+    memberships: perMember.flatMap((entry) => entry.memberships),
+  })
+}
+
+/**
+ * Drift for ONE PAGE of a gym: counts plus a capped sample. Reads only.
+ */
+export async function collectGymDuesDrift(
+  db,
+  gymId,
+  { plans, afterId = null, limit = DRIFT_MAX_MEMBERS_PER_RUN } = {}
+) {
+  const allPlans = plans ?? (await readAllPlans(db))
+  const { members, nextCursor } = await readMemberPage(db, gymId, { afterId, limit })
+  const evidence = toEvidence(await driftForMembers(db, members, allPlans))
+
+  return { gymId, ...evidence, nextCursor }
+}
+
+/**
+ * Re-read the members implicated during a cycle and report what is true NOW.
+ *
+ * This is what makes a completed report trustworthy: a period repaired between
+ * two nightly runs simply stops appearing.
+ */
+async function reverify(db, memberIds, plans) {
+  const unique = [...new Set(memberIds)].filter(Boolean)
+  const bounded = unique.slice(0, DRIFT_REVERIFY_LIMIT)
+
+  const snapshots = await mapWithConcurrency(bounded, (id) => db.doc(`members/${id}`).get())
+  const members = snapshots.filter((snapshot) => snapshot.exists).map(stamp)
+
+  const evidence = toEvidence(await driftForMembers(db, members, plans))
+  return { ...evidence, truncated: unique.length > bounded.length }
 }
 
 async function readReport(db, gymId) {
@@ -186,9 +207,9 @@ async function readReport(db, gymId) {
 /**
  * Run the reconciliation over every gym (or one, when `gymId` is given).
  *
- * A previous PARTIAL report for the same gym is resumed: the cursor, the counts
- * and the sample carry over, so a large gym is covered over consecutive runs
- * instead of restarting from the top every night.
+ * A previous PARTIAL report for the same gym is resumed: the cursor and the
+ * coverage counters carry over, and so do the ids of members whose drift still
+ * needs verifying before the cycle can be closed.
  *
  * Per-gym containment mirrors the other jobs. `writeReport: false` scans one
  * page and writes nothing — a dry run looks at this run's slice only.
@@ -232,27 +253,29 @@ export async function runDuesDriftJob(
             afterId: previous.nextCursor,
             membersScanned: Number(previous.membersScanned) || 0,
             periodsScanned: Number(previous.periodsScanned) || 0,
-            driftedMembers: Number(previous.driftedMembers) || 0,
-            driftedPeriods: Number(previous.driftedPeriods) || 0,
-            sample: Array.isArray(previous.sample) ? previous.sample : [],
+            pendingIds: Array.isArray(previous.pendingMemberIds) ? previous.pendingMemberIds : [],
           }
-        : { afterId: null, membersScanned: 0, periodsScanned: 0, driftedMembers: 0, driftedPeriods: 0, sample: [] }
+        : { afterId: null, membersScanned: 0, periodsScanned: 0, pendingIds: [] }
 
       const page = await collectGymDuesDrift(db, gym.id, { plans, afterId: cycle.afterId, limit })
-      const totals = {
+      const coverage = {
         membersScanned: cycle.membersScanned + page.membersScanned,
         periodsScanned: cycle.periodsScanned + page.periodsScanned,
-        driftedMembers: cycle.driftedMembers + page.driftedMembers,
-        driftedPeriods: cycle.driftedPeriods + page.driftedPeriods,
       }
-      const sample = mergeSample(cycle.sample, page.sample)
       const complete = page.nextCursor === null
+
+      // The page that closes the cycle re-reads every implicated member, so the
+      // report cannot repeat drift that has since been repaired.
+      const pendingIds = [...cycle.pendingIds, ...page.driftedMemberIds]
+      const evidence = complete
+        ? await reverify(db, pendingIds, plans)
+        : { ...page, truncated: false }
 
       summary.gyms += 1
       summary.membersScanned += page.membersScanned
       summary.periodsScanned += page.periodsScanned
-      summary.driftedMembers += page.driftedMembers
-      summary.driftedPeriods += page.driftedPeriods
+      summary.driftedMembers += evidence.driftedMembers
+      summary.driftedPeriods += evidence.driftedPeriods
       if (!complete) summary.partial += 1
 
       const generatedAt = now.toISOString()
@@ -261,15 +284,19 @@ export async function runDuesDriftJob(
           gymId: gym.id,
           complete,
           generatedAt,
-          membersScanned: totals.membersScanned,
-          periodsScanned: totals.periodsScanned,
-          driftedMembers: totals.driftedMembers,
-          driftedPeriods: totals.driftedPeriods,
-          sample,
+          membersScanned: coverage.membersScanned,
+          periodsScanned: coverage.periodsScanned,
+          driftedMembers: evidence.driftedMembers,
+          driftedPeriods: evidence.driftedPeriods,
+          sample: evidence.sample,
         }
-        // `clean` is only meaningful once the whole gym has been covered.
-        if (complete) report.clean = totals.driftedPeriods === 0
-        else report.nextCursor = page.nextCursor
+        if (complete) {
+          report.clean = evidence.driftedPeriods === 0
+          if (evidence.truncated) report.reverifyTruncated = true
+        } else {
+          report.nextCursor = page.nextCursor
+          report.pendingMemberIds = [...new Set(pendingIds)].slice(0, DRIFT_REVERIFY_LIMIT)
+        }
         await db.doc(`${DRIFT_REPORT_COLLECTION}/${DRIFT_REPORT_PREFIX}${gym.id}`).set(report)
       }
 
@@ -277,15 +304,15 @@ export async function runDuesDriftJob(
         gymId: gym.id,
         membersScanned: page.membersScanned,
         periodsScanned: page.periodsScanned,
-        driftedMembers: page.driftedMembers,
-        driftedPeriods: page.driftedPeriods,
+        driftedMembers: evidence.driftedMembers,
+        driftedPeriods: evidence.driftedPeriods,
         complete,
       })
       log('dues drift per gym', {
         gymId: gym.id,
         scannedThisRun: page.membersScanned,
         complete,
-        driftedPeriods: page.driftedPeriods,
+        driftedPeriods: evidence.driftedPeriods,
       })
     } catch (error) {
       summary.failed += 1
