@@ -4,6 +4,7 @@
  * Scheduled jobs (v2 automation layer):
  * 1. dailyBackup               — exports all Firestore collections to Storage
  * 2. membershipExpiryReminders — flags memberships expiring in the next 7 days
+ * 3. duesDriftReconciliation   — reports cached dues that disagree with the ledger
  *
  * Deploy:  npm run deploy   (runs `npm run build` first — see predeploy)
  *
@@ -23,6 +24,7 @@ import { onSchedule } from 'firebase-functions/v2/scheduler'
 import { firestore, storage } from './projection/admin.js'
 import { exportAllCollections } from './projection/backup.js'
 import { runExpiryReminderJob, REMINDER_WINDOW_DAYS } from './projection/reminders.js'
+import { runDuesDriftJob } from './projection/duesDrift.js'
 
 /**
  * Callable: ask the trusted writer to recompute one member's projection.
@@ -69,6 +71,31 @@ export const dailyBackup = onSchedule(
     })
 
     return { ok: true, date: dateFolder }
+  }
+)
+
+/**
+ * Dues drift reconciliation.
+ *
+ * Reports (never repairs) membership periods whose cached `amountPaid`,
+ * `amountDue` or `paymentStatus` disagree with the ledger computed from the same
+ * periods and payments. A deliberate price edit is not drift — it recomputes
+ * those fields in the same transaction; see ./projection/duesDrift.js.
+ */
+export const duesDriftReconciliation = onSchedule(
+  {
+    schedule: 'every day 03:30',
+    timeZone: 'Asia/Kathmandu',
+    memory: '256MiB',
+  },
+  async () => {
+    const summary = await runDuesDriftJob(firestore())
+    return {
+      gyms: summary.gyms,
+      driftedMembers: summary.driftedMembers,
+      driftedPeriods: summary.driftedPeriods,
+      failed: summary.failed,
+    }
   }
 )
 
