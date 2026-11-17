@@ -252,6 +252,34 @@ describe('dry run and repeatability', () => {
     expect(await readReport(GYM_A)).toBeNull()
   })
 
+  it('covers a large gym over consecutive runs instead of timing out', async () => {
+    // Two members, one per run: the first run is partial and says so, the second
+    // completes the cycle and carries the first run's drift forward.
+    await seedGym(GYM_A)
+    await seedHolding(GYM_A, { amountDue: 0, paymentStatus: 'paid' })
+    await seedHolding(GYM_A, { amountDue: 0, paymentStatus: 'paid' })
+
+    const first = await runDuesDriftJob(db, { gymId: GYM_A, log: silent, maxMembersPerRun: 1 })
+    expect(first.membersScanned).toBe(1)
+    expect(first.partial).toBe(1)
+
+    const partialReport = await readReport(GYM_A)
+    expect(partialReport.complete).toBe(false)
+    expect(partialReport.clean).toBeUndefined()
+    expect(typeof partialReport.nextCursor).toBe('string')
+    expect(partialReport.driftedPeriods).toBe(1)
+
+    const second = await runDuesDriftJob(db, { gymId: GYM_A, log: silent, maxMembersPerRun: 1 })
+    expect(second.partial).toBe(0)
+
+    const finalReport = await readReport(GYM_A)
+    expect(finalReport.complete).toBe(true)
+    expect(finalReport.clean).toBe(false)
+    expect(finalReport.membersScanned).toBe(2)
+    // The first member's drift survives the cycle boundary.
+    expect(finalReport.driftedPeriods).toBe(2)
+  })
+
   it('produces the same counts on a second run and keeps one report document', async () => {
     await seedGym(GYM_A)
     await seedHolding(GYM_A, { amountDue: 0, paymentStatus: 'paid' })

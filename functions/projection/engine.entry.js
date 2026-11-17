@@ -26,3 +26,9 @@ export { resolveGymTimezone, DEFAULT_GYM_TIMEZONE, gymDayKey, gymTodayKey } from
  * the app it is reconciling, which defeats the point.
  */
 export { duesDriftForMember, findDuesDrift, DRIFT_FIELDS } from '../../src/utils/duesDrift.js'
+/**
+ * Role lists, bundled from the app's single permission table. The drift-report
+ * callable must gate on exactly the roles that hold `finance.view`; re-typing
+ * that list in `functions/` is how two answers to "who is finance" appear.
+ */
+export { FINANCE_VIEW_ROLES } from '../../src/utils/constants.js'

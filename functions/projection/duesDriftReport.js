@@ -20,24 +20,26 @@
 import { HttpsError, onCall } from 'firebase-functions/v2/https'
 import { logger } from 'firebase-functions'
 import { firestore } from './admin.js'
-import { resolveCallerGym } from './reproject.js'
 import { DRIFT_REPORT_COLLECTION, DRIFT_REPORT_PREFIX } from './duesDrift.js'
-
-/** Mirrors `finance.view` in src/utils/constants.js. Kept explicit and tiny. */
-export const REPORT_ROLES = Object.freeze(['owner', 'admin'])
+import { FINANCE_VIEW_ROLES } from '../vendor/projection.mjs'
 
 const PUBLIC_DENIAL = 'not-authorized'
 
-/** The caller's role and gym, or null when the profile is unusable. */
-async function resolveCallerProfile(db, auth) {
+/**
+ * The caller's role and gym in ONE read, or null when the profile is unusable.
+ *
+ * Reading the profile twice (once for the role, once through
+ * `resolveCallerGym`) was the same document fetched twice and two places that
+ * could disagree about what "bound to a gym" means.
+ */
+async function resolveCaller(db, auth) {
   const uid = auth?.uid
   if (!uid) return null
   const snapshot = await db.doc(`users/${uid}`).get()
   if (!snapshot.exists) return null
-  const profile = snapshot.data() || {}
-  const gymId = await resolveCallerGym(db, auth)
-  if (!gymId) return null
-  return { gymId, role: profile.role ?? null }
+  const { gymId, role } = snapshot.data() || {}
+  if (typeof gymId !== 'string' || !gymId.trim()) return null
+  return { gymId, role: role ?? null }
 }
 
 /**
@@ -47,9 +49,9 @@ async function resolveCallerProfile(db, auth) {
 export async function handleGetDuesDriftReport({ db, auth } = {}) {
   if (!auth?.uid) return { ok: false, reason: 'unauthenticated' }
 
-  const profile = await resolveCallerProfile(db, auth)
+  const profile = await resolveCaller(db, auth)
   if (!profile) return { ok: false, reason: PUBLIC_DENIAL }
-  if (!REPORT_ROLES.includes(profile.role)) {
+  if (!FINANCE_VIEW_ROLES.includes(profile.role)) {
     logger.warn('getDuesDriftReport denied by role', { uid: auth.uid, gymId: profile.gymId })
     return { ok: false, reason: PUBLIC_DENIAL }
   }

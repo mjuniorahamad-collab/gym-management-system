@@ -64,8 +64,30 @@ describe('IntegrityCard', () => {
     expect(await screen.findByText(/1 period disagree with the ledger/)).toBeTruthy()
     expect(screen.getByText('Bibek Magar')).toBeTruthy()
     expect(screen.getByText(/deliberate price edit is not drift/)).toBeTruthy()
-    expect(screen.getByText(/amountDue: 0/)).toBeTruthy()
-    expect(screen.getByText(/amountDue: 2500/)).toBeTruthy()
+    // One line per disagreeing field: stored → ledger.
+    expect(screen.getByText('amountDue: 0 → 2500')).toBeTruthy()
+    expect(screen.getByText('paymentStatus: paid → due')).toBeTruthy()
+  })
+
+  it('never presents a partial (large-gym) check as clean', async () => {
+    mocks.fetchDuesDriftReport.mockResolvedValue({
+      ok: true,
+      report: {
+        complete: false,
+        nextCursor: 'member-400',
+        membersScanned: 400,
+        periodsScanned: 520,
+        driftedMembers: 0,
+        driftedPeriods: 0,
+        generatedAt: '2026-11-17T03:30:00.000Z',
+        sample: [],
+      },
+    })
+    render(<IntegrityCard />)
+
+    expect(await screen.findByText(/Partial check/)).toBeTruthy()
+    expect(screen.getByText(/not an all-clear/)).toBeTruthy()
+    expect(screen.queryByText('No drift found')).toBeNull()
   })
 
   it('does not present a missing report as healthy', async () => {

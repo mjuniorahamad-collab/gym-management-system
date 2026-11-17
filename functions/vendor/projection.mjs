@@ -787,10 +787,55 @@ function findDuesDrift({ members = [], plans = [], payments = [], memberships = 
     driftedPeriods: driftedMembers.reduce((sum, entry) => sum + entry.periods.length, 0)
   };
 }
+
+// ../src/utils/constants.js
+var ROLES = {
+  owner: "owner",
+  admin: "admin",
+  frontDesk: "front-desk",
+  trainer: "trainer"
+};
+var STAFF_ROLES = [ROLES.owner, ROLES.admin, ROLES.frontDesk, ROLES.trainer];
+var PERMISSIONS = {
+  "members.view": ["owner", "admin", "front-desk", "trainer"],
+  "members.write": ["owner", "admin", "front-desk"],
+  "members.delete": ["owner", "admin"],
+  "finance.view": ["owner", "admin"],
+  "finance.write": ["owner", "admin"],
+  "finance.delete": ["owner"],
+  "trainers.view": ["owner", "admin", "front-desk", "trainer"],
+  "trainers.write": ["owner", "admin"],
+  "classes.write": ["owner", "admin", "front-desk"],
+  // Booking management is offered to every staff role that can open the
+  // Classes page (src/pages/Classes.jsx renders "Manage bookings" for each
+  // role holding 'members.view'), and firestore.rules grants bookings CRUD to
+  // all staff. Trainer access is deliberately preserved — the rules now
+  // enforce the TENANT boundary on bookings (the referenced member must belong
+  // to the caller's gym) rather than restricting the role.
+  "bookings.view": ["owner", "admin", "front-desk", "trainer"],
+  "bookings.write": ["owner", "admin", "front-desk", "trainer"],
+  "bookings.delete": ["owner", "admin", "front-desk", "trainer"],
+  "settings.write": ["owner"],
+  "audit.view": ["owner", "admin"],
+  "attendance.write": ["owner", "admin", "front-desk"],
+  "reports.view": ["owner", "admin"],
+  "seed.data": ["owner", "admin"]
+};
+var FINANCE_VIEW_ROLES = PERMISSIONS["finance.view"];
+var MEMBER_STATUSES = [
+  { value: "active", label: "Active" },
+  { value: "expiring", label: "Expiring Soon" },
+  { value: "expired", label: "Expired" }
+];
+var MEMBER_STATUS_FILTERS = [
+  ...MEMBER_STATUSES,
+  { value: "frozen", label: "Frozen", field: "isFrozen", op: "==", filterValue: true }
+];
 export {
   DEFAULT_GYM_TIMEZONE,
   DRIFT_FIELDS,
   EXPIRING_WITHIN_DAYS,
+  FINANCE_VIEW_ROLES,
   PROJECTION_STATUS,
   deriveMemberProjection,
   duesDriftForMember,

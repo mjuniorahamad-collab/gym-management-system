@@ -26,12 +26,11 @@ const formatWhen = (iso) => {
   return date.toLocaleString()
 }
 
-const describe = (row) => {
-  const fields = (row.fields || []).join(', ')
-  const stored = (row.fields || []).map((f) => `${f}: ${row.stored?.[f] ?? '—'}`).join(' · ')
-  const expected = (row.fields || []).map((f) => `${f}: ${row.expected?.[f] ?? '—'}`).join(' · ')
-  return { fields, stored, expected }
-}
+/** `amountDue: 0 → 2500` for each disagreeing field, so a row reads as one fact. */
+const describe = (row) =>
+  (row.fields || []).map(
+    (field) => `${field}: ${row.stored?.[field] ?? '—'} → ${row.expected?.[field] ?? '—'}`
+  )
 
 export function IntegrityCard() {
   const [state, setState] = useState({ status: 'loading', report: null, reason: null })
@@ -46,19 +45,18 @@ export function IntegrityCard() {
     setState({ status: result.report ? 'ready' : 'never-run', report: result.report, reason: null })
   }, [])
 
+  // `load` never throws (the service returns a result), so there is nothing to
+  // catch and no mounted flag to maintain here.
   useEffect(() => {
-    let active = true
-    // `load` is stable; the guard only prevents a late response writing state
-    // into an unmounted card.
-    load().catch(() => {
-      if (active) setState({ status: 'error', report: null, reason: 'report unavailable' })
-    })
-    return () => {
-      active = false
-    }
+    load()
   }, [load])
 
   const { status, report, reason } = state
+  // A partial report covers a slice of a large gym and is resumed next run. It
+  // must never be rendered as "clean" — only a complete cycle can say that.
+  const partial = Boolean(report) && report.complete === false
+  const clean = Boolean(report) && report.complete !== false && report.clean === true
+  const driftedPeriods = Number(report?.driftedPeriods) || 0
 
   return (
     <Card>
@@ -89,7 +87,17 @@ export function IntegrityCard() {
           </p>
         )}
 
-        {status === 'ready' && report?.clean && (
+        {status === 'ready' && partial && (
+          <div className="rounded-lg border border-sky-300 bg-sky-50 p-3 text-sm text-sky-900 dark:border-sky-500/30 dark:bg-sky-500/10 dark:text-sky-200">
+            <p className="font-semibold">Partial check — large gym</p>
+            <p className="mt-1 text-xs">
+              {report.membersScanned} member{report.membersScanned === 1 ? '' : 's'} scanned so far; the
+              next scheduled run continues from here. This is not an all-clear.
+            </p>
+          </div>
+        )}
+
+        {status === 'ready' && clean && (
           <div className="flex items-start gap-2 rounded-lg border border-emerald-300 bg-emerald-50 p-3 text-sm text-emerald-900 dark:border-emerald-500/30 dark:bg-emerald-500/10 dark:text-emerald-200">
             <CheckCircle2 size={16} className="mt-0.5 shrink-0" />
             <div>
@@ -103,13 +111,13 @@ export function IntegrityCard() {
           </div>
         )}
 
-        {status === 'ready' && report && !report.clean && (
+        {status === 'ready' && report && !clean && (driftedPeriods > 0 || partial) && (
           <div className="space-y-3">
             <div className="flex items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
               <AlertTriangle size={16} className="mt-0.5 shrink-0" />
               <div>
                 <p className="font-semibold">
-                  {report.driftedPeriods} period{report.driftedPeriods === 1 ? '' : 's'} disagree with the ledger
+                  {driftedPeriods} period{driftedPeriods === 1 ? '' : 's'} disagree with the ledger
                 </p>
                 <p className="mt-1 text-xs">
                   Across {report.driftedMembers} member{report.driftedMembers === 1 ? '' : 's'}.
@@ -125,30 +133,31 @@ export function IntegrityCard() {
                   <tr>
                     <th className="px-3 py-2">Member</th>
                     <th className="px-3 py-2">Period</th>
-                    <th className="px-3 py-2">Stored</th>
-                    <th className="px-3 py-2">Ledger says</th>
+                    <th className="px-3 py-2">Stored → ledger</th>
+                    <th className="px-3 py-2" />
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {(report.sample || []).slice(0, MAX_ROWS).map((row) => {
-                    const d = describe(row)
-                    return (
-                      <tr key={`${row.memberId}-${row.periodId}`} className="align-top">
-                        <td className="px-3 py-2">
-                          <p className="font-medium text-slate-800 dark:text-slate-100">
-                            {row.memberName || 'Unknown member'}
+                  {(report.sample || []).slice(0, MAX_ROWS).map((row) => (
+                    <tr key={`${row.memberId}-${row.periodId}`} className="align-top">
+                      <td className="px-3 py-2">
+                        <p className="font-medium text-slate-800 dark:text-slate-100">
+                          {row.memberName || 'Unknown member'}
+                        </p>
+                        <p className="text-xs text-slate-400">{row.memberId}</p>
+                      </td>
+                      <td className="px-3 py-2 text-xs text-slate-500 dark:text-slate-400">
+                        {row.periodId}
+                      </td>
+                      <td colSpan={2} className="px-3 py-2 text-xs">
+                        {describe(row).map((line) => (
+                          <p key={line} className="font-mono text-[11px] text-slate-600 dark:text-slate-300">
+                            {line}
                           </p>
-                          <p className="text-xs text-slate-400">{row.memberId}</p>
-                        </td>
-                        <td className="px-3 py-2 text-xs text-slate-500 dark:text-slate-400">
-                          <p>{row.periodId}</p>
-                          <p className="text-slate-400">{d.fields}</p>
-                        </td>
-                        <td className="px-3 py-2 text-xs text-rose-600 dark:text-rose-400">{d.stored}</td>
-                        <td className="px-3 py-2 text-xs text-emerald-700 dark:text-emerald-400">{d.expected}</td>
-                      </tr>
-                    )
-                  })}
+                        ))}
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
