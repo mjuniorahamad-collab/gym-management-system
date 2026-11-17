@@ -11,7 +11,6 @@ import { Button } from '@/components/ui/Button'
 import { Badge, StatusBadge } from '@/components/ui/Badge'
 import { useToast } from '@/context/ToastContext'
 import { useOnline } from '@/hooks/useOnline'
-import { OfflineActionsNotice } from '@/components/ui/OfflineActionsNotice'
 import { useSettings } from '@/context/SettingsContext'
 import { renewMembership } from '@/services/renewals'
 import { recordPayment } from '@/services/payments'
@@ -348,7 +347,6 @@ export function RenewalModal({ open, onClose, member, currentPlan, currentExpiry
       }
     >
       <form id="renewal-form" aria-label="Renewal form" onSubmit={handleSubmit(submit)} className="space-y-5" noValidate>
-        <OfflineActionsNotice />
         {/* Current membership */}
         <section className="rounded-xl border border-slate-200 p-4 dark:border-slate-800">
           <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400">Current membership</h4>

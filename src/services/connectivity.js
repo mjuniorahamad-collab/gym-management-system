@@ -11,8 +11,8 @@ import { isFirebaseConfigured } from '@/firebase'
  *
  * So every money path calls `assertOnline` before it resolves a receipt prefix,
  * mints a number or stages a transaction, and the UI disables the same actions
- * (`useOnline`, `OfflineActionsNotice`) so the refusal is visible before anyone
- * fills in a form.
+ * via `useOnline` so the refusal is visible before anyone fills in a form. The
+ * refusal itself is surfaced by one banner in the app layout, not per form.
  *
  * Limits worth knowing: `navigator.onLine === false` is authoritative about the
  * device having no link, but `true` only means "a link exists" — a captive
@@ -48,15 +48,4 @@ export function assertOnline(action = 'This action') {
   throw new OfflineError(
     `${action} needs an internet connection. Nothing was saved — reconnect and try again.`
   )
-}
-
-/**
- * Recognise the refusal wherever it surfaces.
- *
- * A page rendered in its own chunk can hold a different copy of this module, so
- * `instanceof` alone is not reliable in the UI; the stable `code` is.
- */
-export function isOfflineError(error) {
-  if (!error) return false
-  return error instanceof OfflineError || error.code === 'offline' || error.name === 'OfflineError'
 }

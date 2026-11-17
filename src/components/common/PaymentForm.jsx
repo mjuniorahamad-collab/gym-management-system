@@ -13,7 +13,6 @@ import { formatCurrency, formatDate } from '@/utils/formatters'
 import { computeMemberLedger } from '@/utils/dues'
 import { useSettings } from '@/context/SettingsContext'
 import { useOnline } from '@/hooks/useOnline'
-import { OfflineActionsNotice } from '@/components/ui/OfflineActionsNotice'
 
 const EMPTY = { memberId: '', planId: '', amount: '', method: 'Cash', date: toDateInputValue(), note: '' }
 
@@ -109,7 +108,6 @@ export function PaymentForm({ open, onClose, members, plans, payments = [], memb
       }
     >
       <form id="payment-form" onSubmit={handleSubmit(onSubmit)} className="space-y-4" noValidate>
-        <OfflineActionsNotice />
         <FormField label="Member" error={errors.memberId?.message} required>
           <Select error={errors.memberId} {...register('memberId')}>
             <option value="">Select a member</option>
