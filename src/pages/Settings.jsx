@@ -22,6 +22,8 @@ import { formatCurrency } from '@/utils/formatters'
 import { COMMON_GYM_TIMEZONES, resolveGymTimezone } from '@/utils/gymTime'
 import { useSecureImage } from '@/hooks/useSecureImage'
 import { useAuth } from '@/context/AuthContext'
+import { IntegrityCard } from '@/components/settings/IntegrityCard'
+import { isFirebaseConfigured } from '@/firebase'
 
 /**
  * Renders an absent settings value as an empty controlled input rather than
@@ -492,6 +494,11 @@ export default function Settings() {
             </form>
           </CardBody>
         </Card>
+
+        {/* Report-only view of the nightly dues reconciliation. Hidden in demo
+            mode, where Cloud Functions do not exist and "no report" would read
+            as a problem rather than as an absent feature. */}
+        {isFirebaseConfigured && <IntegrityCard />}
 
         <Card>
           <CardHeader

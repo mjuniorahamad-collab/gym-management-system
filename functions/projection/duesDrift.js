@@ -1,110 +1,124 @@
 /**
  * DUES DRIFT RECONCILIATION — report only, never repair.
  *
- * The detector itself is the canonical `src/utils/duesDrift.js`, bundled into
- * `vendor/projection.mjs` like the projection engine. A second copy of the
- * ledger math here could disagree with the app, which is the one failure mode a
+ * The detector is the canonical `src/utils/duesDrift.js`, bundled into
+ * `vendor/projection.mjs` like the projection engine, and the grouping is the
+ * bundled `findDuesDrift`. A second copy of the ledger math OR of the grouping
+ * here could disagree with the app, which is the one failure mode a
  * reconciliation job must not have.
+ *
+ * ## Inputs must equal the ledger's inputs, not "the gym's documents"
+ *
+ * This job used to read `payments` and `memberships` with `where('gymId','==',gymId)`.
+ * The ledger does not: `readLedgerInputs` reads them by **memberId only**, and
+ * plans with no filter at all. So a payment that carries no `gymId` (recorded by
+ * a script, or written before per-gym isolation) was invisible to the job but
+ * very visible to the ledger — and the job reported the period as drifted when
+ * nothing was wrong. A false report is worse than no report: it teaches people
+ * to ignore the next one.
+ *
+ * The job therefore partitions by the MEMBER (a member belongs to a gym), and
+ * reads each member's payments and periods exactly as the ledger does — by
+ * memberId, with no gymId filter — plus every plan in the project, also as the
+ * ledger does. The cost is two reads per member instead of two per gym; that is
+ * the price of comparing the same thing the app compares.
  *
  * What it writes: ONE report document per gym at
  * `systemReports/duesDrift-<gymId>`, overwritten on every run so the latest
  * answer is always the document — including a clean run, which is evidence the
- * job ran rather than an absence of evidence. Nothing is fixed, and no membership,
- * payment or member document is touched.
+ * job ran. Nothing is fixed, and no membership, payment or member document is
+ * touched.
  *
  * Why report instead of repair: a period whose snapshots disagree may have been
  * edited by a script on purpose, and rewriting it would silently discard a
- * decision a human made. The job's job is to make drift visible while it is
- * still cheap.
+ * decision a human made.
  */
-import { duesDriftForMember } from '../vendor/projection.mjs'
-import { fetchAll, readAllGyms } from './sources.js'
+import { findDuesDrift } from '../vendor/projection.mjs'
+import { fetchAll, readAllGyms, readMembersForGym } from './sources.js'
 
-/** Admin-only collection: no client rule grants write access. */
+/** Admin-only collection: no client rule grants access. */
 export const DRIFT_REPORT_COLLECTION = 'systemReports'
 export const DRIFT_REPORT_PREFIX = 'duesDrift-'
 
 /** How many drifted periods the report keeps as evidence. Counts stay exact. */
 export const DRIFT_SAMPLE_LIMIT = 25
 
+/** Member-level reads run a few at a time; a big gym must not open 1000 sockets. */
+const READ_CONCURRENCY = 5
+
 const stamp = (snapshot) => ({ id: snapshot.id, ...snapshot.data() })
 
-function groupByMember(docs) {
-  const grouped = new Map()
-  for (const doc of docs) {
-    if (!doc?.memberId) continue
-    const bucket = grouped.get(doc.memberId)
-    if (bucket) bucket.push(doc)
-    else grouped.set(doc.memberId, [doc])
-  }
-  return grouped
+/** Every plan in the project — the ledger's own scope, not the gym's. */
+async function readAllPlans(db) {
+  return (await fetchAll(db.collection('membershipPlans'))).map(stamp)
 }
 
-/** Every input one gym's drift calculation needs, in one round of queries. */
-async function readGymInputs(db, gymId) {
-  const [members, periods, payments, plans] = await Promise.all([
-    fetchAll(db.collection('members').where('gymId', '==', gymId)),
-    fetchAll(db.collection('memberships').where('gymId', '==', gymId)),
-    fetchAll(db.collection('payments').where('gymId', '==', gymId)),
-    fetchAll(db.collection('membershipPlans').where('gymId', '==', gymId)),
+/**
+ * One member's ledger inputs, read by memberId exactly like `readLedgerInputs`.
+ * Deliberately no gymId filter: a payment with a blank or different gymId is
+ * still that member's money, and the ledger counts it.
+ */
+async function readMemberInputs(db, memberId) {
+  const [payments, memberships] = await Promise.all([
+    fetchAll(db.collection('payments').where('memberId', '==', memberId)),
+    fetchAll(db.collection('memberships').where('memberId', '==', memberId)),
   ])
-  return {
-    members: members.map(stamp),
-    memberships: periods.map(stamp),
-    payments: payments.map(stamp),
-    plans: plans.map(stamp),
+  return { payments: payments.map(stamp), memberships: memberships.map(stamp) }
+}
+
+/** Run `worker` over `items` with a small fixed concurrency, preserving order. */
+async function mapWithConcurrency(items, worker, limit = READ_CONCURRENCY) {
+  const results = new Array(items.length)
+  let next = 0
+  async function run() {
+    while (next < items.length) {
+      const index = next
+      next += 1
+      results[index] = await worker(items[index], index)
+    }
   }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, run))
+  return results
 }
 
 /**
  * Drift for one gym: counts plus a capped sample. Reads only.
  */
-export async function collectGymDuesDrift(db, gymId) {
-  const { members, memberships, payments, plans } = await readGymInputs(db, gymId)
-  const periodsByMember = groupByMember(memberships)
-  const paymentsByMember = groupByMember(payments)
+export async function collectGymDuesDrift(db, gymId, { plans } = {}) {
+  const members = await readMembersForGym(db, gymId)
+  const allPlans = plans ?? (await readAllPlans(db))
+
+  const perMember = await mapWithConcurrency(members, (member) =>
+    member?.id ? readMemberInputs(db, member.id) : { payments: [], memberships: [] }
+  )
+
+  const payments = perMember.flatMap((entry) => entry.payments)
+  const memberships = perMember.flatMap((entry) => entry.memberships)
+
+  const result = findDuesDrift({ members, plans: allPlans, payments, memberships })
 
   const sample = []
-  let membersScanned = 0
-  let periodsScanned = 0
-  let driftedMembers = 0
-  let driftedPeriods = 0
-
-  for (const member of members) {
-    if (!member?.id) continue
-    membersScanned += 1
-    const memberPeriods = periodsByMember.get(member.id) || []
-    periodsScanned += memberPeriods.filter((p) => p.id).length
-
-    const rows = duesDriftForMember({
-      member,
-      plans,
-      payments: paymentsByMember.get(member.id) || [],
-      memberships: memberPeriods,
-    })
-    if (rows.length === 0) continue
-
-    driftedMembers += 1
-    driftedPeriods += rows.length
-    for (const row of rows) {
+  for (const entry of result.driftedMembers) {
+    for (const row of entry.periods) {
       if (sample.length >= DRIFT_SAMPLE_LIMIT) break
       sample.push({
-        memberId: member.id,
-        memberName: member.name ?? null,
+        memberId: entry.memberId,
+        memberName: entry.memberName,
         periodId: row.periodId,
         fields: row.fields,
         stored: row.stored,
         expected: row.expected,
       })
     }
+    if (sample.length >= DRIFT_SAMPLE_LIMIT) break
   }
 
   return {
     gymId,
-    membersScanned,
-    periodsScanned,
-    driftedMembers,
-    driftedPeriods,
+    membersScanned: result.membersScanned,
+    periodsScanned: result.periodsScanned,
+    driftedMembers: result.driftedMembers.length,
+    driftedPeriods: result.driftedPeriods,
     sample,
   }
 }
@@ -131,10 +145,14 @@ export async function runDuesDriftJob(
   }
 
   let gyms
+  let plans
   try {
     gyms = gymId ? [{ id: gymId }] : await readAllGyms(db)
+    // Read once for the whole run: the ledger's plan scope is project-wide, and
+    // re-reading per gym would let two gyms be compared against different plans.
+    plans = await readAllPlans(db)
   } catch (error) {
-    log('dues drift could not enumerate gyms', { error: error?.message ?? String(error) })
+    log('dues drift could not start', { error: error?.message ?? String(error) })
     summary.failed += 1
     summary.error = error?.message ?? 'unknown error'
     return summary
@@ -142,7 +160,7 @@ export async function runDuesDriftJob(
 
   for (const gym of gyms) {
     try {
-      const result = await collectGymDuesDrift(db, gym.id)
+      const result = await collectGymDuesDrift(db, gym.id, { plans })
       summary.gyms += 1
       summary.membersScanned += result.membersScanned
       summary.periodsScanned += result.periodsScanned

@@ -25,4 +25,4 @@ export { resolveGymTimezone, DEFAULT_GYM_TIMEZONE, gymDayKey, gymTodayKey } from
  * A reconciliation job computing its own ledger would be able to disagree with
  * the app it is reconciling, which defeats the point.
  */
-export { duesDriftForMember, DRIFT_FIELDS } from '../../src/utils/duesDrift.js'
+export { duesDriftForMember, findDuesDrift, DRIFT_FIELDS } from '../../src/utils/duesDrift.js'

@@ -41,6 +41,17 @@ async function clearReports() {
 
 const silent = () => {}
 
+/**
+ * A payment written the way the LEDGER sees it: by `memberId`. `gymId` is
+ * optional on purpose — legacy and scripted payments may carry none, or the
+ * wrong one, and the ledger still counts them for the member.
+ */
+async function seedPayment(id, { memberId, amount = 1000, date = '2026-01-05', membershipId = '', gymId } = {}) {
+  const data = { memberId, amount, date, membershipId, method: 'Cash' }
+  if (gymId !== undefined) data.gymId = gymId
+  await db.doc(`payments/${id}`).set(data)
+}
+
 beforeAll(async () => {
   await assertEmulatorReachable()
   await cleanup()
@@ -179,6 +190,55 @@ describe('tenant isolation', () => {
     const result = await collectGymDuesDrift(db, GYM_A)
     expect(result.membersScanned).toBe(1)
     expect(result.driftedPeriods).toBe(0)
+  })
+})
+
+describe('inputs match the ledger, not the gym filter', () => {
+  it('does not report drift for a payment that carries no gymId', async () => {
+    // The ledger reads payments by memberId only. A gymId filter here would have
+    // hidden this payment and reported the period as drifted.
+    await seedGym(GYM_A)
+    const { periodId } = await seedHolding(GYM_A, { amountPaid: 1000, amountDue: 1500, paymentStatus: 'partial' })
+    await seedPayment(uid('payment'), { memberId: (await db.doc(`memberships/${periodId}`).get()).data().memberId, membershipId: periodId })
+
+    const summary = await runDuesDriftJob(db, { gymId: GYM_A, log: silent })
+    expect(summary.driftedPeriods).toBe(0)
+    expect((await readReport(GYM_A)).clean).toBe(true)
+  })
+
+  it('counts a payment filed under another gymId for the same member', async () => {
+    // Same memberId, wrong gymId: the ledger still credits the member, so the job
+    // must too — otherwise it invents drift out of a filing mistake.
+    await seedGym(GYM_A)
+    await seedGym(GYM_B)
+    const { periodId } = await seedHolding(GYM_A, { amountPaid: 1000, amountDue: 1500, paymentStatus: 'partial' })
+    const memberId = (await db.doc(`memberships/${periodId}`).get()).data().memberId
+    await seedPayment(uid('payment'), { memberId, membershipId: periodId, gymId: GYM_B })
+
+    const summary = await runDuesDriftJob(db, { gymId: GYM_A, log: silent })
+    expect(summary.driftedPeriods).toBe(0)
+  })
+
+  it('still scans a period document that carries no gymId', async () => {
+    // A member’s period is read by memberId, so a gymId-less document is part of
+    // the ledger and must be part of the scan — here as genuine drift.
+    await seedGym(GYM_A)
+    const memberId = uid('member')
+    await seedMember(memberId, GYM_A)
+    await db.doc(`memberships/${uid('period')}`).set({
+      memberId,
+      planId: '',
+      price: 2500,
+      startDate: '2026-01-01',
+      expiryDate: '2026-01-31',
+      amountPaid: 0,
+      amountDue: 0,
+      paymentStatus: 'paid',
+    })
+
+    const summary = await runDuesDriftJob(db, { gymId: GYM_A, log: silent })
+    expect(summary.periodsScanned).toBe(1)
+    expect(summary.driftedPeriods).toBe(1)
   })
 })
 

@@ -32,6 +32,12 @@ import { runDuesDriftJob } from './projection/duesDrift.js'
  */
 export { reprojectMember } from './projection/reproject.js'
 
+/**
+ * Callable: the latest dues-drift reconciliation report for the caller's gym.
+ * Owner/admin only; the gym comes from `users/{uid}`, never from the request.
+ */
+export { getDuesDriftReport } from './projection/duesDriftReport.js'
+
 const STORAGE_BACKUP_PREFIX = 'backups'
 
 /**

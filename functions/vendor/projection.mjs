@@ -747,6 +747,46 @@ function duesDriftForMember({
   }
   return rows;
 }
+function groupByMember(docs) {
+  const grouped = /* @__PURE__ */ new Map();
+  for (const doc of docs) {
+    if (!doc?.memberId) continue;
+    const bucket = grouped.get(doc.memberId);
+    if (bucket) bucket.push(doc);
+    else grouped.set(doc.memberId, [doc]);
+  }
+  return grouped;
+}
+function findDuesDrift({ members = [], plans = [], payments = [], memberships = [] } = {}) {
+  const periodsByMember = groupByMember(memberships);
+  const paymentsByMember = groupByMember(payments);
+  const driftedMembers = [];
+  let periodsScanned = 0;
+  for (const member of members) {
+    if (!member?.id) continue;
+    const memberPeriods = periodsByMember.get(member.id) || [];
+    periodsScanned += memberPeriods.filter((p) => p.id).length;
+    const rows = duesDriftForMember({
+      member,
+      plans,
+      payments: paymentsByMember.get(member.id) || [],
+      memberships: memberPeriods
+    });
+    if (rows.length > 0) {
+      driftedMembers.push({
+        memberId: member.id,
+        memberName: member.name ?? null,
+        periods: rows
+      });
+    }
+  }
+  return {
+    membersScanned: members.filter((m) => m?.id).length,
+    periodsScanned,
+    driftedMembers,
+    driftedPeriods: driftedMembers.reduce((sum, entry) => sum + entry.periods.length, 0)
+  };
+}
 export {
   DEFAULT_GYM_TIMEZONE,
   DRIFT_FIELDS,
@@ -754,6 +794,7 @@ export {
   PROJECTION_STATUS,
   deriveMemberProjection,
   duesDriftForMember,
+  findDuesDrift,
   gymDayKey,
   gymTodayKey,
   resolveGymTimezone
