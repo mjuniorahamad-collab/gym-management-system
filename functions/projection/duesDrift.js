@@ -260,14 +260,11 @@ export async function runDuesDriftJob(
     try {
       const previous = writeReport ? await readReport(db, gym.id) : null
       const resuming = Boolean(previous && previous.complete === false && previous.nextCursor)
-      // Coverage lives under `coverage`; a report written before that split kept
-      // it at the top level, so accept both when resuming a cycle.
-      const priorCoverage = previous?.coverage ?? previous ?? {}
       const cycle = resuming
         ? {
             afterId: previous.nextCursor,
-            membersScanned: Number(priorCoverage.membersScanned) || 0,
-            periodsScanned: Number(priorCoverage.periodsScanned) || 0,
+            membersScanned: Number(previous.coverage?.membersScanned) || 0,
+            periodsScanned: Number(previous.coverage?.periodsScanned) || 0,
             pendingIds: Array.isArray(previous.pendingMemberIds) ? previous.pendingMemberIds : [],
           }
         : { afterId: null, membersScanned: 0, periodsScanned: 0, pendingIds: [] }
