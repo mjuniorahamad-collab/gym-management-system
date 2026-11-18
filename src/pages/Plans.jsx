@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { LoadErrorState } from '@/components/ui/LoadErrorState'
 import { Spinner } from '@/components/ui/Spinner'
 import { formatCurrency } from '@/utils/formatters'
 
@@ -20,7 +21,7 @@ export default function Plans() {
   const { settings } = useSettings()
   const toast = useToast()
 
-  const { items: plans, loading } = useCollection('membershipPlans')
+  const { items: plans, loading, error, reload } = useCollection('membershipPlans')
 
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState(null)
@@ -80,6 +81,8 @@ export default function Plans() {
   }
 
   if (loading) return <Spinner label="Loading plans…" />
+
+  if (error) return <LoadErrorState label="membership plans" message={error} onRetry={reload} />
 
   return (
     <div>

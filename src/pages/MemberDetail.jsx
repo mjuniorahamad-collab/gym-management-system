@@ -5,12 +5,14 @@ import { QRCodeSVG } from 'qrcode.react'
 import { ArrowLeft, CreditCard, LineChart as LineChartIcon, Pencil, Plus, Printer, QrCode, RefreshCcw, ScrollText, Share2, Trash2 } from 'lucide-react'
 import { getById, updateDocById } from '@/services/firestore'
 import { recordPayment } from '@/services/payments'
+import { requireReceiptPrefix } from '@/services/receiptPrefixGuard'
 import { editMembershipPeriod, deleteMembershipPeriod, applyPTInclusivePriceToPeriod } from '@/services/memberships'
 import { getPtSurcharge } from '@/services/pt'
 import { getWhatsAppLink } from '@/services/whatsappGroup'
 import { getMembershipCharge } from '@/utils/pt'
 import { addWeightRecord, updateWeightRecord, deleteWeightRecord, setFitnessGoal, parseWeightHistory } from '@/services/weightRecords'
 import { useCollection } from '@/hooks/useFirestore'
+import { useOnline } from '@/hooks/useOnline'
 import { logAudit } from '@/services/audit'
 import { useAuth } from '@/context/AuthContext'
 import { useSettings } from '@/context/SettingsContext'
@@ -48,6 +50,7 @@ export default function MemberDetail() {
   const { can } = useAuth()
   const { settings, timezone } = useSettings()
   const toast = useToast()
+  const online = useOnline()
 
   const [member, setMember] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -378,7 +381,7 @@ const canWrite = can('members.write')
           plans.items.find((p) => String(p.id) === String(values.planId))?.name ||
           plan?.name ||
           '',
-        receiptPrefix: settings.receiptPrefix,
+        receiptPrefix: await requireReceiptPrefix(settings.receiptPrefix, 'MemberDetail'),
       })
       toast.success('Payment recorded')
       setPayOpen(false)
@@ -578,7 +581,13 @@ return (
               </div>
               <div className="flex gap-2">
                 {canFinanceWrite && (
-                  <Button variant="success" size="sm" onClick={() => setRenewOpen(true)}>
+                  <Button
+                    variant="success"
+                    size="sm"
+                    disabled={!online}
+                    title={online ? undefined : 'Unavailable while offline'}
+                    onClick={() => setRenewOpen(true)}
+                  >
                     <RefreshCcw size={14} /> Renew
                   </Button>
                 )}
@@ -757,7 +766,9 @@ return (
                                   <button
                                     type="button"
                                     onClick={() => { setEditPeriod(p); setEditPeriodOpen(true) }}
-                                    className="rounded p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-300"
+                                    disabled={!online}
+                                    title={online ? undefined : 'Unavailable while offline'}
+                                    className="rounded p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-slate-800 dark:hover:text-slate-300"
                                     aria-label="Edit period"
                                   >
                                     <Pencil size={14} />
@@ -765,7 +776,9 @@ return (
                                   <button
                                     type="button"
                                     onClick={() => { setDeletePeriod(p); setDeletePeriodOpen(true) }}
-                                    className="rounded p-1 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-500/10 dark:hover:text-red-400"
+                                    disabled={!online}
+                                    title={online ? undefined : 'Unavailable while offline'}
+                                    className="rounded p-1 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-red-500/10 dark:hover:text-red-400"
                                     aria-label="Delete period"
                                   >
                                     <Trash2 size={14} />
@@ -790,7 +803,12 @@ return (
                         requires isFinance(), so members.write would have offered
                         front-desk a button that always fails permission checks. */}
                     {canFinanceWrite && (
-                      <Button size="sm" onClick={() => setPayOpen(true)}>
+                      <Button
+                        size="sm"
+                        disabled={!online}
+                        title={online ? undefined : 'Unavailable while offline'}
+                        onClick={() => setPayOpen(true)}
+                      >
                         <Plus size={14} /> Record payment
                       </Button>
                     )}
@@ -1024,12 +1042,23 @@ return (
                 )}
               </div>
 {canFinanceWrite && (
-                <Button className="w-full" onClick={() => setPayOpen(true)}>
+                <Button
+                  className="w-full"
+                  disabled={!online}
+                  title={online ? undefined : 'Unavailable while offline'}
+                  onClick={() => setPayOpen(true)}
+                >
                   <CreditCard size={16} /> Record payment
                 </Button>
               )}
               {canFinanceWrite && (
-                <Button variant="success" className="w-full" onClick={() => setRenewOpen(true)}>
+                <Button
+                  variant="success"
+                  className="w-full"
+                  disabled={!online}
+                  title={online ? undefined : 'Unavailable while offline'}
+                  onClick={() => setRenewOpen(true)}
+                >
                   <RefreshCcw size={16} /> Renew membership
                 </Button>
               )}

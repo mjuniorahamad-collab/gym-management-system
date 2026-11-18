@@ -153,14 +153,20 @@ export function AuthProvider({ children }) {
       setError(null)
       setLoading(false)
     } catch (e) {
-      // A bootstrap failure (e.g. a rules-denied discovery read for a user
-      // with no users/{uid} profile yet) must NEVER leave a signed-in user
-      // with profile=null and pendingOnboarding=false, because the Login page
-      // auto-navigates on that combination and would drop them into a
-      // data-less dashboard with no way to start a gym. Route to the
-      // onboarding flow instead so they can recover (and see the error there).
-      setError(e.message)
-      setPendingOnboarding(true)
+      // FAIL CLOSED. A bootstrap failure is NOT evidence that this user has no
+      // gym: a denied discovery read, an offline device, a transient network
+      // error or a malformed profile all throw here. Offering "Create your gym"
+      // on that basis is destructive — accepting it mints a SECOND, empty gym
+      // and strands the owner's real records behind the gym they already have
+      // (the app is then scoped to the new id and the old data disappears from
+      // every screen). Report the failure and stop; the Login page shows this
+      // error with a sign-out/retry path, and nothing is written.
+      setError(
+        `Could not load your gym membership: ${e?.message || 'unknown error'}. ` +
+          'Nothing has been changed. Retry, or ask an administrator to confirm that your ' +
+          'users/{uid} profile and its gyms/{gymId} owner record are provisioned.'
+      )
+      setPendingOnboarding(false)
       setLoading(false)
     }
   }, [user, subscribeProfile, discoverOwnGym])

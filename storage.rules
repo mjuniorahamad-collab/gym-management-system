@@ -34,19 +34,26 @@ service firebase.storage {
     // The caller's bound gym, or null when the profile is absent, carries no
     // gymId, or carries a blank one. A blank gymId is treated as unbound so a
     // half-provisioned profile can never match a path segment.
+    //
+    // isSignedIn() is evaluated FIRST and short-circuits the rest: for an
+    // anonymous request request.auth is null, so reading request.auth.uid used
+    // to raise `Null value error` in the emulator log - a deny by crash rather
+    // than by `false`. Denials must be explicit.
     function callerGym() {
-      let p = userDoc(request.auth.uid);
-      return firestore.exists(p) && 'gymId' in firestore.get(p).data
-             && firestore.get(p).data.gymId != ''
-        ? firestore.get(p).data.gymId
+      return isSignedIn()
+             && firestore.exists(userDoc(request.auth.uid))
+             && 'gymId' in firestore.get(userDoc(request.auth.uid)).data
+             && firestore.get(userDoc(request.auth.uid)).data.gymId != ''
+        ? firestore.get(userDoc(request.auth.uid)).data.gymId
         : null;
     }
 
     // The caller's role, or null when the profile is absent or has no role.
     function callerRole() {
-      let p = userDoc(request.auth.uid);
-      return firestore.exists(p) && 'role' in firestore.get(p).data
-        ? firestore.get(p).data.role
+      return isSignedIn()
+             && firestore.exists(userDoc(request.auth.uid))
+             && 'role' in firestore.get(userDoc(request.auth.uid)).data
+        ? firestore.get(userDoc(request.auth.uid)).data.role
         : null;
     }
 

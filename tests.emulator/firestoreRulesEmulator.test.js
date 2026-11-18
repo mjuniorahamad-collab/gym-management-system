@@ -27,8 +27,8 @@ async function seed() {
   await testEnv.withSecurityRulesDisabled(async (ctx) => {
     const fs = ctx.firestore()
     // owner-of-record docs (provisioned out-of-band, never client-writable)
-    await fs.doc(`gyms/${GYM_A}`).set({ ownerUid: UID.owner, name: 'Gym A', createdAt: new Date().toISOString() })
-    await fs.doc(`gyms/${GYM_B}`).set({ ownerUid: 'other-owner-uid', name: 'Gym B', createdAt: new Date().toISOString() })
+    await fs.doc(`gyms/${GYM_A}`).set({ ownerUid: UID.owner, name: 'Gym A', receiptPrefix: 'HWG', createdAt: new Date().toISOString() })
+    await fs.doc(`gyms/${GYM_B}`).set({ ownerUid: 'other-owner-uid', name: 'Gym B', receiptPrefix: 'OXY', createdAt: new Date().toISOString() })
     await fs.doc(`gyms/gym-untagged`).set({ ownerUid: UID.untagged, name: 'Untagged Gym', createdAt: new Date().toISOString() })
 
     // staff profiles (the source of role + tenancy)
@@ -84,7 +84,7 @@ describe('firestore rules — emulator verification (renewal write path)', () =>
   })
 
   it('lets owner/admin create and update payments', async () => {
-    await assertSucceeds(db(UID.owner).collection('payments').add(ownGymDoc({ amount: 200, memberId: 'm-1' })))
+    await assertSucceeds(db(UID.owner).collection('payments').add(ownGymDoc({ amount: 200, memberId: 'm-1', receiptNo: 'HWG-000001' })))
     await assertSucceeds(db(UID.admin).doc('payments/p-1').update({ amount: 150 }))
   })
 

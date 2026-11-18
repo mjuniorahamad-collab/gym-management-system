@@ -1,5 +1,6 @@
 import { Component } from 'react'
 import { AlertTriangle, RefreshCw } from 'lucide-react'
+import { reportError } from '@/services/telemetry'
 
 export class ErrorBoundary extends Component {
   constructor(props) {
@@ -12,7 +13,10 @@ export class ErrorBoundary extends Component {
   }
 
   componentDidCatch(error, info) {
-    console.error('ErrorBoundary caught:', error, info)
+    // One seam for every crash. With no provider installed this still logs, so
+    // development behaviour is unchanged; wiring a provider turns a
+    // user-reported crash into a ticket nobody has to wait for.
+    reportError(error, { source: 'ErrorBoundary', componentStack: info?.componentStack })
   }
 
   render() {

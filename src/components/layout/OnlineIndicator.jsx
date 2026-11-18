@@ -1,20 +1,14 @@
-import { useEffect, useState } from 'react'
 import { Wifi, WifiOff } from 'lucide-react'
 import clsx from 'clsx'
+import { useOnline } from '@/hooks/useOnline'
 
+/**
+ * Header connection badge. Reads the shared `useOnline` hook rather than
+ * listening to `navigator.onLine` itself, so it can never disagree with the
+ * guard that disables money actions.
+ */
 export function OnlineIndicator() {
-  const [online, setOnline] = useState(typeof navigator !== 'undefined' ? navigator.onLine : true)
-
-  useEffect(() => {
-    const goOnline = () => setOnline(true)
-    const goOffline = () => setOnline(false)
-    window.addEventListener('online', goOnline)
-    window.addEventListener('offline', goOffline)
-    return () => {
-      window.removeEventListener('online', goOnline)
-      window.removeEventListener('offline', goOffline)
-    }
-  }, [])
+  const online = useOnline()
 
   return (
     <span
@@ -24,7 +18,11 @@ export function OnlineIndicator() {
           ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-400'
           : 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-400'
       )}
-      title={online ? 'Connected — data syncs live' : 'Offline — using cached data'}
+      title={
+        online
+          ? 'Connected — data syncs live'
+          : 'Offline — payments, renewals and edits are disabled'
+      }
     >
       {online ? <Wifi size={12} /> : <WifiOff size={12} />}
       {online ? 'Online' : 'Offline'}

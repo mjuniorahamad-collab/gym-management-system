@@ -17,6 +17,7 @@ import { useToast } from '@/context/ToastContext'
 import { useCollection } from '@/hooks/useFirestore'
 import { loadSampleData } from '@/services/seedService'
 import { recordPayment } from '@/services/payments'
+import { requireReceiptPrefix } from '@/services/receiptPrefixGuard'
 import { getPtSurcharge } from '@/services/pt'
 import { StatCard } from '@/components/charts/StatCard'
 import { RevenueChart } from '@/components/charts/RevenueChart'
@@ -37,6 +38,7 @@ import { Tabs } from '@/components/ui/Tabs'
 import { TableSkeleton } from '@/components/ui/Skeleton'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { formatCurrency, formatDate, formatDateTime, formatNumber } from '@/utils/formatters'
+import { safeLoadMessage } from '@/utils/loadErrors'
 import { parseDate, addDays } from '@/utils/dateHelpers'
 import { gymDayKey, gymLastNMonthKeys, gymMonthKey } from '@/utils/gymTime'
 import { getCurrentMembershipExpiry, getDaysRemaining, getExpiryBucket, matchesExpiryFilter } from '@/utils/membership'
@@ -107,6 +109,8 @@ export default function Dashboard() {
     ['Attendance', attendance.error],
     ['Membership plans', plans.error],
     ['Bookings', bookings.error],
+    ['Memberships', memberships.error],
+    ['Membership freezes', freezes.error],
   ].filter(([, msg]) => msg)
   const error = errors[0]?.[1] || null
   const errorSource = errors[0]?.[0] || null
@@ -277,7 +281,7 @@ export default function Dashboard() {
         values,
         memberName,
         planName: planMap[values.planId]?.name || '',
-        receiptPrefix: settings.receiptPrefix,
+        receiptPrefix: await requireReceiptPrefix(settings.receiptPrefix, 'Dashboard'),
       })
       toast.success('Payment recorded')
       setPayTarget(null)
@@ -307,7 +311,7 @@ export default function Dashboard() {
             <p className="font-semibold">Some data could not be loaded</p>
             <p className="mt-1 break-words text-xs">
               {errorSource && <span className="font-semibold">{errorSource}: </span>}
-              {error}
+              {safeLoadMessage(error)}
             </p>
           </div>
         </div>

@@ -1,6 +1,7 @@
 import { createDoc, isReady, listAll, updateDocById } from './firestore'
 import { requestReprojection } from './projection'
 import { getPtSurcharge } from './pt'
+import { requireReceiptPrefix } from './receiptPrefixGuard'
 import { getMembershipCharge } from '@/utils/pt'
 import {
   paymentMethods,
@@ -24,6 +25,18 @@ async function collectionIsEmpty(name) {
 }
 
 async function seedCollections() {
+  // Sample receipts are numbered under THIS gym's prefix, read from the
+  // authoritative gyms document through the same guard every real payment
+  // uses. Seeding must not invent a brand: a hardcoded prefix here would mint
+  // receipts that look like another tenant's, and every number it produced
+  // would be indistinguishable from a real one.
+  const receiptPrefix = await requireReceiptPrefix(undefined, 'seedService')
+  if (!receiptPrefix) {
+    throw new Error(
+      'This gym has no receipt prefix on record, so sample receipts cannot be numbered.'
+    )
+  }
+
   // Plans
   const planIds = []
   for (const plan of samplePlans) {
@@ -136,7 +149,7 @@ async function seedCollections() {
         type: 'membership',
         date: joinDate,
         note: `${plan.name} membership`,
-        receiptNo: `HWG-${1000 + memberIds.length}`,
+        receiptNo: `${receiptPrefix}-${1000 + memberIds.length}`,
       })
     }
 
@@ -178,7 +191,7 @@ async function seedCollections() {
       type: 'renewal',
       date: renewalStart,
       note: `Renewal — ${monthlyPlan.name}`,
-      receiptNo: `HWG-${1000 + memberIds.length + 1}`,
+      receiptNo: `${receiptPrefix}-${1000 + memberIds.length + 1}`,
     })
     await updateDocById('members', rohanId, {
       membershipPlanId: monthlyPlanId,

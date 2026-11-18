@@ -14,12 +14,51 @@ import { computeOutstandingDues, computeMemberLedger } from '@/utils/dues'
 import { findOverlappingPeriods } from '@/utils/memberships'
 import { __store } from '@/services/firestore'
 
+// The expiry buckets below are answered in the GYM's timezone while the
+// fixtures are built from the device clock, so after 19:00 UTC the two
+// calendars are a day apart and the "tomorrow" expectation flips. Freezing the
+// clock keeps this suite independent of the hour it runs.
+beforeEach(() => {
+  vi.useFakeTimers({ now: new Date('2026-06-15T09:00:00Z'), toFake: ['Date'] })
+})
+
 vi.mock('@/services/firestore', () => {
-  const store = { memberships: [], payments: [], members: [], auditLog: [] }
+  const store = { memberships: [], payments: [], members: [], membershipPlans: [], auditLog: [] }
+  // Mirrors commitAtomically(): counters are a value map, everything else is a
+  // collection. Used by recordPayment.
+  const counters = {}
+  const commitAtomically = async (apply) =>
+    apply({
+      get: async (name, id) =>
+        name === 'counters'
+          ? (typeof counters[id] === 'number' ? { id, value: counters[id] } : null)
+          : store[name].find((d) => d.id === id) || null,
+      upsert: (name, id, data) => {
+        if (name === 'counters') counters[id] = data.value
+        else {
+          const doc = store[name].find((d) => d.id === id)
+          if (doc) Object.assign(doc, data)
+          else store[name].push({ id, ...data })
+        }
+      },
+      create: (name, data) => {
+        const id = `mock-${name}-${store[name].length + 1}`
+        store[name].push({ id, ...data })
+        return id
+      },
+      update: (name, id, data) => {
+        const doc = store[name].find((d) => d.id === id)
+        if (doc) Object.assign(doc, data)
+      },
+      remove: (name, id) => {
+        store[name] = store[name].filter((d) => d.id !== id)
+      },
+    })
   return {
     __store: store,
     isReady: () => false,
-    listAll: async (name) => store[name],
+    commitAtomically,
+    listAll: async (name) => store[name] || [],
     getById: async (name, id) => store[name].find((d) => d.id === id) || null,
     createDoc: async (name, data) => {
       const id = `mock-${name}-${store[name].length + 1}`
@@ -735,6 +774,9 @@ describe('renewal receipt linking', () => {
       paidAmount: 3500,
       method: 'Cash',
       date: iso(today()),
+      // Demo prefix: a renewal issues nothing without one now, so the test
+      // names the brand it wants rather than inheriting a default.
+      receiptPrefix: 'HWG',
     })
     const membership = __store.memberships[0]
     const payment = __store.payments[0]
@@ -759,6 +801,7 @@ describe('renewal receipt linking', () => {
       paidAmount: 3500,
       method: 'Cash',
       date: iso(today()),
+      receiptPrefix: 'HWG',
     })
     await renewMembership({
       member: __store.members.find((m) => m.id === member.id),
@@ -767,6 +810,7 @@ describe('renewal receipt linking', () => {
       paidAmount: 3500,
       method: 'Cash',
       date: iso(today()),
+      receiptPrefix: 'HWG',
     })
     const numbers = __store.payments.map((p) => p.receiptNo)
     expect(new Set(numbers).size).toBe(2)

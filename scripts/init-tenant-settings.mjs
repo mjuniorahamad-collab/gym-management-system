@@ -1,29 +1,40 @@
 #!/usr/bin/env node
 /**
- * Tenant settings initialiser — PLANNING TOOL. Not a migration runner.
+ * Tenant settings initialiser — PLANNING TOOL, with an explicit apply mode.
  *
  * WHAT IT DOES
  *   Creates missing `gyms/{gymId}/settings/app` documents so a gym is never
- *   left relying on the shared `settings/app` singleton. Every value it writes is
- *   derived from that gym's own owner-of-record document, plus product defaults
- *   that every reader already assumes.
+ *   left relying on the shared `settings/app` singleton. Every non-prefix value
+ *   it writes is derived from that gym's own owner-of-record document, plus
+ *   product defaults that every reader already assumes.
+ *
+ *   The `receiptPrefix` is the exception: it is printed on receipts AND
+ *   persisted onto payment records, so it is an owner decision. It is taken
+ *   verbatim from `--prefix-approvals` — a JSON file mapping a gym id to the
+ *   prefix that gym's owner chose — and is written to `gyms/{gymId}` only when
+ *   that document declares none. Nothing here derives, defaults or normalises a
+ *   prefix, and a gym whose declared prefix disagrees with the approval is
+ *   skipped rather than reconciled.
  *
  * WHAT IT WILL NEVER DO
  *   - Overwrite, merge into, or partially update an existing settings document.
- *   - Write a `receiptPrefix`. It appears on customer receipts AND on persisted
- *     payment records, so it is an owner decision, not a bootstrap default.
- *     Gyms it seeds are left visibly unconfigured until the owner sets it.
+ *   - Write a prefix that no approval record names, or change one that is
+ *     already declared.
  *   - Write a logo path/URL, a PT surcharge, or a WhatsApp link.
  *   - Seed a gym with no members (see ACTIVITY GATE below).
  *   - Run on its own. There is no cron, no npm hook, and no CI step that calls it.
  *
  * USAGE
  *   # Plan only. Reads a local snapshot, touches no network, writes no data.
- *   npx vite-node scripts/init-tenant-settings.mjs --snapshot=path/to/snapshot.json
- *
- *   # Apply, against a live project. Requires BOTH flags and a second operator.
  *   npx vite-node scripts/init-tenant-settings.mjs \
  *     --snapshot=path/to/snapshot.json \
+ *     --prefix-approvals=path/to/approvals.json
+ *
+ *   # Apply, against a live project. Requires BOTH flags, the approval file,
+ *   # and a second operator.
+ *   npx vite-node scripts/init-tenant-settings.mjs \
+ *     --snapshot=path/to/snapshot.json \
+ *     --prefix-approvals=path/to/approvals.json \
  *     --project=<firebase-project-id> \
  *     --apply --confirm=INIT-TENANT-SETTINGS
  *
@@ -46,15 +57,16 @@
  *   in `functions/` imports the bootstrap module, so it is NOT deployed.
  *
  * WHY THE POLICY IS IMPORTED RATHER THAN REIMPLEMENTED
- *   The app bootstraps settings on an owner's first sign-in using
- *   src/services/tenantSettings.js. This script calls the SAME module, so the
- *   offline plan and the in-app behaviour cannot drift apart.
+ *   The app creates settings for a gym whose owner declared a prefix at
+ *   onboarding using src/services/tenantSettings.js. This script calls the SAME
+ *   module, so the offline plan and the in-app behaviour cannot drift apart.
  *
  * ACTIVITY GATE
  *   A `gyms/{gymId}` document with no members is, on the Phase 4C evidence, most
  *   likely an abandoned self-provisioning attempt or an onboarding duplicate. The
  *   script refuses to seed those, and refuses any gym whose member count it
- *   cannot establish from the snapshot. "I do not know" is treated as "no".
+ *   cannot establish from the snapshot. "I do not know" is treated as "no". The
+ *   same check is repeated against LIVE data immediately before each write.
  */
 
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -62,10 +74,15 @@ import { createHash } from 'node:crypto'
 import process from 'node:process'
 import {
   CONFIRM_TOKEN,
+  applyPlan,
+  buildEffectiveSettingsPayload,
+  buildPlannedAuthority,
   buildRollback,
   gateRows,
   guardWrite,
   normaliseSnapshot,
+  parsePrefixApprovals,
+  plannedAuthorityLines,
   settingsPath,
 } from '../functions/projection/tenantSettingsBootstrap.js'
 
@@ -76,7 +93,7 @@ try {
   console.error(
     'Could not load the tenant-settings policy.\n' +
       'Run this script through vite-node so the "@/" alias resolves:\n' +
-      '  npx vite-node scripts/init-tenant-settings.mjs --snapshot=<file>\n' +
+      '  npx vite-node scripts/init-tenant-settings.mjs --snapshot=<file> --prefix-approvals=<file>\n' +
       `Underlying error: ${err?.message || err}`
   )
   process.exit(2)
@@ -92,6 +109,9 @@ function parseArgs(argv) {
     switch (key) {
       case 'snapshot':
         args.snapshot = value
+        break
+      case 'prefix-approvals':
+        args.prefixApprovals = value
         break
       case 'project':
         args.project = value
@@ -129,26 +149,51 @@ function printPlan(rows, mode) {
     console.log(`        gym            : ${row.name || '(no usable name)'}`)
     console.log(`        members        : ${row.memberCount ?? 'unknown'}`)
     console.log(`        shares a name  : ${row.sharesDisplayName ? 'yes (tenancy is by id, so this is informational)' : 'no'}`)
-    if (row.write) {
-      console.log(`        payload        : ${JSON.stringify(row.write)}`)
+    console.log(`        declared prefix: ${row.declaredPrefix || '(none declared on gyms/{gymId})'}`)
+    console.log(`        approved       : ${row.approvedPrefix || '(none)'}`)
+    // Same builder the apply path uses, so what is shown is exactly what would
+    // be created. Only WRITABLE rows are previewed: a refused or blocked row
+    // will not be created, and showing a payload for it (with a prefix) would
+    // read as a planned write that is not actually planned.
+    if (row.writable) {
+      const payload = buildEffectiveSettingsPayload(row, row.approvedPrefix)
+      console.log(`        payload        : ${JSON.stringify(payload)}`)
     }
-    console.log(`        still unset    : ${row.deferred.join(', ') || '(nothing)'}`)
+    console.log(`        still unset    : ${row.deferred.filter((f) => f !== 'receiptPrefix').join(', ') || '(nothing)'}`)
     for (const gate of row.blockedBy) console.log(`        BLOCKED        : ${gate}`)
     console.log(`        why            : ${row.reason}\n`)
   }
 
+  const plannedAuthority = buildPlannedAuthority(rows)
+  console.log(
+    '\nPlanned authoritative field writes (each adds ONE field to an existing document; ' +
+      'the gyms/{gymId} document is not replaced):'
+  )
+  for (const line of plannedAuthorityLines(plannedAuthority)) console.log(line)
+  if (mode !== 'apply') {
+    console.log(
+      '  These are PLANNED only. Nothing has been written and no authority write is recorded; ' +
+        'rollback.authority stays empty until an --apply run performs them.'
+    )
+  }
+
   const writes = rows.filter((r) => r.writable)
   const skipped = rows.filter((r) => !r.writable)
-  console.log(`--- ${writes.length} to write, ${skipped.length} to skip`)
+  console.log(`\n--- ${writes.length} to write, ${skipped.length} to skip`)
 
   if (writes.length) {
     console.log(
-      '\nreceiptPrefix is intentionally absent from every payload above. Each seeded gym\n' +
-        'stays flagged as needing configuration until its owner sets one in Settings.\n'
+      '\nreceiptPrefix on every payload above comes verbatim from --prefix-approvals.\n' +
+        'Confirm each one against the owner\u2019s choice before applying: it is printed on\n' +
+        'receipts and persisted onto payment records, and it cannot be changed later.\n'
     )
   }
   if (mode !== 'apply') {
-    console.log('\nNo data was written. Re-run with --apply --confirm=' + CONFIRM_TOKEN + ' to write.')
+    console.log(
+      '\nNo data was written. Re-run with --apply --prefix-approvals=<file> --project=<id> --confirm=' +
+        CONFIRM_TOKEN +
+        ' to write.'
+    )
   }
   return writes
 }
@@ -156,17 +201,19 @@ function printPlan(rows, mode) {
 /**
  * Applies the plan through the Admin SDK that `functions/` already owns.
  *
- * Both imports are lazy: a planning-only run must need no credentials and must
- * never initialise the app. The Firestore handle comes from
+ * The Admin import is lazy: a planning-only run must need no credentials and
+ * must never initialise the app. The Firestore handle comes from
  * `functions/projection/admin.js`, the single place in this repository allowed
  * to call `initializeApp`, so this adds no dependency at the root and creates no
  * second Admin app.
+ *
+ * `readGym` re-reads the owner-of-record and the live member count for each gym
+ * through the same handle, so the last check before every write is against live
+ * data rather than against the snapshot.
  */
-async function applyPlan(rows, projectId) {
-  let bootstrap
+async function applyViaAdmin(rows, projectId, approvals) {
   let adminBridge
   try {
-    bootstrap = await import('../functions/projection/tenantSettingsBootstrap.js')
     adminBridge = await import('../functions/projection/admin.js')
   } catch (err) {
     throw new Error(
@@ -179,9 +226,25 @@ async function applyPlan(rows, projectId) {
   }
 
   const db = adminBridge.firestore({ projectId })
-  return bootstrap.applyPlan(rows, {
+
+  const readGym = async (gymId) => {
+    const snap = await db.doc(`gyms/${gymId}`).get()
+    if (!snap.exists) return { exists: false }
+    const data = snap.data() || {}
+    const count = await db.collection('members').where('gymId', '==', gymId).count().get()
+    return {
+      exists: true,
+      name: typeof data.name === 'string' ? data.name : '',
+      memberCount: count.data().count,
+      receiptPrefix: typeof data.receiptPrefix === 'string' ? data.receiptPrefix : null,
+    }
+  }
+
+  return applyPlan(rows, {
     db,
     serverTimestamp: adminBridge.serverTimestamp,
+    readGym,
+    approvals,
     log: (line) => console.log(line),
   })
 }
@@ -191,13 +254,15 @@ function usage() {
     [
       'tenant settings initialiser',
       '',
-      '  --snapshot=<file>   read-only gym snapshot to plan from (required)',
-      '  --project=<id>      Firebase project id; required with --apply',
-      '  --gym=<id>          restrict to one gym',
-      '  --manifest=<file>   write the plan/result manifest as JSON',
-      '  --apply             perform writes (otherwise dry run)',
+      '  --snapshot=<file>          read-only gym snapshot to plan from (required)',
+      '  --prefix-approvals=<file>  JSON object mapping a gym id to the receipt prefix',
+      '                             its owner chose; required with --apply (required)',
+      '  --project=<id>             Firebase project id; required with --apply',
+      '  --gym=<id>                 restrict to one gym',
+      '  --manifest=<file>          write the plan/result manifest as JSON',
+      '  --apply                    perform writes (otherwise dry run)',
       `  --confirm=${CONFIRM_TOKEN}`,
-      '                     second, deliberate acknowledgement for --apply',
+      '                            second, deliberate acknowledgement for --apply',
       '  --help',
     ].join('\n')
   )
@@ -222,6 +287,16 @@ async function main() {
   const snapshotSha = createHash('sha256').update(snapshotRaw).digest('hex')
   const snapshot = JSON.parse(snapshotRaw.toString('utf8'))
 
+  let approvals = null
+  if (args.prefixApprovals) {
+    const parsed = parsePrefixApprovals(readFileSync(args.prefixApprovals, 'utf8'))
+    if (parsed.error) {
+      console.error(parsed.error)
+      process.exit(2)
+    }
+    approvals = parsed.approvals
+  }
+
   let rows = classifyGymsForBootstrap(normaliseSnapshot(snapshot))
   if (args.gym) rows = rows.filter((r) => r.id === args.gym)
   if (!rows.length) {
@@ -229,10 +304,15 @@ async function main() {
     process.exit(2)
   }
 
-  rows = gateRows(rows)
+  rows = gateRows(rows, approvals || {})
 
   const mode = args.apply ? 'apply' : 'dry-run'
-  const refusal = guardWrite({ apply: args.apply, project: args.project, confirm: args.confirm })
+  const refusal = guardWrite({
+    apply: args.apply,
+    project: args.project,
+    confirm: args.confirm,
+    approvals,
+  })
   if (refusal) {
     console.error(refusal)
     process.exit(2)
@@ -247,22 +327,38 @@ async function main() {
     project: args.project || null,
     snapshotPath: args.snapshot,
     snapshotSha256: snapshotSha,
-    // Everything this tool writes is a CREATE of a document that did not exist.
-    // Rollback is therefore: delete the listed paths, after confirming no gym
-    // owner has since edited them. Comparing the live document against `payload`
-    // field-by-field tells you whether an edit happened; `createdAt` is a
-    // serverTimestamp, so the manifest records the intended payload only.
+    prefixApprovalsPath: args.prefixApprovals || null,
+    approvals,
+    // The intended authoritative field writes, from the plan alone. This is NOT
+    // a record of writes that happened: `rollback.authority` is that. Each entry
+    // merges one field into an existing gyms/{gymId} document (the document is
+    // never replaced), and only rows whose snapshot declares no prefix appear.
+    plannedAuthority: buildPlannedAuthority(rows),
+    planNotes: [
+      '`plannedAuthority` lists the intended `gyms/{gymId}.receiptPrefix` writes; each adds ONE field to an existing document (documentReplaced: false) and never replaces the document.',
+      '`rollback.authority` lists only writes that ACTUALLY happened, so it is empty for a dry run and is populated from the live apply results after --apply.',
+      'A gyms/{gymId} document that already declares the approved prefix is not a planned authority write, because apply would not overwrite it.',
+    ],
+    // The settings documents this tool writes are CREATEs of documents that did
+    // not exist. Rollback is therefore: delete the listed paths, after confirming
+    // no gym owner has since edited them. Comparing the live document against
+    // `payload` field-by-field tells you whether an edit happened; `createdAt` is
+    // a serverTimestamp, so the manifest records the intended payload only.
     rollback: buildRollback(rows),
     rows,
   }
 
   let applied = []
   if (args.apply) {
-    const result = await applyPlan(rows, args.project)
+    const result = await applyViaAdmin(rows, args.project, approvals)
     applied = result.applied
     manifest.applied = applied
     manifest.skipped = result.skipped
     manifest.failed = result.failed
+    // Rebuilt from the LIVE write results, not from the plan: the undo list has
+    // to include every gyms/{gymId}.receiptPrefix that actually landed, which
+    // includes rows whose settings CREATE failed and so never reached `applied`.
+    manifest.rollback = buildRollback(rows, result.authorityWritten)
   }
 
   if (args.manifest) {
@@ -276,10 +372,8 @@ async function main() {
       // Non-zero exit so a wrapper script or an operator notices a partial run
       // rather than reading exit 0 as "the apply finished".
       console.error(`${manifest.failed.length} document(s) FAILED. Review them before retrying.`)
-      console.error('Each seeded gym now needs its owner to set a receipt prefix in Settings.')
       process.exit(1)
     }
-    console.log('Each seeded gym now needs its owner to set a receipt prefix in Settings.')
   }
 }
 

@@ -12,11 +12,13 @@ import { toDateInputValue } from '@/utils/dateHelpers'
 import { formatCurrency, formatDate } from '@/utils/formatters'
 import { computeMemberLedger } from '@/utils/dues'
 import { useSettings } from '@/context/SettingsContext'
+import { useOnline } from '@/hooks/useOnline'
 
 const EMPTY = { memberId: '', planId: '', amount: '', method: 'Cash', date: toDateInputValue(), note: '' }
 
 export function PaymentForm({ open, onClose, members, plans, payments = [], memberships = [], submitting, onSubmit, initial, ptSurcharge = 0 }) {
   const { settings } = useSettings()
+  const online = useOnline()
   const {
     register,
     handleSubmit,
@@ -93,7 +95,13 @@ export function PaymentForm({ open, onClose, members, plans, payments = [], memb
           <Button variant="secondary" onClick={onClose} disabled={submitting}>
             Cancel
           </Button>
-          <Button type="submit" form="payment-form" loading={submitting}>
+          <Button
+            type="submit"
+            form="payment-form"
+            loading={submitting}
+            disabled={!online}
+            title={online ? undefined : 'Unavailable while offline'}
+          >
             Save payment
           </Button>
         </>

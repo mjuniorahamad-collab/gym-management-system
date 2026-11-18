@@ -23,9 +23,11 @@ import {
   withSettingsFallbacks,
 } from '@/services/tenantSettings'
 import {
+  buildPlannedAuthority,
   buildRollback,
   gateRows,
   normaliseSnapshot,
+  plannedAuthorityLines,
 } from '../../functions/projection/tenantSettingsBootstrap.js'
 
 const CRYSTAL = { name: 'Crystal gym', tagline: 'Discipline Strength ' }
@@ -196,6 +198,16 @@ describe('buildTenantSettingsSeed', () => {
     expect(result.write).toBeNull()
     expect(result.missingRequired).toEqual(OWNER_DECISION_FIELDS)
   })
+
+  it('does not describe the created document as leaving receiptPrefix unset', () => {
+    // The seed's `write` omits the prefix, but the created document carries the
+    // owner-approved one, so the reason must not read as if the prefix is absent.
+    const result = buildTenantSettingsSeed({ gymId: 'gym-1', gym: CRYSTAL })
+
+    expect(result.reason).not.toMatch(/left unset/i)
+    expect(result.reason).toMatch(/receiptPrefix/)
+    expect(result.reason).toMatch(/--prefix-approvals|declared on gyms/)
+  })
 })
 
 describe('describeSettingsCompleteness', () => {
@@ -354,19 +366,76 @@ describe('init-tenant-settings planner round trip', () => {
         normaliseSnapshot({
           gyms: [{ id: 'gym-1', data: { name: 'Crystal gym' }, memberCount: 3, settingsDoc: null }],
         })
-      )
+      ),
+      { 'gym-1': 'CRY' }
     )
 
     expect(rows).toHaveLength(1)
     expect(rows[0].writable).toBe(true)
     expect(rows[0].blockedBy).toEqual([])
     expect(rows[0].write.gymId).toBe('gym-1')
-    // Still an owner decision after gating.
+    expect(rows[0].approvedPrefix).toBe('CRY')
+    // The planner's payload still never carries a prefix: the approved one is
+    // carried on the row and attached by the apply path, not invented here.
     expect(rows[0].write).not.toHaveProperty('receiptPrefix')
+  })
+
+  it('enumerates the planned authority write without recording it as performed', () => {
+    const rows = gateRows(
+      classifyGymsForBootstrap(
+        normaliseSnapshot({
+          gyms: [{ id: 'gym-1', data: { name: 'Crystal gym' }, memberCount: 3, settingsDoc: null }],
+        })
+      ),
+      { 'gym-1': 'CRY' }
+    )
+
+    expect(plannedAuthorityLines(buildPlannedAuthority(rows))).toEqual([
+      '  gyms/gym-1.receiptPrefix = CRY',
+    ])
+    // The plan is distinct from the actual-write record.
+    expect(buildRollback(rows).authority).toEqual([])
+    // The displayed reason no longer claims the prefix is left unset.
+    expect(rows[0].reason).not.toMatch(/left unset/i)
   })
 
   it('refuses to plan anything from an empty snapshot', () => {
     expect(() => normaliseSnapshot({ gyms: [] })).toThrow(/no gyms/i)
+  })
+
+  it('blocks a row that has an owner decision on file but no approval record', () => {
+    const [row] = gateRows(
+      classifyGymsForBootstrap(
+        normaliseSnapshot({
+          gyms: [{ id: 'gym-1', data: { name: 'Crystal gym' }, memberCount: 3, settingsDoc: null }],
+        })
+      ),
+      {}
+    )
+
+    expect(row.writable).toBe(false)
+    expect(row.blockedBy.join(' ')).toMatch(/no approved receipt prefix/i)
+  })
+
+  it('blocks a declared prefix that does not match the approval', () => {
+    const [row] = gateRows(
+      classifyGymsForBootstrap(
+        normaliseSnapshot({
+          gyms: [
+            {
+              id: 'gym-1',
+              data: { name: 'Crystal gym', receiptPrefix: 'HWG' },
+              memberCount: 3,
+              settingsDoc: null,
+            },
+          ],
+        })
+      ),
+      { 'gym-1': 'CRY' }
+    )
+
+    expect(row.writable).toBe(false)
+    expect(row.blockedBy.join(' ')).toMatch(/already HWG/)
   })
 
   it('blocks a gym whose member count the snapshot never established', () => {
@@ -414,7 +483,7 @@ describe('init-tenant-settings planner round trip', () => {
     expect(row.write).toBeNull()
   })
 
-  it('builds a delete-only rollback listing for exactly the writable rows', () => {
+  it('builds a rollback listing for exactly the writable rows', () => {
     const rows = gateRows(
       classifyGymsForBootstrap(
         normaliseSnapshot({
@@ -423,11 +492,13 @@ describe('init-tenant-settings planner round trip', () => {
             { id: 'gym-2', data: { name: 'Ghost gym' }, memberCount: 0, settingsDoc: null },
           ],
         })
-      )
+      ),
+      { 'gym-1': 'CRY' }
     )
 
     const rollback = buildRollback(rows)
-    expect(rollback.strategy).toBe('delete-only')
+    expect(rollback.strategy).toBe('delete-created-documents-and-remove-added-prefix')
     expect(rollback.paths.map((p) => p.path)).toEqual(['gyms/gym-1/settings/app'])
+    expect(rollback.notes.join(' ')).toMatch(/prefixWritten/)
   })
 })

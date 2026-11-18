@@ -2,6 +2,7 @@ import { doc, getDoc, runTransaction } from 'firebase/firestore'
 import { db, isFirebaseConfigured } from '@/firebase'
 import { store } from './mockStore'
 import { getGymId } from './ownerContext'
+import { isValidReceiptPrefix } from '@/utils/receiptPrefix'
 
 const ready = () => isFirebaseConfigured && Boolean(db)
 
@@ -9,18 +10,35 @@ const RECEIPT_DIGITS = 6
 
 // A single monotonic sequence per gym, independent of the receipt prefix, so a
 // gym that later changes its prefix can never re-issue a number it already used.
-const counterKey = () => {
+/**
+ * Id of this gym's receipt counter document.
+ *
+ * Exported because the money transaction reads and increments the counter by
+ * id inside the same commit as the payment (see services/payments.js).
+ */
+export function receiptCounterId() {
   const id = getGymId() || 'none'
   const normalized = String(id).replace(/[^a-zA-Z0-9_-]/g, '_')
   return `receiptNo_${normalized}`
 }
 
-const counterRef = () => doc(db, 'counters', counterKey())
+/** The value the counter must take for the next receipt. */
+export function nextReceiptSequence(storedValue, floor) {
+  return (typeof storedValue === 'number' ? storedValue : Number(floor) || 0) + 1
+}
+
+const counterRef = () => doc(db, 'counters', receiptCounterId())
 
 export function formatReceiptNo(prefix, n) {
   const num = Number.parseInt(n, 10)
   if (Number.isNaN(num) || num < 0) return ''
-  return `${prefix || 'HWG'}-${String(num).padStart(RECEIPT_DIGITS, '0')}`
+  // Fail closed: a receipt is never numbered under a prefix nobody declared.
+  // The empty string is this module's "not minted" result — the same sentinel
+  // used for an unparsable sequence — so a caller that somehow reaches here
+  // without a resolved prefix records no receipt number rather than a
+  // plausible-looking one from a default brand.
+  if (!isValidReceiptPrefix(prefix)) return ''
+  return `${prefix}-${String(num).padStart(RECEIPT_DIGITS, '0')}`
 }
 
 export function parseReceiptSeq(value) {
@@ -47,6 +65,15 @@ let seedCache = null
 async function highestExistingSequence() {
   if (seedCache !== null) return seedCache
   const { listAll } = await import('./firestore')
+  // A gym with no payments has no legacy receipt numbers to avoid, so the
+  // whole-collection read is replaced by a one-document probe. Every fresh
+  // deployment takes this path. Only a gym that already issued receipts before
+  // the counter existed pays for the legacy scan, once per session.
+  const probe = await listAll('payments', { limit: 1 })
+  if (probe.length === 0) {
+    seedCache = 0
+    return 0
+  }
   const payments = await listAll('payments')
   let max = 0
   for (const p of payments) {
@@ -63,19 +90,6 @@ export function __resetReceiptSeedCache() {
 }
 
 /**
- * The per-gym receipt counter document, for callers that mint a receipt number
- * inside their OWN transaction (see services/renewals.js).
- *
- * Minting must not be a second transaction: between "counter incremented" and
- * "payment written" a failure would burn a number, and a retry would burn
- * another. Doing the increment in the same transaction as the payment means the
- * number and the payment it labels are committed or abandoned together.
- */
-export function receiptCounterRef() {
-  return counterRef()
-}
-
-/**
  * Read the counter state a caller needs BEFORE opening its transaction.
  *
  * Returns the floor to use when the counter document does not exist yet, so a
@@ -87,60 +101,52 @@ export function receiptCounterRef() {
  * retry would turn a busy counter into an expensive one.
  */
 export async function prepareReceiptFloor() {
+  // Demo/offline mode keeps its counter in memory and has no legacy receipts.
+  if (!ready()) return 0
   const current = await getDoc(counterRef()).catch(() => null)
   if (current?.exists?.()) return 0
   return highestExistingSequence()
 }
 
 /**
- * Mint a receipt number inside a caller-supplied transaction.
- *
- * `floor` must come from `prepareReceiptFloor()`, called before the transaction
- * opened. Reading and incrementing the counter here is what makes the receipt
- * number and the payment atomic.
- */
-export async function mintReceiptNoInTransaction(tx, gymId, prefix, floor) {
-  const snap = await tx.get(counterRef())
-  const stored = snap.data()?.value
-  const base = typeof stored === 'number' ? stored : Number(floor) || 0
-  const next = base + 1
-  tx.set(counterRef(), { value: next, gymId }, { merge: true })
-  return formatReceiptNo(prefix, next)
-}
-
-/**
  * Last-resort receipt when the counter cannot be reached. Made strictly
  * monotonic in-process so two receipts minted in the same millisecond still
  * differ, and so wide (full epoch ms) that the legacy 1e6-value cycle cannot
- * recur. Used instead of throwing because a payment must never be refused just
- * because its receipt number could not be minted — and because a real
- * PERMISSION_DENIED from the payment write itself is a far clearer error for
- * staff than a receipt-numbering failure.
+ * recur. Carve-out: this formats rather than throws, because a payment must
+ * never be refused just because its receipt number could not be minted — and
+ * because a real PERMISSION_DENIED from the payment write itself is a far
+ * clearer error for staff than a receipt-numbering failure. The prefix is never
+ * invented here: it is the one the caller already validated, handed to the same
+ * canonical formatter the happy path uses.
  */
 let lastFallback = 0
 export function fallbackReceiptNo(prefix) {
   const now = Date.now()
   lastFallback = now > lastFallback ? now : lastFallback + 1
-  return `${prefix || 'HWG'}-${lastFallback}`
+  return formatReceiptNo(prefix, lastFallback)
 }
 
 /**
- * Returns the next receipt number for the current gym (e.g. HWG-000001).
+ * Returns the next receipt number for the current gym (e.g. CRY-000001).
  *
  * Real Firestore mode uses the same atomic per-gym counter transaction as member
  * numbering, so two receipts minted in the same millisecond — or by two gym
  * terminals at once — can never collide. The counter never decrements, so a
  * number is never re-issued after a payment is deleted.
+ *
+ * There is no default prefix. Callers resolve theirs through
+ * services/receiptPrefixGuard before they get here, so a receipt is always
+ * issued under a prefix somebody is accountable for.
  */
-export async function nextReceiptNo(prefix = 'HWG') {
+export async function nextReceiptNo(prefix) {
   const gymId = getGymId()
 
   // Genuine demo/offline mode (mirrors nextMemberNo).
   if (!ready()) {
     store.counters ??= {}
-    store.counters[counterKey()] ??= 0
-    store.counters[counterKey()] += 1
-    return formatReceiptNo(prefix, store.counters[counterKey()])
+    store.counters[receiptCounterId()] ??= 0
+    store.counters[receiptCounterId()] += 1
+    return formatReceiptNo(prefix, store.counters[receiptCounterId()])
   }
 
   // Firebase is configured but tenancy is not established. The payment write is
@@ -155,7 +161,7 @@ export async function nextReceiptNo(prefix = 'HWG') {
     const n = await runTransaction(db, async (tx) => {
       const snap = await tx.get(counterRef())
       const stored = snap.data()?.value
-      const next = (typeof stored === 'number' ? stored : seed) + 1
+      const next = nextReceiptSequence(stored, seed)
       tx.set(counterRef(), { value: next, gymId }, { merge: true })
       return next
     })

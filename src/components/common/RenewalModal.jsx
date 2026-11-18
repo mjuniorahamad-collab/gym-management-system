@@ -10,9 +10,11 @@ import { Select } from '@/components/ui/Select'
 import { Button } from '@/components/ui/Button'
 import { Badge, StatusBadge } from '@/components/ui/Badge'
 import { useToast } from '@/context/ToastContext'
+import { useOnline } from '@/hooks/useOnline'
 import { useSettings } from '@/context/SettingsContext'
 import { renewMembership } from '@/services/renewals'
 import { recordPayment } from '@/services/payments'
+import { requireReceiptPrefix } from '@/services/receiptPrefixGuard'
 import { toDateInputValue } from '@/utils/dateHelpers'
 import { formatCurrency, formatDate } from '@/utils/formatters'
 import { computeMemberLedger } from '@/utils/dues'
@@ -43,6 +45,7 @@ function defaultsFor(currentPlan) {
 
 export function RenewalModal({ open, onClose, member, currentPlan, currentExpiry, plans, payments = [], memberships = [], freezes = [], onRenewed, ptSurcharge = 0 }) {
   const toast = useToast()
+  const online = useOnline()
   const { settings, timezone } = useSettings()
   const {
     register,
@@ -271,8 +274,8 @@ export function RenewalModal({ open, onClose, member, currentPlan, currentExpiry
         paidAmount: values.amount,
         method: values.method,
         date: values.date,
-note: values.note,
-        receiptPrefix: settings.receiptPrefix,
+        note: values.note,
+        receiptPrefix: await requireReceiptPrefix(settings.receiptPrefix, 'RenewalModal'),
         effectivePrice: charge.total,
         isPT: Boolean(member?.isPT),
     ptSurcharge: charge.addon,
@@ -300,7 +303,7 @@ note: values.note,
           },
           memberName: member.name,
           type: 'membership',
-          receiptPrefix: settings.receiptPrefix,
+          receiptPrefix: await requireReceiptPrefix(settings.receiptPrefix, 'RenewalModal'),
         })
       }
 
@@ -331,7 +334,13 @@ note: values.note,
           <Button variant="secondary" onClick={onClose} disabled={submitting}>
             Cancel
           </Button>
-          <Button type="submit" form="renewal-form" loading={submitting} disabled={tailBlocked}>
+          <Button
+            type="submit"
+            form="renewal-form"
+            loading={submitting}
+            disabled={tailBlocked || !online}
+            title={online ? undefined : 'Unavailable while offline'}
+          >
             <RefreshCcw size={16} /> Renew &amp; charge
           </Button>
         </>

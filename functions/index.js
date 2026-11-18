@@ -4,6 +4,7 @@
  * Scheduled jobs (v2 automation layer):
  * 1. dailyBackup               — exports all Firestore collections to Storage
  * 2. membershipExpiryReminders — flags memberships expiring in the next 7 days
+ * 3. duesDriftReconciliation   — reports cached dues that disagree with the ledger
  *
  * Deploy:  npm run deploy   (runs `npm run build` first — see predeploy)
  *
@@ -21,13 +22,21 @@
  */
 import { onSchedule } from 'firebase-functions/v2/scheduler'
 import { firestore, storage } from './projection/admin.js'
+import { exportAllCollections } from './projection/backup.js'
 import { runExpiryReminderJob, REMINDER_WINDOW_DAYS } from './projection/reminders.js'
+import { runDuesDriftJob } from './projection/duesDrift.js'
 
 /**
  * Callable: ask the trusted writer to recompute one member's projection.
  * See ./projection/reproject.js for the authorization chain.
  */
 export { reprojectMember } from './projection/reproject.js'
+
+/**
+ * Callable: the latest dues-drift reconciliation report for the caller's gym.
+ * Owner/admin only; the gym comes from `users/{uid}`, never from the request.
+ */
+export { getDuesDriftReport } from './projection/duesDriftReport.js'
 
 const STORAGE_BACKUP_PREFIX = 'backups'
 
@@ -44,18 +53,18 @@ export const dailyBackup = onSchedule(
   async () => {
     const db = firestore()
     const dateFolder = new Date().toISOString().slice(0, 10)
-    const collections = await db.listCollections()
+    // One export path for the job and the restore drill: a drill that verified
+    // different code from the one that backs up would prove nothing.
+    const dump = await exportAllCollections(db)
 
-    for (const col of collections) {
-      const snap = await col.get()
-      const data = snap.docs.map((d) => ({ id: d.id, ...d.data() }))
+    for (const [name, data] of Object.entries(dump)) {
       const bucket = storage().bucket()
-      const file = bucket.file(`${STORAGE_BACKUP_PREFIX}/${dateFolder}/${col.id}.json`)
+      const file = bucket.file(`${STORAGE_BACKUP_PREFIX}/${dateFolder}/${name}.json`)
       await file.save(JSON.stringify(data, null, 2), {
         contentType: 'application/json',
         resumable: false,
       })
-      console.log(`Backed up ${col.id}: ${data.length} docs`)
+      console.log(`Backed up ${name}: ${data.length} docs`)
     }
 
     await db.collection('auditLog').add({
@@ -68,6 +77,31 @@ export const dailyBackup = onSchedule(
     })
 
     return { ok: true, date: dateFolder }
+  }
+)
+
+/**
+ * Dues drift reconciliation.
+ *
+ * Reports (never repairs) membership periods whose cached `amountPaid`,
+ * `amountDue` or `paymentStatus` disagree with the ledger computed from the same
+ * periods and payments. A deliberate price edit is not drift — it recomputes
+ * those fields in the same transaction; see ./projection/duesDrift.js.
+ */
+export const duesDriftReconciliation = onSchedule(
+  {
+    schedule: 'every day 03:30',
+    timeZone: 'Asia/Kathmandu',
+    memory: '256MiB',
+  },
+  async () => {
+    const summary = await runDuesDriftJob(firestore())
+    return {
+      gyms: summary.gyms,
+      driftedMembers: summary.driftedMembers,
+      driftedPeriods: summary.driftedPeriods,
+      failed: summary.failed,
+    }
   }
 )
 

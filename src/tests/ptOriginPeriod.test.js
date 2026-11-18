@@ -11,6 +11,26 @@ vi.mock('@/services/firestore', () => {
     isReady: () => true,
     listAll: async (name) => store[name],
     getById: async (name, id) => store[name].find((d) => d.id === id) || null,
+    // Applying PT is ONE guarded transaction now (period patch + recomputed
+    // snapshots + revision bump); this stand-in applies the staged writes in
+    // order, because this store has no rollback to test.
+    commitAtomically: async (apply) =>
+      apply({
+        get: async (name, id) => store[name]?.find((d) => d.id === id) || null,
+        newId: (name) => `mock-${name}-new`,
+        create: (name, data, id) => {
+          const nid = id || `mock-${name}-${store[name].length + 1}`
+          store[name].push({ id: nid, ...data })
+          return nid
+        },
+        update: (name, id, data) => {
+          const doc = store[name].find((d) => d.id === id)
+          if (doc) Object.assign(doc, data)
+        },
+        remove: (name, id) => {
+          store[name] = store[name].filter((d) => d.id !== id)
+        },
+      }),
     createDoc: async (name, data) => {
       const id = `mock-${name}-${store[name].length + 1}`
       const doc = { id, ...data, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }

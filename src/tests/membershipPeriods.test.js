@@ -10,8 +10,36 @@ vi.mock('@/services/firestore', () => {
   return {
     __store: store,
     isReady: () => true,
-    listAll: async (name) => store[name],
+    // Mirrors the real `listAll(name, { where, limit })` contract: the services
+    // now narrow a read to one member/period instead of pulling the collection.
+    listAll: async (name, options = {}) => {
+      const rows = store[name] || []
+      const filter = options.where
+      const filtered = filter
+        ? rows.filter((d) => d && d[filter.field] === filter.value)
+        : rows
+      return options.limit ? filtered.slice(0, options.limit) : filtered
+    },
     getById: async (name, id) => store[name].find((d) => d.id === id) || null,
+    // The money/period writes are atomic in the app; here they simply apply in
+    // order, because this store has no rollback to test.
+    commitAtomically: async (apply) =>
+      apply({
+        get: async (name, id) => store[name]?.find((d) => d.id === id) || null,
+        newId: (name) => `mock-${name}-new`,
+        create: (name, data, id) => {
+          const nid = id || `mock-${name}-${store[name].length + 1}`
+          store[name].push({ id: nid, ...data })
+          return nid
+        },
+        update: (name, id, data) => {
+          const doc = store[name].find((d) => d.id === id)
+          if (doc) Object.assign(doc, data)
+        },
+        remove: (name, id) => {
+          store[name] = store[name].filter((d) => d.id !== id)
+        },
+      }),
     createDoc: async (name, data) => {
       const id = `mock-${name}-${store[name].length + 1}`
       const doc = { id, ...data }
@@ -241,6 +269,18 @@ describe('editMembershipPeriod', () => {
     expect(doc.id).toBe('ms-1')
     expect(doc.memberId).toBe('m1')
     expect(doc.price).toBe(9999)
+  })
+
+  it('refuses to edit a period that is not this member\'s', async () => {
+    // A stale form: the operator switched member (or the period was deleted).
+    // Without the ownership check this would re-price m1's period and then
+    // recompute m2's dues from it.
+    await expect(
+      editMembershipPeriod({ periodId: 'ms-1', memberId: 'm2', patch: { price: 9999 } })
+    ).rejects.toThrow('Membership period not found')
+
+    const doc = __store.memberships.find((m) => m.id === 'ms-1')
+    expect(doc.price).toBe(12000)
   })
 
   it('throws on missing periodId', async () => {

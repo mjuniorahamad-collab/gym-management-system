@@ -13,6 +13,7 @@ import { Button } from '@/components/ui/Button'
 import { Modal } from '@/components/ui/Modal'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { LoadErrorState } from '@/components/ui/LoadErrorState'
 import { Select } from '@/components/ui/Select'
 import { Spinner } from '@/components/ui/Spinner'
 import { DAYS_OF_WEEK } from '@/utils/constants'
@@ -21,10 +22,16 @@ export default function Classes() {
   const { can } = useAuth()
   const toast = useToast()
 
-  const { items: classes, loading } = useCollection('classes')
-  const { items: trainers } = useCollection('trainers')
-  const { items: bookings } = useCollection('bookings')
-  const { items: members } = useCollection('members')
+  const {
+    items: classes,
+    loading,
+    error: classesError,
+    reload: reloadClasses,
+  } = useCollection('classes')
+  const { items: trainers, error: trainersError, reload: reloadTrainers } = useCollection('trainers')
+  const { items: bookings, error: bookingsError, reload: reloadBookings } = useCollection('bookings')
+  const { items: members, error: membersError, reload: reloadMembers } = useCollection('members')
+  const loadError = classesError || trainersError || bookingsError || membersError
 
   const [formOpen, setFormOpen] = useState(false)
   const [editing, setEditing] = useState(null)
@@ -151,6 +158,21 @@ export default function Classes() {
   }
 
   if (loading) return <Spinner label="Loading classes…" />
+
+  if (loadError) {
+    return (
+      <LoadErrorState
+        label="classes"
+        message={loadError}
+        onRetry={() => {
+          reloadClasses()
+          reloadTrainers()
+          reloadBookings()
+          reloadMembers()
+        }}
+      />
+    )
+  }
 
   return (
     <div>

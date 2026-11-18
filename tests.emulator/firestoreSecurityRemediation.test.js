@@ -1096,7 +1096,7 @@ describe('REM renewal transaction payload carries the caller gymId', () => {
     env = await makeEnv()
     await env.withSecurityRulesDisabled(async (ctx) => {
       const fs = ctx.firestore()
-      await fs.doc(`gyms/${GYM_A}`).set({ ownerUid: A.owner, name: 'Gym A' })
+      await fs.doc(`gyms/${GYM_A}`).set({ ownerUid: A.owner, name: 'Gym A', receiptPrefix: 'HWG' })
       await fs.doc(`gyms/${GYM_B}`).set({ ownerUid: B.owner, name: 'Gym B' })
       await fs.doc(`users/${A.owner}`).set({ role: 'owner', gymId: GYM_A })
       await fs.doc(`users/${A.admin}`).set({ role: 'admin', gymId: GYM_A })

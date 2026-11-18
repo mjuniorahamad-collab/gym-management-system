@@ -77,11 +77,15 @@ describe('client tenancy claiming has been removed', () => {
   })
 
   it('settings are read from the tenant-scoped path, never the global singleton', () => {
-    const source = read('../context/SettingsContext.jsx')
+    const contextSource = read('../context/SettingsContext.jsx')
+    const docSource = read('../services/tenantSettingsDoc.js')
     // The scoped document lives under gyms/{gymId}/settings/app.
-    expect(source).toMatch(/doc\(\s*db,\s*'gyms',\s*gymId,\s*'settings',\s*SETTINGS_DOC\s*\)/)
+    expect(docSource).toMatch(
+      /doc\(\s*db,\s*'gyms',\s*gymId,\s*'settings',\s*TENANT_SETTINGS_DOC\s*\)/
+    )
     // There must be no read or write against the shared `settings/app`.
-    expect(source).not.toMatch(/doc\(\s*db,\s*'settings',\s*SETTINGS_DOC\s*\)/)
+    expect(docSource).not.toMatch(/doc\(\s*db,\s*'settings'/)
+    expect(contextSource).not.toMatch(/doc\(\s*db,\s*'settings'/)
   })
 })
 

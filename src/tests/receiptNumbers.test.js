@@ -21,8 +21,13 @@ describe('receipt number helpers', () => {
     expect(formatReceiptNo('SILVER', 123456)).toBe('SILVER-123456')
   })
 
-  it('falls back to a default prefix and rejects non-numbers', () => {
-    expect(formatReceiptNo('', 7)).toBe('HWG-000007')
+  it('never invents a prefix, and rejects non-numbers', () => {
+    // No default brand: an unresolvable prefix mints nothing, so a receipt can
+    // never be issued under a prefix nobody is accountable for.
+    expect(formatReceiptNo('', 7)).toBe('')
+    expect(formatReceiptNo(undefined, 7)).toBe('')
+    expect(formatReceiptNo(null, 7)).toBe('')
+    expect(formatReceiptNo('has spaces', 7)).toBe('')
     expect(formatReceiptNo('HWG', 'abc')).toBe('')
     expect(formatReceiptNo('HWG', -1)).toBe('')
   })

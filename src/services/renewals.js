@@ -1,15 +1,29 @@
 import { parseDate, toDateInputValue } from '@/utils/dateHelpers'
-import { collection, doc, runTransaction } from 'firebase/firestore'
 import { gymTodayKey } from '@/utils/gymTime'
 import { deriveMemberProjection } from '@/utils/memberProjection'
 import { getMembershipPeriod, getRenewalPaymentSummary } from '@/utils/renewal'
 import { freezeTailCharge, tailRequiresAttention } from '@/utils/freezeTails'
-import { createDoc, isReady, updateDocById } from './firestore'
-import { db } from '@/firebase'
+import { commitAtomically, createDoc, isReady, updateDocById } from './firestore'
 import { logAudit } from './audit'
+import {
+  assertLedgerFresh,
+  bumpLedgerRevision,
+  LedgerConflictError,
+  snapshotPatches,
+  withLedgerRevision,
+} from './memberLedger'
 import { requestReprojection } from './projection'
 import { getGymId } from './ownerContext'
-import { fallbackReceiptNo, mintReceiptNoInTransaction, nextReceiptNo, prepareReceiptFloor } from './receipts'
+import {
+  fallbackReceiptNo,
+  formatReceiptNo,
+  nextReceiptNo,
+  nextReceiptSequence,
+  prepareReceiptFloor,
+  receiptCounterId,
+} from './receipts'
+import { requireReceiptPrefix } from './receiptPrefixGuard'
+import { assertOnline } from './connectivity'
 
 function requireValidPlan(plan) {
   if (!plan || !plan.id) throw new Error('Select a valid membership plan')
@@ -83,7 +97,7 @@ export async function renewMembership({
   method,
   date,
   note,
-  receiptPrefix = 'HWG',
+  receiptPrefix: suppliedPrefix,
   effectivePrice,
   isPT = false,
   ptSurcharge = 0,
@@ -96,6 +110,7 @@ export async function renewMembership({
   currency = 'INR',
 }) {
   if (!member || !member.id) throw new Error('A valid member is required to renew')
+  assertOnline('Recording a renewal')
   const { price: basePrice } = requireValidPlan(plan)
   const paid = requirePaidAmount(paidAmount)
   // Payment date = when money was actually received. It is stored on the
@@ -276,6 +291,13 @@ export async function renewMembership({
     throw new Error('No gym selected — a renewal cannot be recorded before tenancy is established')
   }
 
+  // Resolve the receipt prefix before any write is staged. The authoritative
+  // value lives on gyms/{gymId}; the caller's copy is the settings mirror, and
+  // it is only accepted while the two still agree. Resolving it here means the
+  // transaction, its fallback path and the demo path all issue under the same
+  // verified prefix.
+  const receiptPrefix = await requireReceiptPrefix(suppliedPrefix, 'renewMembership')
+
   if (!isReady()) {
     // Demo / offline mode. The mock store has no transaction primitive, so the
     // sequential writes stand in; the invariants they are checking are enforced
@@ -309,48 +331,94 @@ export async function renewMembership({
       effectiveExpiry: demoDerived.effectiveExpiry ?? undefined,
     })
   } else {
-    // Refs are created up front so the payment's id can be stored on the period
-    // inside a single transaction. Firestore allocates the id client-side when
-    // the reference is built, so nothing is written yet.
-    const membershipRef = doc(collection(db, 'memberships'))
-    const paymentRef = doc(collection(db, 'payments'))
-    membershipId = membershipRef.id
-    paymentId = paymentRef.id
-
-    // `canWriteTenant` (firestore.rules) requires EVERY written document to carry
-    // the caller's own gymId, on a create as well as an update. The demo branch
-    // above gets this stamped for it by createDoc, but these writes go straight
-    // to a raw DocumentReference and bypass that helper, so the field is added
-    // here. Without it the rules reject both the period and the payment with an
-    // opaque PERMISSION_DENIED and the renewal is lost.
-    const membershipPayload = { ...membershipData, gymId }
-    const paymentPayload = { ...paymentData, gymId }
-
     // Read the counter floor BEFORE the transaction: the legacy-payments scan
     // must not be repeated on every contention retry.
     const floor = await prepareReceiptFloor()
 
-    try {
-      receiptNo = await runTransaction(db, async (tx) => {
-        const minted = await mintReceiptNoInTransaction(tx, gymId, receiptPrefix, floor)
-        tx.set(membershipRef, { ...membershipPayload, paymentId, receiptNo: minted })
-        tx.set(paymentRef, { ...paymentPayload, membershipId, receiptNo: minted })
-        tx.set(doc(db, 'members', member.id), memberPatch, { merge: true })
-        return minted
-      })
-    } catch (err) {
-      // A failed transaction has no side effects, so retrying without the
-      // counter is safe. This preserves the rule that a payment is never
-      // refused just because a receipt number could not be minted — the
-      // counter is a convenience, the ledger entry is the record.
-      console.warn('[renewals] receipt counter unavailable; retrying without it', err)
-      receiptNo = fallbackReceiptNo(receiptPrefix)
-      await runTransaction(db, async (tx) => {
-        tx.set(membershipRef, { ...membershipPayload, paymentId, receiptNo })
-        tx.set(paymentRef, { ...paymentPayload, membershipId, receiptNo })
-        tx.set(doc(db, 'members', member.id), memberPatch, { merge: true })
-      })
+    /**
+     * One renewal attempt against a freshly read ledger.
+     *
+     * The ledger AS IT WILL BE once this renewal exists, so the snapshots of
+     * the member's OTHER periods are corrected in the same commit. The new
+     * period is excluded from the patch list because it is written directly
+     * from `summary`.
+     *
+     * `withLedgerRevision` retries this whole closure when a concurrent money
+     * write bumped the revision first: the patches are recomputed from the new
+     * history rather than committed stale.
+     */
+    const attempt = async (inputs) => {
+      const PENDING = 'pending-renewal-period'
+      const patches = snapshotPatches({
+        ...inputs,
+        payments: [
+          ...inputs.payments,
+          { ...paymentData, id: 'pending-renewal-payment', membershipId: PENDING },
+        ],
+        memberships: [...inputs.memberships, { ...membershipData, id: PENDING }],
+      }).filter((p) => p.id !== PENDING)
+
+      // Every write the renewal needs, staged once so the counter path and its
+      // fallback commit exactly the same thing. Ids are reserved up front
+      // because the period and its payment reference each other.
+      //
+      // gymId is stamped by commitAtomically, exactly as createDoc does for the
+      // demo path (firestore.rules `canWriteTenant` requires it on every write).
+      const staged = (tx, minted) => {
+        const newMembershipId = tx.newId('memberships')
+        const newPaymentId = tx.newId('payments')
+        tx.create(
+          'memberships',
+          { ...membershipData, paymentId: newPaymentId, receiptNo: minted },
+          newMembershipId
+        )
+        tx.create(
+          'payments',
+          { ...paymentData, membershipId: newMembershipId, receiptNo: minted },
+          newPaymentId
+        )
+        // One write on the member document: the plan/joinDate patch and the
+        // ledger revision bump travel together.
+        bumpLedgerRevision(tx, member.id, inputs.revision, memberPatch)
+        for (const patch of patches) tx.update('memberships', patch.id, patch.fields)
+        return { membershipId: newMembershipId, paymentId: newPaymentId, receiptNo: minted }
+      }
+
+      const commit = async (withCounter) =>
+        commitAtomically(async (tx) => {
+          // First read: the patches above are only valid while the ledger holds.
+          await assertLedgerFresh(tx, member.id, inputs.revision)
+          if (!withCounter) return staged(tx, fallbackReceiptNo(receiptPrefix))
+          // Counter read INSIDE the transaction: the receipt number, the period
+          // and the payment committed together, so a number can be neither
+          // burned nor reissued by a failure or a concurrent terminal.
+          const counter = await tx.get('counters', receiptCounterId())
+          const sequence = nextReceiptSequence(counter?.value, floor)
+          tx.upsert('counters', receiptCounterId(), { value: sequence })
+          return staged(tx, formatReceiptNo(receiptPrefix, sequence))
+        })
+
+      try {
+        return await commit(true)
+      } catch (err) {
+        // A stale ledger is NOT a missing counter: retrying without the counter
+        // would commit the very figures this guard exists to reject, so let the
+        // revision loop re-read and recompute instead.
+        if (err instanceof LedgerConflictError) throw err
+        // A failed transaction has no side effects, so retrying without the
+        // counter is safe. Carve-out: a payment is never refused just because a
+        // receipt number could not be minted — the counter is a convenience, the
+        // ledger entry is the record. What is NOT carved out is the prefix: it is
+        // the same one the guard verified above, never a default.
+        console.warn('[renewals] receipt counter unavailable; retrying without it', err)
+        return await commit(false)
+      }
     }
+
+    const written = await withLedgerRevision(member.id, attempt)
+    membershipId = written.membershipId
+    paymentId = written.paymentId
+    receiptNo = written.receiptNo
   }
 
   // Audit is deliberately AFTER the commit. An audit write inside the

@@ -1,139 +1,216 @@
-import { createDoc, getById, listAll, removeDoc, updateDocById } from './firestore'
+import { commitAtomically, getById } from './firestore'
 import { logAudit } from './audit'
-import { computeMemberLedger } from '@/utils/dues'
+import {
+  asWritten,
+  assertLedgerFresh,
+  bumpLedgerRevision,
+  snapshotPatches,
+  withLedgerRevision,
+} from './memberLedger'
 import { safePaymentAmount } from '@/utils/payments'
-import { nextReceiptNo } from './receipts'
+import {
+  formatReceiptNo,
+  nextReceiptSequence,
+  prepareReceiptFloor,
+  receiptCounterId,
+} from './receipts'
+import { requireReceiptPrefix } from './receiptPrefixGuard'
+import { assertOnline } from './connectivity'
 
 /**
  * Recompute every membership-period snapshot (amountPaid / amountDue /
  * paymentStatus) for one member from the finance ledger — the same single
- * source of truth used by all UI screens.
+ * source of truth used by all UI screens — without touching a payment.
  *
- * Called after EVERY payment mutation (create, delete) so stored snapshots
- * can never drift from reality and stale "Paid in full" states are
- * impossible.
+ * Runs on the same ledger-revision guard as the money paths: the figures are
+ * computed from one read, the transaction refuses to write them if the member's
+ * ledger moved in the meantime, and the retry recomputes from the new history.
+ * A repair therefore cannot overwrite a payment recorded a second earlier —
+ * which is exactly what the old "recompute, then write each period" loop could
+ * do.
  *
  * Returns the list of period snapshots that were written.
- *
- * `payments` may be supplied by a caller that has already read the collection
- * in the same operation, to avoid a second identical full read. It must be the
- * complete, unfiltered collection - the ledger filters by memberId itself.
  */
-export async function refreshMembershipSnapshots(memberId, { payments: paymentsOverride } = {}) {
+export async function refreshMembershipSnapshots(memberId) {
+  assertOnline('Recalculating balances')
   if (!memberId) return []
-  const [member, plans, payments, memberships] = await Promise.all([
-    getById('members', memberId),
-    listAll('membershipPlans'),
-    paymentsOverride ? Promise.resolve(paymentsOverride) : listAll('payments'),
-    listAll('memberships'),
-  ])
 
-  const ownPeriods = memberships.filter((m) => m && m.id && m.memberId === memberId)
-  const ledger = computeMemberLedger({ member, plans, payments, memberships })
-  const figuresById = new Map(ledger.periods.filter((p) => p.id).map((p) => [p.id, p]))
+  const attempt = async (inputs) => {
+    const patches = snapshotPatches(inputs)
+    // Nothing to write, nothing to guard: a no-op refresh must not bump the
+    // revision and make every other terminal retry.
+    if (patches.length === 0) return patches
 
-  const updated = []
-  for (const period of ownPeriods) {
-    const figures = figuresById.get(period.id)
-    if (!figures) continue
-    const patch = {
-      amountPaid: figures.paid,
-      amountDue: figures.due,
-      paymentStatus: figures.status,
-    }
-    const unchanged =
-      Number(period.amountPaid) === patch.amountPaid &&
-      Number(period.amountDue) === patch.amountDue &&
-      period.paymentStatus === patch.paymentStatus
-    if (!unchanged) {
-      await updateDocById('memberships', period.id, patch)
-      updated.push({ id: period.id, ...patch })
-    }
+    await commitAtomically(async (tx) => {
+      await assertLedgerFresh(tx, memberId, inputs.revision)
+      bumpLedgerRevision(tx, memberId, inputs.revision)
+      for (const patch of patches) tx.update('memberships', patch.id, patch.fields)
+    })
+
+    return patches
   }
-  return updated
+
+  return asWritten(await withLedgerRevision(memberId, attempt))
 }
 
 /**
- * Record a member payment in one consistent workflow:
+ * Record a member payment in one consistent, ATOMIC workflow:
  *
- * 1. Creates the `payments` document, stamping `type`, `memberName`,
- *    `planName` and `receiptNo`.
- * 2. The payment is attributed through `membershipId` when a target period
- *    is known — dues are computed per period, so an unattributed payment
- *    cannot reliably settle a specific balance.
- * 3. Recomputes ALL of the member's period snapshots from the finance
- *    ledger (covers both targeted payments and legacy unallocated cash).
- * 4. Appends an audit entry.
+ * 1. Validates the target period against this member's own periods — a stale
+ *    target (e.g. the member was changed after the form opened) is dropped, so
+ *    cash is never attributed to someone else's period.
+ * 2. In ONE transaction: verifies the member's ledger has not moved since it
+ *    was read, mints the receipt number (per-gym counter), creates the
+ *    `payments` document, and rewrites every period snapshot that the new
+ *    payment changes.
+ *
+ * The transaction is the point: previously the payment was written first and
+ * the snapshots recomputed afterwards, so a failure in between left a recorded
+ * payment with a stale "due"/"paid in full" state that only the nightly sweep
+ * could repair. Now either the whole money movement lands or none of it does.
+ *
+ * ## Isolation, not just atomicity
+ *
+ * The ledger is a QUERY, and the web SDK's transaction cannot run one, so the
+ * history is read before the transaction opens. Two terminals recording
+ * payments for the same member at the same time would then each compute
+ * snapshots from the other's missing payment and the later commit would
+ * overwrite the earlier one — atomic, but wrong. The member's ledger revision
+ * is therefore read with the history and re-checked as the transaction's first
+ * read; a mismatch aborts and `withLedgerRevision` re-reads and recomputes.
+ *
+ * The audit entry is written AFTER the commit and stays outside it: auditing
+ * must never be able to roll back a payment, and it never throws.
  */
 export async function recordPayment({
   values,
   memberName = '',
   planName = '',
-  receiptPrefix = 'HWG',
+  receiptPrefix: suppliedPrefix,
   type = 'membership',
 }) {
+  // Before a receipt number is minted or anything is staged: an offline write
+  // would be queued by the SDK and land later against a ledger that moved on.
+  assertOnline('Recording a payment')
+
   const amount = safePaymentAmount(values.amount)
-  // Receipt numbers came from `Date.now().toString().slice(-6)`, whose value
-  // space is 1e6 ms — so two payments roughly 16m40s apart with the same
-  // sub-second offset minted the SAME receipt number. The per-gym counter
-  // transaction makes duplicates impossible and keeps receipts in issue order.
-  const receiptNo = await nextReceiptNo(receiptPrefix)
+  // Resolved before anything is written: the authoritative prefix lives on
+  // gyms/{gymId}, and a caller holding the settings mirror is only trusted
+  // while the two still agree.
+  const receiptPrefix = await requireReceiptPrefix(suppliedPrefix, 'recordPayment')
 
-  let membershipId = values.membershipId || ''
-  if (membershipId) {
-    const doc = await getById('memberships', membershipId)
-    if (!doc || (values.memberId && doc.memberId !== values.memberId)) {
-      // Stale target (e.g. the member was changed after the form opened) —
-      // never attribute cash to someone else's period.
-      membershipId = ''
-    }
-  }
+  // Legacy receipt numbers were derived from the clock and can collide with a
+  // minted one, so the counter floor is seeded from them. Computed (and cached)
+  // outside the transaction: a full payments read must not run on every retry.
+  const floor = await prepareReceiptFloor()
 
-  const paymentData = {
-    ...values,
-    membershipId,
-    type,
-    ...(planName ? { planName } : {}),
-    receiptNo,
-    memberName,
-  }
-  const id = await createDoc('payments', paymentData)
-
-  // Refresh EVERY period of this member from the ledger AFTER the payment
-  // exists so all stored figures include it (targeted or FIFO-allocated).
-  let membership = null
-  if (values.memberId) {
-    const refreshed = await refreshMembershipSnapshots(values.memberId)
+  const attempt = async (inputs) => {
+    let membershipId = values.membershipId || ''
     if (membershipId) {
-      const figures = refreshed.find((r) => r.id === membershipId)
-      if (figures) {
-        const doc = await getById('memberships', membershipId)
-        membership = doc ? { ...doc } : { id: membershipId, ...figures }
-      }
+      const valid = inputs
+        ? inputs.memberships.some((p) => p.id === membershipId && p.memberId === values.memberId)
+        : Boolean(await getById('memberships', membershipId))
+      // Never attribute cash to another member's period.
+      if (!valid) membershipId = ''
     }
+
+    const paymentData = {
+      ...values,
+      membershipId,
+      type,
+      ...(planName ? { planName } : {}),
+      memberName,
+    }
+
+    // The payment being recorded is part of the ledger that decides its own
+    // snapshots, so it is included before it exists.
+    const patches = inputs
+      ? snapshotPatches({
+          ...inputs,
+          payments: [...inputs.payments, { ...paymentData, id: 'pending-payment' }],
+        })
+      : []
+    const targetPatch = patches.find((p) => p.id === membershipId) || null
+
+    const { id, receiptNo } = await commitAtomically(async (tx) => {
+      // FIRST read: refuse to write figures computed from a stale ledger.
+      if (inputs) await assertLedgerFresh(tx, values.memberId, inputs.revision)
+      // Counter read INSIDE the transaction, so the number and the payment it
+      // labels are committed together — a receipt can be neither burned nor
+      // reissued by a failure or a concurrent terminal.
+      const counter = await tx.get('counters', receiptCounterId())
+      const sequence = nextReceiptSequence(counter?.value, floor)
+      const minted = formatReceiptNo(receiptPrefix, sequence)
+      if (inputs) bumpLedgerRevision(tx, values.memberId, inputs.revision)
+      tx.upsert('counters', receiptCounterId(), { value: sequence })
+      const paymentId = await tx.create('payments', { ...paymentData, receiptNo: minted })
+      for (const patch of patches) tx.update('memberships', patch.id, patch.fields)
+      return { id: paymentId, receiptNo: minted }
+    })
+
+    let membership = null
+    if (membershipId) {
+      const period = inputs?.memberships.find((p) => p.id === membershipId) || null
+      if (period) membership = { ...period, ...(targetPatch?.fields || {}) }
+    }
+
+    return { id, receiptNo, membership, membershipId }
   }
+
+  // A payment with no member has no ledger to be stale against (the target
+  // period check above still applies), so it commits once, unguarded.
+  const written = await withLedgerRevision(values.memberId, attempt)
 
   await logAudit({
     action: 'create',
     entity: 'payments',
-    entityId: id,
-    details: { member: memberName || undefined, amount, membershipId: membershipId || undefined },
+    entityId: written.id,
+    details: {
+      member: memberName || undefined,
+      amount,
+      membershipId: written.membershipId || undefined,
+    },
   })
 
-  return { id, receiptNo, membership, amount }
+  return { ...written, amount }
 }
 
 /**
- * Delete a payment through the same source of truth:
+ * Delete a payment atomically:
  *
- * 1. Removes the `payments` document from Firestore.
- * 2. Recomputes the affected member's period snapshots so paid amounts,
- *    dues, statuses ("Paid in full") and dashboard totals revert correctly.
- * 3. Appends an audit entry.
+ * 1. Computes the member's snapshots with the payment REMOVED from the ledger.
+ * 2. In ONE transaction: verifies the ledger has not moved since that read,
+ *    deletes the `payments` document and rewrites the changed period snapshots,
+ *    so dues, statuses ("Paid in full") and totals revert together with the
+ *    deleted cash.
+ *
+ * Same reasoning as `recordPayment`: no window where the money is gone but the
+ * stored figures still include it, and no overwrite of a concurrent write.
+ * Audit stays outside the transaction.
  */
 export async function deletePayment({ payment }) {
   if (!payment?.id) throw new Error('A payment reference is required')
-  await removeDoc('payments', payment.id)
+  assertOnline('Deleting a payment')
+
+  const attempt = async (inputs) => {
+    const patches = inputs
+      ? snapshotPatches({
+          ...inputs,
+          payments: inputs.payments.filter((p) => p.id !== payment.id),
+        })
+      : []
+
+    await commitAtomically(async (tx) => {
+      if (inputs) await assertLedgerFresh(tx, payment.memberId, inputs.revision)
+      tx.remove('payments', payment.id)
+      if (inputs) bumpLedgerRevision(tx, payment.memberId, inputs.revision)
+      for (const patch of patches) tx.update('memberships', patch.id, patch.fields)
+    })
+
+    return patches
+  }
+
+  const patches = await withLedgerRevision(payment.memberId, attempt)
 
   await logAudit({
     action: 'delete',
@@ -146,10 +223,5 @@ export async function deletePayment({ payment }) {
     },
   })
 
-  let memberships = []
-  if (payment.memberId) {
-    memberships = await refreshMembershipSnapshots(payment.memberId)
-  }
-
-  return { id: payment.id, memberships }
+  return { id: payment.id, memberships: asWritten(patches) }
 }

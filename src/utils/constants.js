@@ -47,6 +47,14 @@ export const PERMISSIONS = {
   'seed.data': ['owner', 'admin'],
 }
 
+/**
+ * The roles that may read finance data — derived, never re-typed.
+ *
+ * The `getDuesDriftReport` callable gates on this list; it is bundled from here
+ * so the server and the app cannot drift apart on who counts as finance.
+ */
+export const FINANCE_VIEW_ROLES = PERMISSIONS['finance.view']
+
 export const PAYMENT_METHODS = ['Cash', 'UPI / Online', 'Card', 'Bank Transfer', 'Other']
 
 export const EXPENSE_CATEGORIES = [

@@ -1,0 +1,105 @@
+name: Deploy (hosting · Firestore rules · indexes)
+
+# Deploys the static site and the Firestore security surface only.
+#
+# Cloud Functions are deliberately excluded: they need Blaze. Adding them later
+# means `npm ci --prefix functions`, `npm --prefix functions run build` and
+# `functions` in the --only list (see AUDIT-gym-management-system.md).
+#
+# TWO GATES RUN BEFORE ANYTHING IS DEPLOYED
+#   1. Green CI — a completed, successful run of ci.yml for this exact commit.
+#   2. Index diff — `firebase deploy --only firestore:indexes` DELETES every
+#      composite index that exists in the project but is absent from
+#      firestore.indexes.json, including ones created in the console.
+#      scripts/index-diff.mjs prints what would be created and deleted, and
+#      fails the run when deletions were not confirmed on the dispatch.
+#
+# PHASE 1 (current): workflow_dispatch only, because the first index deploy after
+# the cleanup removes indexes that are live in the project. PHASE 2: uncomment
+# the push trigger to auto-deploy on main; both gates still apply.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_index_deletions:
+        description: 'Deploy even though indexes will be DELETED (check the diff summary first)'
+        type: boolean
+        default: false
+  # PHASE 2 — enable after the first reviewed index deploy:
+  # push:
+  #   branches: [main]
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read # read CI run conclusions for the deployed commit
+
+env:
+  PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID || 'himalye-wonders-gym' }}
+
+jobs:
+  deploy:
+    name: Firebase deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Gate 1. Any completed green run of CI for this commit passes, so a later
+      # cancelled duplicate run cannot block an otherwise tested commit.
+      - name: Require green CI for this commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          RUNS="repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${SHA}&per_page=100"
+          GREEN=$(gh api "$RUNS" --jq '[.workflow_runs[] | select(.status == "completed" and .conclusion == "success")] | length')
+          if [ "$GREEN" -lt 1 ]; then
+            echo "CI runs for ${SHA}: $(gh api "$RUNS" --jq '[.workflow_runs[] | "\(.status)/\(.conclusion // "-")"] | join(", ") | if . == "" then "none" else . end')"
+            echo "::error::No successful CI run for ${SHA}. Deploy only runs on a commit whose CI is green."
+            exit 1
+          fi
+          echo "CI is green for ${SHA}."
+
+      - name: Check deploy credential
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          if [ -z "$FIREBASE_SERVICE_ACCOUNT" ]; then
+            echo "::error::Repository secret FIREBASE_SERVICE_ACCOUNT is not set. Add the service-account key JSON (see AUDIT-gym-management-system.md)."
+            exit 1
+          fi
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
+      # Gate 2. Read-only.
+      - name: Index diff (before deploy)
+        env:
+          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          CONFIRM_INDEX_DELETIONS: ${{ inputs.confirm_index_deletions }}
+        run: node scripts/index-diff.mjs --project="$PROJECT_ID" --access-token="$ACCESS_TOKEN"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Build hosting bundle
+        run: npm run build
+
+      - name: Deploy hosting, rules and indexes
+        run: |
+          npx --yes firebase-tools@15 deploy \
+            --only hosting,firestore:rules,firestore:indexes \
+            --project "$PROJECT_ID" \
+            --non-interactive
