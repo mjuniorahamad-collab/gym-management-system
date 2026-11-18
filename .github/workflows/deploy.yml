@@ -7,15 +7,33 @@ name: Deploy (hosting · Firestore rules · indexes)
 # bundle build (`npm --prefix functions run build`) and `functions` to the
 # `--only` list below — see the deploy plan in AUDIT-gym-management-system.md.
 #
-# WARNING: `firebase deploy --only firestore:indexes` treats
-# firestore.indexes.json as the source of truth. Any composite index that exists
-# in the project but is absent from the file is DELETED, including indexes
-# created by hand in the console. Keep the file and the console in sync.
+# TWO GATES BEFORE ANYTHING IS DEPLOYED
+#   1. A green CI run for the exact commit being deployed. Without it the job
+#      stops before it touches Firebase, so a deploy can never ship a commit
+#      whose tests did not pass.
+#   2. An index diff. `firebase deploy --only firestore:indexes` treats
+#      firestore.indexes.json as the whole truth: every composite index that
+#      exists in the project but is absent from the file is DELETED, including
+#      indexes created by hand in the console. `scripts/index-diff.mjs` prints
+#      what would be created and deleted, and fails the run when deletions are
+#      planned unless confirm_index_deletions was set on the dispatch.
+#
+# TRIGGER — PHASE 1 (current): workflow_dispatch only.
+#   The first index deploy after the cleanup removes indexes that are live in the
+#   project, so it is manual and reviewed until it has been done once and the
+#   resulting console state has been checked. PHASE 2: uncomment the `push`
+#   trigger below to auto-deploy on main; the CI gate and the diff still apply.
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
+    inputs:
+      confirm_index_deletions:
+        description: 'Deploy even though indexes will be DELETED (read the diff in this run first)'
+        type: boolean
+        default: false
+  # PHASE 2 — enable after the first reviewed index deploy:
+  # push:
+  #   branches: [main]
 
 concurrency:
   group: deploy-${{ github.ref }}
@@ -23,6 +41,7 @@ concurrency:
 
 permissions:
   contents: read
+  actions: read # read CI run conclusions for the commit being deployed
 
 jobs:
   deploy:
@@ -53,16 +72,45 @@ jobs:
             exit 1
           fi
 
-      - name: Write service-account key
+      # Gate 1. The workflow is dispatch-only, so "CI is green" is checked
+      # against this commit's CI run rather than assumed from a push trigger.
+      - name: Require green CI for this commit
         env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
         run: |
-          umask 077
-          printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$RUNNER_TEMP/firebase-sa.json"
+          set -euo pipefail
+          CONCLUSION=$(
+            gh api \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${SHA}&per_page=20" \
+              --jq '[.workflow_runs[] | select(.status == "completed")] | (.[0].conclusion // "none")'
+          )
+          echo "CI conclusion for ${SHA}: ${CONCLUSION}"
+          if [ "$CONCLUSION" != "success" ]; then
+            echo "::error::No successful CI run for ${SHA} (conclusion: ${CONCLUSION}). Deploy only runs on a green CI commit."
+            exit 1
+          fi
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
+      # Gate 2. Read-only: lists the project's indexes and prints the diff.
+      - name: Index diff (before deploy)
+        env:
+          PROJECT: ${{ vars.FIREBASE_PROJECT_ID }}
+          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          CONFIRM_INDEX_DELETIONS: ${{ inputs.confirm_index_deletions }}
+        run: |
+          node scripts/index-diff.mjs \
+            --project="${PROJECT:-himalye-wonders-gym}" \
+            --access-token="$ACCESS_TOKEN" \
+            --indexes=firestore.indexes.json
 
       - name: Deploy hosting, rules and indexes
         env:
-          GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/firebase-sa.json
           FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID }}
         run: |
           PROJECT="${FIREBASE_PROJECT_ID:-himalye-wonders-gym}"
