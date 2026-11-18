@@ -23,6 +23,12 @@ name: Deploy (hosting · Firestore rules · indexes)
 # The safe order for a project whose live release predates the repository is
 # hosting → rules → indexes, each reviewed on its own.
 #
+# AFTER THE HOSTING STEP, scripts/smoke-hosting.mjs checks the live URL against
+# the bundle that was just built: the served index.html must reference the same
+# entry hashes, the entry bytes must match (sha256), and a deep link must serve
+# the app through the SPA rewrite. A release that did not publish, or publishes a
+# truncated bundle, fails the job before rules or indexes move.
+#
 # PHASE 1 (current): workflow_dispatch only. PHASE 2: uncomment the push trigger
 # to auto-deploy on main; every gate above still applies.
 
@@ -124,6 +130,15 @@ jobs:
             --only hosting \
             --project "$PROJECT_ID" \
             --non-interactive
+
+      # Step 1b: the deploy command can succeed while the live origin still serves
+      # the previous bundle. Compare the live URL with the build that was just
+      # produced, so a stale or broken bundle fails here instead of going live
+      # silently and taking the next stage with it.
+      - name: Smoke check the live hosting URL
+        env:
+          HOSTING_URL: ${{ vars.FIREBASE_HOSTING_URL || format('https://{0}.web.app', env.PROJECT_ID) }}
+        run: node scripts/smoke-hosting.mjs --base-url="$HOSTING_URL" --dist=dist
 
       # Step 2: the security surface. Only after the hosting bundle is verified
       # against the live project.
