@@ -29,6 +29,7 @@
 
 import { appendFileSync, readFileSync } from 'node:fs'
 import process from 'node:process'
+import { pathToFileURL } from 'node:url'
 
 const API_ROOT = 'https://firestore.googleapis.com/v1'
 const DEFAULT_DATABASE = '(default)'
@@ -63,12 +64,12 @@ function usage() {
 }
 
 /** The part of a field that defines the index it belongs to. */
-function fieldKey(field) {
+export function fieldKey(field) {
   return `${field.fieldPath}:${field.order || field.arrayConfig || 'ASCENDING'}`
 }
 
 /** Two indexes are the same index when scope, collection and fields all match. */
-function indexKey(index) {
+export function indexKey(index) {
   return `${index.queryScope}|${index.collectionGroup}|${index.fields.map(fieldKey).join(',')}`
 }
 
@@ -77,7 +78,7 @@ function describe(index) {
 }
 
 /** The local definition file, reduced to what the diff compares. */
-function readDesired(path) {
+export function readDesired(path) {
   const parsed = JSON.parse(readFileSync(path, 'utf8'))
   const indexes = (parsed.indexes || []).map((index) => {
     const collectionGroup = index.collectionGroup || index.collectionId
@@ -94,7 +95,7 @@ function readDesired(path) {
 }
 
 /** One indexes.list entry, reduced to the same shape as readDesired(). */
-function normalise(item) {
+export function normalise(item) {
   const match = /\/collectionGroups\/([^/]+)\/indexes\//.exec(item.name || '')
   const fields = item.fields || []
   return {
@@ -220,7 +221,10 @@ async function main() {
   console.log('\nIndex diff check passed.')
 }
 
-main().catch((err) => {
-  console.error(`\nAborted: ${err?.message || err}`)
-  process.exit(2)
-})
+// Imported by src/tests/indexDiff.test.js, which never wants the CLI to run.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error(`\nAborted: ${err?.message || err}`)
+    process.exit(2)
+  })
+}
