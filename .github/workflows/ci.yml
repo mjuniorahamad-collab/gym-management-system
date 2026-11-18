@@ -73,14 +73,16 @@ jobs:
       - name: Projection writer suite (Admin SDK)
         run: npm run test:functions
 
-  # Frozen historical baselines. They are expected to be red by design, so this
-  # job reports (continue-on-error) instead of gating: the pipeline's verdict is
-  # decided by `app` and `rules`, and a regression in the live suites can no
-  # longer hide behind a permanently red baseline.
+  # Frozen historical baselines. The two archived files are red by design, so the
+  # job does not tolerate their failures blindly: scripts/assert-frozen-baseline.mjs
+  # compares the archived file's own counts with the documented ones (26 failed /
+  # 381 passed Firestore, 32 failed / 18 passed Storage). Matching counts keep the
+  # job green; any drift — an edited assertion, a test that stopped being
+  # collected, rules that moved — turns it red. The gating `app` and `rules` jobs
+  # stay independent of it.
   baseline:
-    name: Frozen baselines (informational, non-gating)
+    name: Frozen baselines (expected counts asserted)
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -100,10 +102,14 @@ jobs:
       - name: Install Firebase CLI
         run: npm install --global firebase-tools@15
 
-      # Phase 0.5A vulnerable Firestore baseline (26 known-red assertions).
+      # Phase 0.5A vulnerable Firestore baseline: runs the suite, then asserts the
+      # archived file still fails 26 and passes 381.
       - name: Frozen Firestore baseline
         run: npm run test:rules:frozen
 
-      # Pre-Phase-3A Storage baseline (32 known-red assertions).
+      # Pre-Phase-3A Storage baseline: asserts the archived file still fails 32 and
+      # passes 18. This step also runs when the Firestore counts drifted, so both
+      # baselines report in the same run.
       - name: Frozen Storage baseline
+        if: always()
         run: npm run test:storage:frozen
