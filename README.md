@@ -78,6 +78,7 @@ from the gym's data.
 | `npm run format`   | Format with Prettier                   |
 | `npm run test`     | Run the Vitest suite (once)            |
 | `npm run test:watch` | Run tests in watch mode             |
+| `npm run smoke:hosting` | Check the live site against `dist/` (see Deploying) |
 
 ## Project structure
 
@@ -162,57 +163,96 @@ never overwrites an existing gymId or destroys data.
 
 ## Deploying to Firebase
 
+Deploys run from GitHub Actions (`.github/workflows/deploy.yml`), not from a laptop, and ship in
+three reviewable stages instead of one `firebase deploy`.
+
+### One-time setup
+
+1. Create a service account with `Firebase Hosting Admin`, `Firebase Rules Admin` and Cloud Datastore
+   index permissions, and store its JSON key as the repository secret `FIREBASE_SERVICE_ACCOUNT`.
+2. Optional repository variables: `FIREBASE_PROJECT_ID` (default `himalye-wonders-gym`) and
+   `FIREBASE_HOSTING_URL` (default `https://<project-id>.web.app`, used by the post-deploy smoke check).
+3. Cloud Functions are **not** part of this workflow — they need Blaze. Deploy them separately.
+
+### Triggering a deploy
+
+Actions → **Deploy (hosting · Firestore rules · indexes)** → *Run workflow*, branch `main`, and pick
+`deploy_scope`:
+
+| `deploy_scope` | What it touches | When to use it |
+| --- | --- | --- |
+| `hosting` (default) | the new `dist/` bundle only | first, so the bundle can be verified before the security surface moves |
+| `hosting+rules` | adds `firestore:rules` | after the new bundle is confirmed on the live origin |
+| `hosting+rules+indexes` | adds `firestore:indexes` — the **only destructive step** | last, and only after reading the index diff |
+
+Every run first requires a green `ci.yml` run for the same commit plus the `FIREBASE_SERVICE_ACCOUNT`
+secret, so a red commit cannot be deployed. When indexes are in scope, `scripts/index-diff.mjs`
+prints what the deploy would create and delete before anything is touched, and fails the run unless
+`confirm_index_deletions` is ticked. **`firebase deploy --only firestore:indexes` deletes every
+project index that is absent from `firestore.indexes.json`** — the first run after the cleanup is
+expected to plan ~10 deletions; review them in the job summary.
+
+After the hosting step, `scripts/smoke-hosting.mjs` compares the live URL with the bundle that was
+just built: the served `index.html` must reference the same hashed entry files, the entry bytes must
+match (sha256), and a deep link (`/login`) must serve the app through the SPA rewrite. A deploy that
+publishes a stale or broken bundle fails the job there, before rules or indexes move. The same check
+can be run by hand against the live site: `npm run smoke:hosting` (add
+`-- --base-url=https://<project-id>.web.app` for another project).
+
+The workflow is dispatch-only for now; the `push: branches: [main]` trigger in the file is the
+Phase 2 switch for auto-deploy, and every gate above still applies.
+
+### Deploying from your machine (break-glass, same order)
+
+`git push` deploys nothing, and there is no supported one-shot `firebase deploy`:
+
 ```bash
-# 1. One-time: install the Firebase CLI and log in
-npm i -g firebase-tools
-firebase login
-
-# 2. Point the project at your Firebase project
-firebase use --add            # select your project
-
-# 3. Build the frontend
-npm run build
-
-# 4. Deploy everything
-firebase deploy               # hosting + firestore rules + storage rules + functions
-
-# Or deploy piece by piece:
-firebase deploy --only hosting
-firebase deploy --only firestore:rules
-firebase deploy --only storage
-firebase deploy --only functions
+npm ci && npm run lint && npm run build && npm test
+firebase deploy --only hosting --project <project-id>
+npm run smoke:hosting -- --base-url=https://<project-id>.web.app
+firebase deploy --only firestore:rules --project <project-id>
+firebase deploy --only firestore:indexes --project <project-id>   # read the diff first
+firebase deploy --only storage --project <project-id>             # FIRST-TIME: verify uploads
+firebase deploy --only functions --project <project-id>           # needs Blaze
 ```
 
-> ⚠️ Before deploying, set your project in `.firebaserc` (or via `firebase use`) and make sure
-> the first admin user exists so rules don't lock you out.
+> ⚠️ Make sure the project in `.firebaserc` (or `--project`) is right and that the first admin user
+exists before rules move, so the deploy cannot lock you out.
 
 ## Production deployment checklist
 
-Run this in order. Rules and functions deploy **separately** from the frontend, and a `git push`
-deploys nothing.
+Nothing deploys on `git push`. Hosting, Firestore rules and indexes ship as separate steps, and each
+one is checked on the live origin before the next is allowed to run.
 
-```bash
-npm ci && npm run lint && npm run build && npm test     # 1. gate
-firebase emulators:exec --project demo-himalye-gym --only firestore \
-  "vitest run --config vitest.emulator.js"              # 2. rules suite (needs Java)
-firebase deploy --only hosting                          # 3. frontend
-firebase deploy --only firestore:rules,firestore:indexes # 4. security rules + indexes
-firebase deploy --only storage                          # 5. storage rules (FIRST-TIME: verify uploads)
-firebase deploy --only functions                        # 6. scheduled jobs + callable
-```
+**Before the first dispatch**
 
-Before step 4/5, confirm in the Firebase Console:
+- [ ] Secret `FIREBASE_SERVICE_ACCOUNT` exists, plus optional variables `FIREBASE_PROJECT_ID` and
+      `FIREBASE_HOSTING_URL`.
+- [ ] `main` CI is green — the deploy workflow re-checks this for the exact commit and refuses otherwise.
+- [ ] Storage rules have been released at least once (`firebase deploy --only storage`). If the bucket
+      has never had rules, client uploads are denied and member photos / logos do not work. Storage is
+      not part of the workflow.
+- [ ] Cloud Functions are deployed (`firebase deploy --only functions`, Blaze required), otherwise
+      membership `status` is never derived server-side, expiry reminders never run and there is no
+      nightly backup.
+- [ ] Build `.env` from `.env.example`. `VITE_ENABLE_SEEDING` must stay `false` in production.
 
-- [ ] Storage rules have been released at least once (`Rules` tab shows a ruleset). If the bucket
-      has never had rules, client uploads are denied and member photos / logos do not work.
+**Staged deploy**
+
+1. `deploy_scope=hosting` — publishes `dist/`, then the smoke check proves the live URL is that build
+   (same entry hashes, same bytes, deep link through the SPA rewrite).
+2. Load the app once and check the browser console for CSP violations (`firebase.json` ships a
+   Content-Security-Policy). If anything is wrong, roll back to the previous bundle before continuing.
+3. `deploy_scope=hosting+rules` — the Firestore rules move. Re-check login, tenancy and one payment.
+4. `deploy_scope=hosting+rules+indexes` — read the index diff in the job summary first; the first run
+   after the cleanup is expected to plan ~10 deletions, and the job refuses to continue unless
+   `confirm_index_deletions` is ticked.
+
+Before the rules move (step 3), confirm in the Firebase Console:
+
 - [ ] `gyms/{gymId}` exists for every gym, with `ownerUid` and `receiptPrefix` (required before any
       receipt can be issued — `receiptPrefixGuard` fails closed).
 - [ ] `users/{uid}` exists for every staff account with `role` + `gymId`.
-- [ ] Cloud Functions are deployed, otherwise membership `status` is never derived server-side,
-      expiry reminders never run and there is no nightly backup.
-- [ ] Build `.env` from `.env.example`. `VITE_ENABLE_SEEDING` must stay `false` in production.
-- [ ] After the hosting deploy, load the app once and check the browser console for CSP violations
-      (`firebase.json` now ships a Content-Security-Policy).
 
 > Data reset: the audit branch contains no production data. To start clean, delete the test
 > collections from Firestore (or use a fresh Firebase project) **before** creating the first real
