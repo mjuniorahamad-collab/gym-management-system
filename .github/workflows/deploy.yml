@@ -2,33 +2,27 @@ name: Deploy (hosting · Firestore rules · indexes)
 
 # Deploys the static site and the Firestore security surface only.
 #
-# Cloud Functions are deliberately NOT part of this workflow: they require the
-# Blaze plan. When that changes, add `npm ci --prefix functions`, the vendor
-# bundle build (`npm --prefix functions run build`) and `functions` to the
-# `--only` list below — see the deploy plan in AUDIT-gym-management-system.md.
+# Cloud Functions are deliberately excluded: they need Blaze. Adding them later
+# means `npm ci --prefix functions`, `npm --prefix functions run build` and
+# `functions` in the --only list (see AUDIT-gym-management-system.md).
 #
-# TWO GATES BEFORE ANYTHING IS DEPLOYED
-#   1. A green CI run for the exact commit being deployed. Without it the job
-#      stops before it touches Firebase, so a deploy can never ship a commit
-#      whose tests did not pass.
-#   2. An index diff. `firebase deploy --only firestore:indexes` treats
-#      firestore.indexes.json as the whole truth: every composite index that
-#      exists in the project but is absent from the file is DELETED, including
-#      indexes created by hand in the console. `scripts/index-diff.mjs` prints
-#      what would be created and deleted, and fails the run when deletions are
-#      planned unless confirm_index_deletions was set on the dispatch.
+# TWO GATES RUN BEFORE ANYTHING IS DEPLOYED
+#   1. Green CI — a completed, successful run of ci.yml for this exact commit.
+#   2. Index diff — `firebase deploy --only firestore:indexes` DELETES every
+#      composite index that exists in the project but is absent from
+#      firestore.indexes.json, including ones created in the console.
+#      scripts/index-diff.mjs prints what would be created and deleted, and
+#      fails the run when deletions were not confirmed on the dispatch.
 #
-# TRIGGER — PHASE 1 (current): workflow_dispatch only.
-#   The first index deploy after the cleanup removes indexes that are live in the
-#   project, so it is manual and reviewed until it has been done once and the
-#   resulting console state has been checked. PHASE 2: uncomment the `push`
-#   trigger below to auto-deploy on main; the CI gate and the diff still apply.
+# PHASE 1 (current): workflow_dispatch only, because the first index deploy after
+# the cleanup removes indexes that are live in the project. PHASE 2: uncomment
+# the push trigger to auto-deploy on main; both gates still apply.
 
 on:
   workflow_dispatch:
     inputs:
       confirm_index_deletions:
-        description: 'Deploy even though indexes will be DELETED (read the diff in this run first)'
+        description: 'Deploy even though indexes will be DELETED (check the diff summary first)'
         type: boolean
         default: false
   # PHASE 2 — enable after the first reviewed index deploy:
@@ -41,7 +35,10 @@ concurrency:
 
 permissions:
   contents: read
-  actions: read # read CI run conclusions for the commit being deployed
+  actions: read # read CI run conclusions for the deployed commit
+
+env:
+  PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID || 'himalye-wonders-gym' }}
 
 jobs:
   deploy:
@@ -49,6 +46,45 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      # Gate 1. Any completed green run of CI for this commit passes, so a later
+      # cancelled duplicate run cannot block an otherwise tested commit.
+      - name: Require green CI for this commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          RUNS="repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${SHA}&per_page=100"
+          GREEN=$(gh api "$RUNS" --jq '[.workflow_runs[] | select(.status == "completed" and .conclusion == "success")] | length')
+          if [ "$GREEN" -lt 1 ]; then
+            echo "CI runs for ${SHA}: $(gh api "$RUNS" --jq '[.workflow_runs[] | "\(.status)/\(.conclusion // "-")"] | join(", ") | if . == "" then "none" else . end')"
+            echo "::error::No successful CI run for ${SHA}. Deploy only runs on a commit whose CI is green."
+            exit 1
+          fi
+          echo "CI is green for ${SHA}."
+
+      - name: Check deploy credential
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          if [ -z "$FIREBASE_SERVICE_ACCOUNT" ]; then
+            echo "::error::Repository secret FIREBASE_SERVICE_ACCOUNT is not set. Add the service-account key JSON (see AUDIT-gym-management-system.md)."
+            exit 1
+          fi
+
+      - name: Authenticate to Google Cloud
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
+      # Gate 2. Read-only.
+      - name: Index diff (before deploy)
+        env:
+          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
+          CONFIRM_INDEX_DELETIONS: ${{ inputs.confirm_index_deletions }}
+        run: node scripts/index-diff.mjs --project="$PROJECT_ID" --access-token="$ACCESS_TOKEN"
 
       - uses: actions/setup-node@v4
         with:
@@ -61,60 +97,9 @@ jobs:
       - name: Build hosting bundle
         run: npm run build
 
-      # Fail before touching Firebase if the credential was never added, so the
-      # error names the missing secret instead of surfacing a CLI auth failure.
-      - name: Check deploy credential
-        env:
-          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-        run: |
-          if [ -z "$FIREBASE_SERVICE_ACCOUNT" ]; then
-            echo "::error::Repository secret FIREBASE_SERVICE_ACCOUNT is not set. Add the service-account key JSON (see the deploy notes in AUDIT-gym-management-system.md)."
-            exit 1
-          fi
-
-      # Gate 1. The workflow is dispatch-only, so "CI is green" is checked
-      # against this commit's CI run rather than assumed from a push trigger.
-      - name: Require green CI for this commit
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          CONCLUSION=$(
-            gh api \
-              "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${SHA}&per_page=20" \
-              --jq '[.workflow_runs[] | select(.status == "completed")] | (.[0].conclusion // "none")'
-          )
-          echo "CI conclusion for ${SHA}: ${CONCLUSION}"
-          if [ "$CONCLUSION" != "success" ]; then
-            echo "::error::No successful CI run for ${SHA} (conclusion: ${CONCLUSION}). Deploy only runs on a green CI commit."
-            exit 1
-          fi
-
-      - name: Authenticate to Google Cloud
-        id: auth
-        uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-
-      # Gate 2. Read-only: lists the project's indexes and prints the diff.
-      - name: Index diff (before deploy)
-        env:
-          PROJECT: ${{ vars.FIREBASE_PROJECT_ID }}
-          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
-          CONFIRM_INDEX_DELETIONS: ${{ inputs.confirm_index_deletions }}
-        run: |
-          node scripts/index-diff.mjs \
-            --project="${PROJECT:-himalye-wonders-gym}" \
-            --access-token="$ACCESS_TOKEN" \
-            --indexes=firestore.indexes.json
-
       - name: Deploy hosting, rules and indexes
-        env:
-          FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID }}
         run: |
-          PROJECT="${FIREBASE_PROJECT_ID:-himalye-wonders-gym}"
           npx --yes firebase-tools@15 deploy \
             --only hosting,firestore:rules,firestore:indexes \
-            --project "$PROJECT" \
+            --project "$PROJECT_ID" \
             --non-interactive
