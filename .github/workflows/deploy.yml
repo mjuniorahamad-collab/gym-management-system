@@ -1,0 +1,72 @@
+name: Deploy (hosting · Firestore rules · indexes)
+
+# Deploys the static site and the Firestore security surface only.
+#
+# Cloud Functions are deliberately NOT part of this workflow: they require the
+# Blaze plan. When that changes, add `npm ci --prefix functions`, the vendor
+# bundle build (`npm --prefix functions run build`) and `functions` to the
+# `--only` list below — see the deploy plan in AUDIT-gym-management-system.md.
+#
+# WARNING: `firebase deploy --only firestore:indexes` treats
+# firestore.indexes.json as the source of truth. Any composite index that exists
+# in the project but is absent from the file is DELETED, including indexes
+# created by hand in the console. Keep the file and the console in sync.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Firebase deploy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Build hosting bundle
+        run: npm run build
+
+      # Fail before touching Firebase if the credential was never added, so the
+      # error names the missing secret instead of surfacing a CLI auth failure.
+      - name: Check deploy credential
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          if [ -z "$FIREBASE_SERVICE_ACCOUNT" ]; then
+            echo "::error::Repository secret FIREBASE_SERVICE_ACCOUNT is not set. Add the service-account key JSON (see the deploy notes in AUDIT-gym-management-system.md)."
+            exit 1
+          fi
+
+      - name: Write service-account key
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          umask 077
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$RUNNER_TEMP/firebase-sa.json"
+
+      - name: Deploy hosting, rules and indexes
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/firebase-sa.json
+          FIREBASE_PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID }}
+        run: |
+          PROJECT="${FIREBASE_PROJECT_ID:-himalye-wonders-gym}"
+          npx --yes firebase-tools@15 deploy \
+            --only hosting,firestore:rules,firestore:indexes \
+            --project "$PROJECT" \
+            --non-interactive
