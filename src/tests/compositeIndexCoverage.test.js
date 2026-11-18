@@ -130,7 +130,10 @@ describe('composite index coverage', () => {
       'bookings',
       'trainers',
       'auditLog',
-      'counters',
+      // NOT 'counters': counters are read and written by id only (member-number
+      // and receipt sequences), and those documents carry no createdAt, so no
+      // ordered listing exists for this list to cover. Asserting one here only
+      // kept a never-reachable index alive in firestore.indexes.json.
       'weightRecords',
     ]
 
