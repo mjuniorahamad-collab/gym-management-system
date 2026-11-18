@@ -12,6 +12,9 @@ coverage/
 firebase-debug.log
 *.log
 
+# Frozen baseline JSON reports (scripts/assert-frozen-baseline.mjs)
+.frozen/
+
 # Environment variables (never commit real keys)
 .env
 .env.local
