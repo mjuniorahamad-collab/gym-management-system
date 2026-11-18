@@ -1,0 +1,281 @@
+#!/usr/bin/env node
+/**
+ * Post-deploy hosting smoke check — READ ONLY.
+ *
+ * WHY IT EXISTS
+ *   `firebase deploy --only hosting` can report success while the live origin
+ *   still serves the previous bundle — a CDN edge that has not rolled over, a
+ *   release that did not publish, or a truncated upload. The deploy workflow
+ *   then ships the security surface on top of a frontend nobody has looked at.
+ *   This check compares the live URL with the bundle in `dist/` that was built
+ *   moments earlier, so a stale or broken bundle fails the job instead of going
+ *   live silently.
+ *
+ * WHAT IT CHECKS
+ *   1. `<base>/` answers 200 `text/html` for a cache-busted URL.
+ *   2. That HTML references the SAME hashed entry files (`/assets/...`) as
+ *      `dist/index.html`, i.e. the live site is this build and not an older one.
+ *   3. Every entry asset answers 200 with the right content type and hashes to
+ *      the same sha256 as the local file (nothing truncated or swapped under the
+ *      same name).
+ *   4. A deep SPA route (`/login` by default) answers 200 with the app shell,
+ *      proving the hosting rewrite is live — otherwise deep links 404 for users.
+ *
+ * WHAT IT NEVER DOES
+ *   Write, purge, deploy or authenticate. The only traffic is GET requests to
+ *   the hosting origin.
+ *
+ * USAGE
+ *   node scripts/smoke-hosting.mjs
+ *   node scripts/smoke-hosting.mjs --base-url=https://himalye-wonders-gym.web.app
+ *   node scripts/smoke-hosting.mjs --dist=dist --route=/login --attempts=6 --delay-ms=5000
+ *
+ *   The retries exist because a fresh Hosting release can take a few seconds to
+ *   answer on every edge. Defaults: 6 attempts, 5 s apart (~25 s total).
+ *
+ * EXIT  0 live origin matches the build · 1 mismatch or unreachable · 2 bad usage
+ */
+
+import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+import path from 'node:path'
+import process from 'node:process'
+import { pathToFileURL } from 'node:url'
+
+const DEFAULTS = {
+  baseUrl: 'https://himalye-wonders-gym.web.app',
+  dist: 'dist',
+  route: '/login',
+  attempts: 6,
+  delayMs: 5000,
+}
+
+// Only hashed build output: Vite's entry script, modulepreload chunks and CSS.
+const ASSET_RE = /(?:src|href)="(\/assets\/[^"?#]+)"/g
+
+/** The `/assets/...` files an index.html references, de-duplicated. */
+export function assetsIn(html) {
+  return [...new Set([...html.matchAll(ASSET_RE)].map((match) => match[1]))]
+}
+
+export function sha256(bytes) {
+  return createHash('sha256').update(bytes).digest('hex')
+}
+
+function usage() {
+  console.log(
+    [
+      'Hosting smoke check (read-only) — compares the live site with a local build',
+      '',
+      '  --base-url=<url>   hosting origin (default https://himalye-wonders-gym.web.app)',
+      '  --dist=<dir>       build directory to compare against (default dist)',
+      '  --route=<path>     deep link that must serve the app shell (default /login)',
+      '  --attempts=<n>     attempts before failing (default 6)',
+      '  --delay-ms=<ms>    pause between attempts (default 5000)',
+      '  --help',
+    ].join('\n')
+  )
+}
+
+function parseArgs(argv) {
+  const args = { ...DEFAULTS }
+  for (const raw of argv) {
+    const [key, ...rest] = raw.replace(/^--/, '').split('=')
+    const value = rest.join('=')
+    if (key === 'help') args.help = true
+    else if (key === 'base-url' && value) args.baseUrl = value.replace(/\/+$/, '')
+    else if (key === 'dist' && value) args.dist = value
+    else if (key === 'route' && value) args.route = value.startsWith('/') ? value : `/${value}`
+    else if (key === 'attempts' && value) args.attempts = Number(value)
+    else if (key === 'delay-ms' && value) args.delayMs = Number(value)
+    else throw new Error(`Unknown option --${key}`)
+  }
+  if (!Number.isInteger(args.attempts) || args.attempts < 1) {
+    throw new Error('--attempts must be a positive integer')
+  }
+  if (!Number.isInteger(args.delayMs) || args.delayMs < 0) {
+    throw new Error('--delay-ms must be a non-negative integer')
+  }
+  return args
+}
+
+async function get(url, asBytes) {
+  const res = await fetch(url, {
+    redirect: 'follow',
+    headers: { 'cache-control': 'no-cache', pragma: 'no-cache' },
+  })
+  if (!res.ok) throw new Error(`GET ${url} → HTTP ${res.status} ${res.statusText}`)
+  const contentType = (res.headers.get('content-type') || '').toLowerCase()
+  const body = asBytes ? Buffer.from(await res.arrayBuffer()) : await res.text()
+  return { contentType, body }
+}
+
+function expectedType(asset) {
+  if (asset.endsWith('.js')) return (type) => /javascript|ecmascript/.test(type)
+  if (asset.endsWith('.css')) return (type) => type.includes('text/css')
+  return () => true
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/** One full pass. Returns `problems` (empty means pass) and the facts checked. */
+async function checkOnce({ baseUrl, dist, route, nonce }) {
+  const problems = []
+  const ok = []
+  const indexPath = path.join(dist, 'index.html')
+
+  let localHtml
+  try {
+    localHtml = readFileSync(indexPath, 'utf8')
+  } catch {
+    return {
+      problems: [
+        `no local build at ${indexPath} — run \`npm run build\` first (this check compares the live site with it).`,
+      ],
+      ok,
+    }
+  }
+
+  const assets = assetsIn(localHtml)
+  const entryScript = assets.find((asset) => asset.endsWith('.js'))
+  if (!entryScript)
+    return { problems: [`${indexPath} references no /assets/*.js entry script.`], ok }
+
+  const local = new Map()
+  for (const asset of assets) {
+    try {
+      local.set(asset, readFileSync(path.join(dist, asset.slice(1))))
+    } catch {
+      problems.push(`local build is missing ${asset} — rebuild before deploying.`)
+    }
+  }
+  if (problems.length) return { problems, ok }
+
+  // 1. The live shell, cache-busted so a cached index.html cannot pass the check.
+  const shellUrl = `${baseUrl}/?smoke=${nonce}`
+  let shell
+  try {
+    shell = await get(shellUrl, false)
+  } catch (err) {
+    return { problems: [`live origin unreachable: ${err.message}`], ok }
+  }
+  if (!shell.contentType.includes('text/html')) {
+    problems.push(
+      `${shellUrl} answered content-type "${shell.contentType || '(none)'}", expected text/html — the hosting release or rewrite is wrong.`
+    )
+  }
+
+  const liveAssets = assetsIn(shell.body)
+  const missing = assets.filter((asset) => !shell.body.includes(asset))
+  if (missing.length) {
+    problems.push(
+      `the live index.html is NOT this build. Missing: ${missing.join(', ')}. ` +
+        `Live shell references: ${liveAssets.join(', ') || '(no /assets/ files)'} — ` +
+        'a stale CDN edge, a release that did not publish, or the wrong project.'
+    )
+  } else {
+    ok.push(`served index.html references this build's entry files (${assets.join(', ')})`)
+  }
+
+  // A different build is already the verdict; hashing its assets against this one
+  // would only add noise (and would blame the SPA rewrite for a stale bundle).
+  if (problems.length > 0) return { problems, ok }
+
+  // 2. Byte-for-byte: the same hash must be served for the same file name.
+  for (const asset of assets) {
+    const assetUrl = `${baseUrl}${asset}?smoke=${nonce}`
+    let served
+    try {
+      served = await get(assetUrl, true)
+    } catch (err) {
+      problems.push(`entry asset not served: ${err.message}`)
+      continue
+    }
+    if (!expectedType(asset)(served.contentType)) {
+      problems.push(
+        `${asset} served as "${served.contentType || '(none)'}" — the asset is not being served as built.`
+      )
+    }
+    const localHash = sha256(local.get(asset))
+    const servedHash = sha256(served.body)
+    if (servedHash !== localHash) {
+      problems.push(
+        `${asset} does not match the build: served ${served.body.length} bytes (sha256 ${servedHash.slice(0, 12)}), ` +
+          `build has ${local.get(asset).length} bytes (sha256 ${localHash.slice(0, 12)}) — truncated upload or a different build under the same name.`
+      )
+    } else {
+      ok.push(
+        `${asset} served identically (${served.body.length} bytes, sha256 ${localHash.slice(0, 12)})`
+      )
+    }
+  }
+
+  // 3. The SPA rewrite, through a real deep link rather than "/".
+  const routeUrl = `${baseUrl}${route}?smoke=${nonce}`
+  try {
+    const deep = await get(routeUrl, false)
+    if (!deep.body.includes(entryScript)) {
+      problems.push(
+        `${routeUrl} did not serve the app shell (no ${entryScript}) — the SPA rewrite is not live, deep links will 404.`
+      )
+    } else {
+      ok.push(`deep link ${route} serves the app shell through the rewrite`)
+    }
+  } catch (err) {
+    problems.push(
+      `deep link failed: ${err.message} — the SPA rewrite is not live, deep links will 404.`
+    )
+  }
+
+  return { problems, ok }
+}
+
+async function main() {
+  let args
+  try {
+    args = parseArgs(process.argv.slice(2))
+  } catch (err) {
+    console.error(err.message)
+    usage()
+    process.exit(2)
+  }
+  if (args.help) {
+    usage()
+    return
+  }
+
+  const nonce = Date.now().toString(36)
+  console.log(`Hosting smoke check — ${args.baseUrl} vs ./${args.dist.replace(/^\.\//, '')}`)
+
+  let problems = []
+  for (let attempt = 1; attempt <= args.attempts; attempt += 1) {
+    problems = (await checkOnce({ ...args, nonce })).problems
+    if (problems.length === 0) break
+    if (attempt < args.attempts) {
+      console.log(
+        `Attempt ${attempt}/${args.attempts} not ready yet:\n  - ${problems.join('\n  - ')}\n` +
+          `Retrying in ${args.delayMs / 1000}s…`
+      )
+      await sleep(args.delayMs)
+    }
+  }
+
+  if (problems.length > 0) {
+    console.error(
+      `✗ Hosting smoke check failed after ${args.attempts} attempt(s):\n  - ${problems.join('\n  - ')}\n\n` +
+        'The deploy job stops here, so the next stage does not ship on top of an unverified frontend.'
+    )
+    process.exit(1)
+  }
+
+  console.log('✓ live origin matches this build, and a deep link serves the app shell.')
+  console.log('Hosting smoke check passed.')
+}
+
+// Imported by tests/tools, which never want the CLI to run.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error(`\nAborted: ${err?.message || err}`)
+    process.exit(2)
+  })
+}
