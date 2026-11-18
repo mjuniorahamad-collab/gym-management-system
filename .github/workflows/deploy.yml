@@ -6,21 +6,37 @@ name: Deploy (hosting · Firestore rules · indexes)
 # means `npm ci --prefix functions`, `npm --prefix functions run build` and
 # `functions` in the --only list (see AUDIT-gym-management-system.md).
 #
-# TWO GATES RUN BEFORE ANYTHING IS DEPLOYED
+# THREE GATES RUN BEFORE ANYTHING IS DEPLOYED
 #   1. Green CI — a completed, successful run of ci.yml for this exact commit.
-#   2. Index diff — `firebase deploy --only firestore:indexes` DELETES every
-#      composite index that exists in the project but is absent from
-#      firestore.indexes.json, including ones created in the console.
-#      scripts/index-diff.mjs prints what would be created and deleted, and
-#      fails the run when deletions were not confirmed on the dispatch.
+#   2. Deploy credential — FIREBASE_SERVICE_ACCOUNT must exist.
+#   3. Index diff (only when indexes are in scope) — `firebase deploy --only
+#      firestore:indexes` DELETES every composite index that exists in the
+#      project but is absent from firestore.indexes.json, including ones created
+#      in the console. scripts/index-diff.mjs prints what would be created and
+#      deleted, and fails the run when deletions were not confirmed.
 #
-# PHASE 1 (current): workflow_dispatch only, because the first index deploy after
-# the cleanup removes indexes that are live in the project. PHASE 2: uncomment
-# the push trigger to auto-deploy on main; both gates still apply.
+# STAGED SCOPE (deploy_scope input). The security surface and the hosting bundle
+# carry different risks, so they ship as separate, reviewable steps:
+#   hosting                  — new bundle only; rules and indexes untouched.
+#   hosting+rules            — adds firestore:rules (what the app may read/write).
+#   hosting+rules+indexes    — adds firestore:indexes, the only destructive step.
+# The safe order for a project whose live release predates the repository is
+# hosting → rules → indexes, each reviewed on its own.
+#
+# PHASE 1 (current): workflow_dispatch only. PHASE 2: uncomment the push trigger
+# to auto-deploy on main; every gate above still applies.
 
 on:
   workflow_dispatch:
     inputs:
+      deploy_scope:
+        description: 'What to deploy (hosting first, then rules, then indexes)'
+        type: choice
+        default: hosting
+        options:
+          - hosting
+          - hosting+rules
+          - hosting+rules+indexes
       confirm_index_deletions:
         description: 'Deploy even though indexes will be DELETED (check the diff summary first)'
         type: boolean
@@ -42,7 +58,7 @@ env:
 
 jobs:
   deploy:
-    name: Firebase deploy
+    name: Firebase deploy (${{ inputs.deploy_scope || 'hosting' }})
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -79,8 +95,10 @@ jobs:
         with:
           credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
 
-      # Gate 2. Read-only.
+      # Gate 3. Read-only, and only when indexes are part of the run, because
+      # only that step can delete anything.
       - name: Index diff (before deploy)
+        if: contains(inputs.deploy_scope, 'indexes')
         env:
           ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
           CONFIRM_INDEX_DELETIONS: ${{ inputs.confirm_index_deletions }}
@@ -97,9 +115,32 @@ jobs:
       - name: Build hosting bundle
         run: npm run build
 
-      - name: Deploy hosting, rules and indexes
+      # Step 1 of the staged scope: the bundle only. Rules stay as they are, so a
+      # bundle that turns out to be wrong can be rolled back without touching the
+      # security surface.
+      - name: Deploy hosting
         run: |
           npx --yes firebase-tools@15 deploy \
-            --only hosting,firestore:rules,firestore:indexes \
+            --only hosting \
+            --project "$PROJECT_ID" \
+            --non-interactive
+
+      # Step 2: the security surface. Only after the hosting bundle is verified
+      # against the live project.
+      - name: Deploy Firestore rules
+        if: contains(inputs.deploy_scope, 'rules')
+        run: |
+          npx --yes firebase-tools@15 deploy \
+            --only firestore:rules \
+            --project "$PROJECT_ID" \
+            --non-interactive
+
+      # Step 3: the destructive step. `firestore:indexes` makes the file the
+      # source of truth, so any project index missing from it is deleted.
+      - name: Deploy Firestore indexes
+        if: contains(inputs.deploy_scope, 'indexes')
+        run: |
+          npx --yes firebase-tools@15 deploy \
+            --only firestore:indexes \
             --project "$PROJECT_ID" \
             --non-interactive
