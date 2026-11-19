@@ -14,6 +14,9 @@ export default defineConfig({
     globals: true,
     setupFiles: ['./src/tests/setup.js'],
     css: false,
-    include: ['src/tests/**/*.test.{js,jsx}'],
+    // `scripts/**` holds the operator/deploy tooling. Its unit tests live next to
+    // the scripts so a broken parser or argument handler fails the CI `app` job,
+    // not the deploy job that runs them for real.
+    include: ['src/tests/**/*.test.{js,jsx}', 'scripts/**/*.test.mjs'],
   },
 })
