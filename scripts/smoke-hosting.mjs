@@ -51,7 +51,9 @@ const DEFAULTS = {
 }
 
 // Only hashed build output: Vite's entry script, modulepreload chunks and CSS.
-const ASSET_RE = /(?:src|href)="(\/assets\/[^"?#]+)"/g
+// A `?query` or `#fragment` suffix is allowed and dropped, so a cache-busting
+// parameter on the shell cannot hide the very files this check compares.
+const ASSET_RE = /(?:src|href)="(\/assets\/[^"?#]+)(?:[?#][^"]*)?"/g
 
 /** The `/assets/...` files an index.html references, de-duplicated. */
 export function assetsIn(html) {
@@ -77,7 +79,8 @@ function usage() {
   )
 }
 
-function parseArgs(argv) {
+/** CLI flags → the settings `checkOnce` needs. Exported so tests can cover it. */
+export function parseArgs(argv) {
   const args = { ...DEFAULTS }
   for (const raw of argv) {
     const [key, ...rest] = raw.replace(/^--/, '').split('=')
