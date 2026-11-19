@@ -1,7 +1,16 @@
 name: CI
 
 on:
+  # `pull_request` covers every feature branch. The `push` trigger is bound to main
+  # on purpose, for two reasons:
+  #   1. A branch that is pushed and then opened as a PR used to run this workflow
+  #      twice on the same commit (push + pull_request) — identical work, doubled
+  #      minutes, two check suites for one review.
+  #   2. The merge commit on main needs its own run anyway: deploy.yml's Gate 1 asks
+  #      for a green ci.yml run for the exact commit being deployed, and a squash
+  #      merge produces a commit the PR's run never tested.
   push:
+    branches: [main]
   pull_request:
 
 concurrency:
