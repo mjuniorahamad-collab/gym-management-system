@@ -7,11 +7,17 @@
  * (asset discovery and argument parsing) on every `npm test`, i.e. in the CI
  * `app` job, so a regression fails before it can reach the deploy workflow.
  *
- * The network half is deliberately not tested here: it would need a live origin.
+ * The network half is exercised against a loopback HTTP server (`node:http`) that
+ * stands in for Hosting: no credentials, no deploy, but the same verdict logic the
+ * deploy job depends on.
  */
 
-import { describe, expect, it } from 'vitest'
-import { assetsIn, parseArgs } from './smoke-hosting.mjs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
+import { tmpdir } from 'node:os'
+import path from 'node:path'
+import { afterAll, describe, expect, it } from 'vitest'
+import { assetsIn, checkOnce, parseArgs } from './smoke-hosting.mjs'
 
 // Shaped like a real Vite index.html: entry script, stylesheet, a modulepreload
 // chunk, one non-asset href and one external URL.
@@ -142,5 +148,175 @@ describe('parseArgs', () => {
         /--delay-ms must be a non-negative integer/
       )
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The verdict itself: `checkOnce` against a loopback origin.
+//
+// The deploy job stops on this function's `problems` array, so each way a release
+// can be wrong gets a test with a real HTTP response rather than a stub: a stale
+// edge, a truncated upload, an asset served under the wrong content type, and a
+// missing SPA rewrite are the four failures that have actually happened or been
+// feared. Nothing here touches a network other than 127.0.0.1.
+// ---------------------------------------------------------------------------
+
+const BUILD_JS = 'console.log("build one")\n'
+const BUILD_CSS = '.app{color:#111}\n'
+
+const BUILD_INDEX = `<!doctype html>
+<html lang="en">
+  <head>
+    <script type="module" crossorigin src="/assets/index-one.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-one.css" />
+  </head>
+  <body><div id="root"></div></body>
+</html>
+`
+
+const tempDirs = []
+const servers = []
+
+afterAll(async () => {
+  for (const server of servers) {
+    await new Promise((resolve) => server.close(resolve))
+  }
+  for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true })
+})
+
+/** A throwaway build directory shaped like what `npm run build` leaves in `dist/`. */
+function writeBuild({
+  index = BUILD_INDEX,
+  files = { 'assets/index-one.js': BUILD_JS, 'assets/index-one.css': BUILD_CSS },
+} = {}) {
+  const dir = mkdtempSync(path.join(tmpdir(), 'smoke-hosting-'))
+  tempDirs.push(dir)
+  writeFileSync(path.join(dir, 'index.html'), index)
+  for (const [name, content] of Object.entries(files)) {
+    const target = path.join(dir, name)
+    mkdirSync(path.dirname(target), { recursive: true })
+    writeFileSync(target, content)
+  }
+  return dir
+}
+
+/**
+ * A loopback origin standing in for Hosting. `routes` maps a pathname to
+ * `{ body, type, status }`; `rewrite` serves the shell for any path that is not an
+ * asset, which is what the SPA rewrite in `firebase.json` does.
+ */
+async function serve(routes, { rewrite = false } = {}) {
+  const server = createServer((req, res) => {
+    const { pathname } = new URL(req.url, 'http://127.0.0.1')
+    const target =
+      routes[pathname] || (rewrite && !pathname.startsWith('/assets/') ? routes['/'] : undefined)
+    if (!target) {
+      res.writeHead(404, { 'content-type': 'text/plain' })
+      res.end('not found')
+      return
+    }
+    res.writeHead(target.status || 200, { 'content-type': target.type })
+    res.end(target.body)
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  servers.push(server)
+  return `http://127.0.0.1:${server.address().port}`
+}
+
+/** The healthy origin both the pass case and each broken case are built from. */
+async function serveBuild(overrides = {}) {
+  return serve(
+    {
+      '/': { body: BUILD_INDEX, type: 'text/html; charset=utf-8' },
+      '/assets/index-one.js': { body: BUILD_JS, type: 'text/javascript' },
+      '/assets/index-one.css': { body: BUILD_CSS, type: 'text/css' },
+      ...overrides,
+    },
+    { rewrite: true }
+  )
+}
+
+const run = (baseUrl, dist, route = '/login') => checkOnce({ baseUrl, dist, route, nonce: 'test' })
+
+describe('checkOnce', () => {
+  it('passes when the origin serves this build and the SPA rewrite', async () => {
+    const { problems, ok } = await run(await serveBuild(), writeBuild())
+
+    expect(problems).toEqual([])
+    expect(ok.join('\n')).toContain('references this build')
+    expect(ok.join('\n')).toContain('/assets/index-one.js served identically')
+    expect(ok.join('\n')).toContain('deep link /login serves the app shell')
+  })
+
+  it('fails a stale release, and blames the shell instead of the rewrite', async () => {
+    const stale = BUILD_INDEX.replaceAll('index-one', 'index-old')
+    const baseUrl = await serve(
+      {
+        '/': { body: stale, type: 'text/html' },
+        '/assets/index-old.js': { body: BUILD_JS, type: 'text/javascript' },
+        '/assets/index-old.css': { body: BUILD_CSS, type: 'text/css' },
+      },
+      { rewrite: true }
+    )
+
+    const { problems, ok } = await run(baseUrl, writeBuild())
+
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toContain('the live index.html is NOT this build')
+    expect(problems[0]).toContain('/assets/index-one.js')
+    expect(problems[0]).toContain('/assets/index-old.js')
+    // A stale shell short-circuits: the rewrite is not blamed as a second reason.
+    expect(ok).toEqual([])
+  })
+
+  it('fails when an asset is a truncated copy of the build', async () => {
+    const baseUrl = await serveBuild({
+      '/assets/index-one.js': { body: BUILD_JS.slice(0, 11), type: 'text/javascript' },
+    })
+
+    const { problems } = await run(baseUrl, writeBuild())
+
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toContain('/assets/index-one.js does not match the build')
+    expect(problems[0]).toContain(`served ${BUILD_JS.slice(0, 11).length} bytes`)
+    expect(problems[0]).toContain(`build has ${BUILD_JS.length} bytes`)
+    expect(problems[0]).toContain('truncated upload')
+  })
+
+  it('fails when an asset is served under the wrong content type', async () => {
+    const baseUrl = await serveBuild({
+      '/assets/index-one.js': { body: BUILD_JS, type: 'text/html' },
+    })
+
+    const { problems } = await run(baseUrl, writeBuild())
+
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toContain('/assets/index-one.js served as "text/html"')
+    expect(problems[0]).toContain('not being served as built')
+  })
+
+  it('fails when the SPA rewrite is missing, so a deep link 404s', async () => {
+    const baseUrl = await serve({
+      '/': { body: BUILD_INDEX, type: 'text/html' },
+      '/assets/index-one.js': { body: BUILD_JS, type: 'text/javascript' },
+      '/assets/index-one.css': { body: BUILD_CSS, type: 'text/css' },
+    })
+
+    const { problems, ok } = await run(baseUrl, writeBuild(), '/members/42')
+
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toMatch(/deep link failed: GET .*\/members\/42.* HTTP 404/)
+    expect(problems[0]).toContain('SPA rewrite is not live')
+    expect(ok.join('\n')).toContain('/assets/index-one.js served identically')
+  })
+
+  it('fails before any request when there is no local build', async () => {
+    const missing = path.join(tmpdir(), 'smoke-hosting-no-such-build')
+
+    const { problems } = await run('http://127.0.0.1:1', missing)
+
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toContain('no local build at')
+    expect(problems[0]).toContain('npm run build')
   })
 })
