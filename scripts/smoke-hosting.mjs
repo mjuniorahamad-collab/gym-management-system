@@ -122,7 +122,7 @@ function expectedType(asset) {
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 /** One full pass. Returns `problems` (empty means pass) and the facts checked. */
-async function checkOnce({ baseUrl, dist, route, nonce }) {
+export async function checkOnce({ baseUrl, dist, route, nonce }) {
   const problems = []
   const ok = []
   const indexPath = path.join(dist, 'index.html')
