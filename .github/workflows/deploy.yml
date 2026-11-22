@@ -190,7 +190,10 @@ jobs:
             --non-interactive
 
       # Step 3: the destructive step. `firestore:indexes` makes the file the
-      # source of truth, so any project index missing from it is deleted.
+      # source of truth: indexes that exist in the project but not in the file are
+      # deleted, which firebase-tools only does with --force. Gate 3 has already
+      # refused the run unless the deletions were confirmed, so --force here
+      # cannot delete an unreviewed index.
       #
       # --config points at a minimal config that names only the indexes file.
       # With firebase.json, firebase-tools compiles firestore.rules before it
@@ -204,5 +207,6 @@ jobs:
           npx --yes firebase-tools@15 deploy \
             --only firestore:indexes \
             --config firebase.indexes.json \
+            --force \
             --project "$PROJECT_ID" \
             --non-interactive
