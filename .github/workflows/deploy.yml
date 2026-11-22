@@ -1,4 +1,4 @@
-name: Deploy (hosting · Firestore rules · indexes)
+name: Deploy (hosting · Firestore rules · indexes · storage rules)
 
 # Deploys the static site and the Firestore security surface only.
 #
@@ -23,6 +23,13 @@ name: Deploy (hosting · Firestore rules · indexes)
 # The safe order for a project whose live release predates the repository is
 # hosting → rules → indexes, each reviewed on its own.
 #
+# STORAGE RULES ARE OPT-IN (deploy_storage_rules input, off by default).
+# storage.rules has never been deployed, so production Storage still runs the
+# default deny-all ruleset and member photos / gym logos cannot be uploaded or
+# read. The step is wired here so it ships from the same reviewed pipeline, but
+# it stays off until storage is ready to be exercised: mismatched Storage rules
+# only surface at upload/read time, not at deploy time.
+#
 # AFTER THE HOSTING STEP, scripts/smoke-hosting.mjs checks the live URL against
 # the bundle that was just built: the served index.html must reference the same
 # entry hashes, the entry bytes must match (sha256), and a deep link must serve
@@ -45,6 +52,10 @@ on:
           - hosting+rules+indexes
       confirm_index_deletions:
         description: 'Deploy even though indexes will be DELETED (check the diff summary first)'
+        type: boolean
+        default: false
+      deploy_storage_rules:
+        description: 'Also deploy storage.rules (photos/logos; off until storage is in use)'
         type: boolean
         default: false
   # PHASE 2 — enable after the first reviewed index deploy:
@@ -147,6 +158,17 @@ jobs:
         run: |
           npx --yes firebase-tools@15 deploy \
             --only firestore:rules \
+            --project "$PROJECT_ID" \
+            --non-interactive
+
+      # Step 2b: Storage rules for member photos and gym logos. Opt-in: the live
+      # bucket still runs the default deny-all ruleset, and flipping it is only
+      # meaningful once uploads are actually being exercised.
+      - name: Deploy Storage rules
+        if: inputs.deploy_storage_rules
+        run: |
+          npx --yes firebase-tools@15 deploy \
+            --only storage \
             --project "$PROJECT_ID" \
             --non-interactive
 
