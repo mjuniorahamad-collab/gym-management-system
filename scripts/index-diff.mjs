@@ -13,7 +13,9 @@
  * WHAT IT NEVER DOES
  *   - Write, create or delete anything. The only project call is indexes.list.
  *   - Compare single-field indexes: Firestore maintains those itself and the
- *     deploy does not manage them, so counting them would invent deletions.
+ *     deploy does not manage them, so counting them would invent deletions. The
+ *     one exception is a one-field index the file explicitly declares (with an
+ *     `__name__` ordering), which is compared like any other entry.
  *   - Diff `fieldOverrides`. It is reported when the file declares any.
  *
  * HOW INDEXES ARE COMPARED
@@ -159,7 +161,12 @@ function readSavedResponse(path) {
 
 function report({ project, desired, live, fieldOverrides }) {
   const desiredKeys = new Map(desired.map((index) => [indexKey(index), index]))
-  const liveComposite = live.filter((index) => !index.singleField)
+  // A live index with a single declared field is one Firestore maintains itself,
+  // so it is ignored - unless the file declares that same index too, in which
+  // case it is a managed entry and has to be compared like the rest.
+  const liveComposite = live.filter(
+    (index) => !index.singleField || desiredKeys.has(indexKey(index))
+  )
   const liveKeys = new Map(liveComposite.map((index) => [indexKey(index), index]))
 
   const toCreate = [...desiredKeys].filter(([key]) => !liveKeys.has(key))
