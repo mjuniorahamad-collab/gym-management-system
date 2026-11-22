@@ -191,10 +191,18 @@ jobs:
 
       # Step 3: the destructive step. `firestore:indexes` makes the file the
       # source of truth, so any project index missing from it is deleted.
+      #
+      # --config points at a minimal config that names only the indexes file.
+      # With firebase.json, firebase-tools compiles firestore.rules before it
+      # touches indexes (`firebaserules.googleapis.com:test`), and the deploy
+      # service account gets 403 there — the same missing permission that blocks
+      # the rules step. Leaving rules out of this config keeps the index deploy
+      # about indexes only.
       - name: Deploy Firestore indexes
         if: contains(inputs.deploy_scope, 'indexes')
         run: |
           npx --yes firebase-tools@15 deploy \
             --only firestore:indexes \
+            --config firebase.indexes.json \
             --project "$PROJECT_ID" \
             --non-interactive
