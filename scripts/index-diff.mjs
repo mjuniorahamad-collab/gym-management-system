@@ -13,8 +13,17 @@
  * WHAT IT NEVER DOES
  *   - Write, create or delete anything. The only project call is indexes.list.
  *   - Compare single-field indexes: Firestore maintains those itself and the
- *     deploy does not manage them, so counting them would invent deletions.
+ *     deploy does not manage them, so counting them would invent deletions. The
+ *     one exception is a one-field index the file explicitly declares (with an
+ *     `__name__` ordering), which is compared like any other entry.
  *   - Diff `fieldOverrides`. It is reported when the file declares any.
+ *
+ * HOW INDEXES ARE COMPARED
+ *   The API always appends the document-name field (`__name__`) to every
+ *   composite index it returns, and that field is not part of the definition
+ *   anyone writes. Both sides are therefore compared without it: otherwise every
+ *   live index looks different from its own definition and every single-field
+ *   index looks composite, which turns a no-op deploy into a page of deletions.
  *
  * USAGE
  *   node scripts/index-diff.mjs --project=<id> --access-token=<oauth token>
@@ -68,6 +77,19 @@ export function fieldKey(field) {
   return `${field.fieldPath}:${field.order || field.arrayConfig || 'ASCENDING'}`
 }
 
+/**
+ * The declared fields of an index, without the trailing `__name__` the API adds.
+ * An index ending in `__name__` is the same index whether or not the file spells
+ * that field out, so it is dropped on both sides of the comparison.
+ */
+export function declaredFields(fields) {
+  const trimmed = [...(fields || [])]
+  while (trimmed.length > 0 && trimmed[trimmed.length - 1].fieldPath === '__name__') {
+    trimmed.pop()
+  }
+  return trimmed
+}
+
 /** Two indexes are the same index when scope, collection and fields all match. */
 export function indexKey(index) {
   return `${index.queryScope}|${index.collectionGroup}|${index.fields.map(fieldKey).join(',')}`
@@ -88,7 +110,7 @@ export function readDesired(path) {
     return {
       collectionGroup,
       queryScope: index.queryScope || 'COLLECTION',
-      fields: index.fields || [],
+      fields: declaredFields(index.fields),
     }
   })
   return { indexes, fieldOverrides: (parsed.fieldOverrides || []).length }
@@ -97,7 +119,7 @@ export function readDesired(path) {
 /** One indexes.list entry, reduced to the same shape as readDesired(). */
 export function normalise(item) {
   const match = /\/collectionGroups\/([^/]+)\/indexes\//.exec(item.name || '')
-  const fields = item.fields || []
+  const fields = declaredFields(item.fields)
   return {
     collectionGroup: match ? decodeURIComponent(match[1]) : '(unknown)',
     queryScope: item.queryScope || 'COLLECTION',
@@ -139,7 +161,12 @@ function readSavedResponse(path) {
 
 function report({ project, desired, live, fieldOverrides }) {
   const desiredKeys = new Map(desired.map((index) => [indexKey(index), index]))
-  const liveComposite = live.filter((index) => !index.singleField)
+  // A live index with a single declared field is one Firestore maintains itself,
+  // so it is ignored - unless the file declares that same index too, in which
+  // case it is a managed entry and has to be compared like the rest.
+  const liveComposite = live.filter(
+    (index) => !index.singleField || desiredKeys.has(indexKey(index))
+  )
   const liveKeys = new Map(liveComposite.map((index) => [indexKey(index), index]))
 
   const toCreate = [...desiredKeys].filter(([key]) => !liveKeys.has(key))
