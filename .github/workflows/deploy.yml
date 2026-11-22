@@ -18,10 +18,18 @@ name: Deploy (hosting · Firestore rules · indexes · storage rules)
 # STAGED SCOPE (deploy_scope input). The security surface and the hosting bundle
 # carry different risks, so they ship as separate, reviewable steps:
 #   hosting                  — new bundle only; rules and indexes untouched.
+#   hosting+indexes          — adds firestore:indexes, skipping rules.
 #   hosting+rules            — adds firestore:rules (what the app may read/write).
 #   hosting+rules+indexes    — adds firestore:indexes, the only destructive step.
 # The safe order for a project whose live release predates the repository is
 # hosting → rules → indexes, each reviewed on its own.
+#
+# RULES CAN BE SKIPPED (deploy_scope hosting+indexes). The rules step needs
+# serviceusage.services.get for the deploy service account, which the project
+# has not granted yet; hosting+indexes lets the reviewed index diff and deploy run
+# while that permission is outstanding. It is the same code path as
+# hosting+rules+indexes with the rules step's `contains(..., 'rules')` condition
+# false, so nothing about the rules deploy changes when it is eventually used.
 #
 # STORAGE RULES ARE OPT-IN (deploy_storage_rules input, off by default).
 # storage.rules has never been deployed, so production Storage still runs the
@@ -48,6 +56,7 @@ on:
         default: hosting
         options:
           - hosting
+          - hosting+indexes
           - hosting+rules
           - hosting+rules+indexes
       confirm_index_deletions:
@@ -160,7 +169,7 @@ jobs:
         run: node scripts/smoke-hosting.mjs --base-url="$HOSTING_URL" --dist=dist
 
       # Step 2: the security surface. Only after the hosting bundle is verified
-      # against the live project.
+      # against the live project. Skipped by deploy_scope hosting+indexes.
       - name: Deploy Firestore rules
         if: contains(inputs.deploy_scope, 'rules')
         run: |
