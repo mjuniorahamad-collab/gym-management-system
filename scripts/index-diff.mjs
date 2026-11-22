@@ -114,8 +114,10 @@ async function listIndexes(project, token) {
   const items = []
   let pageToken = ''
   do {
+    // No pageSize: a Firestore Enterprise edition database rejects any non-zero
+    // value with `400 Invalid page size. Only 0 is supported.` The server default
+    // page is fine because the nextPageToken loop below walks every page.
     const url = new URL(`${API_ROOT}/${parent}/collectionGroups/-/indexes`)
-    url.searchParams.set('pageSize', '200')
     if (pageToken) url.searchParams.set('pageToken', pageToken)
     const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } })
     if (!res.ok) {
