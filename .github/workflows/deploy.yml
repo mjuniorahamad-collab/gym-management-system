@@ -111,19 +111,23 @@ jobs:
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          # Gate 3 reads steps.auth.outputs.access_token, and that output only
-          # exists when a token_format is requested. Without this line the gate
-          # received an empty --access-token and exited 2 before listing indexes.
-          token_format: access_token
 
       # Gate 3. Read-only, and only when indexes are part of the run, because
       # only that step can delete anything.
+      #
+      # The token comes from gcloud rather than the auth action's access_token
+      # output: that output needs iamcredentials.googleapis.com enabled in the
+      # project, and the runner already has the credentials file the action
+      # wrote (CLOUDSDK_AUTH_CREDENTIAL_FILE_OVERRIDE), so gcloud signs the same
+      # service-account assertion and exchanges it for a token without that API.
       - name: Index diff (before deploy)
         if: contains(inputs.deploy_scope, 'indexes')
         env:
-          ACCESS_TOKEN: ${{ steps.auth.outputs.access_token }}
           CONFIRM_INDEX_DELETIONS: ${{ inputs.confirm_index_deletions }}
-        run: node scripts/index-diff.mjs --project="$PROJECT_ID" --access-token="$ACCESS_TOKEN"
+        run: |
+          set -euo pipefail
+          ACCESS_TOKEN=$(gcloud auth print-access-token)
+          node scripts/index-diff.mjs --project="$PROJECT_ID" --access-token="$ACCESS_TOKEN"
 
       - uses: actions/setup-node@v4
         with:
