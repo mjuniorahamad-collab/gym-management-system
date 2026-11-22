@@ -100,6 +100,10 @@ jobs:
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          # Gate 3 reads steps.auth.outputs.access_token, and that output only
+          # exists when a token_format is requested. Without this line the gate
+          # received an empty --access-token and exited 2 before listing indexes.
+          token_format: access_token
 
       # Gate 3. Read-only, and only when indexes are part of the run, because
       # only that step can delete anything.
