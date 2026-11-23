@@ -200,6 +200,7 @@ export async function checkOnce({ baseUrl, dist, route, nonce }) {
   if (problems.length > 0) return { problems, ok }
 
   // 2. Byte-for-byte: the same hash must be served for the same file name.
+  let immutableAssets = 0
   for (const asset of assets) {
     const assetUrl = `${baseUrl}${asset}?smoke=${nonce}`
     let served
@@ -219,6 +220,8 @@ export async function checkOnce({ baseUrl, dist, route, nonce }) {
         `${asset} served cache-control "${served.cacheControl || '(none)'}", expected immutable — ` +
           'hashed build output must not be revalidated on every load.'
       )
+    } else {
+      immutableAssets += 1
     }
     const localHash = sha256(local.get(asset))
     const servedHash = sha256(served.body)
@@ -232,6 +235,10 @@ export async function checkOnce({ baseUrl, dist, route, nonce }) {
         `${asset} served identically (${served.body.length} bytes, sha256 ${localHash.slice(0, 12)})`
       )
     }
+  }
+
+  if (immutableAssets === assets.length) {
+    ok.push(`every entry asset is served with Cache-Control: immutable (${assets.length})`)
   }
 
   // 3. The SPA rewrite, through a real deep link rather than "/".
@@ -280,8 +287,11 @@ async function main() {
   console.log(`Hosting smoke check — ${args.baseUrl} vs ./${args.dist.replace(/^\.\//, '')}`)
 
   let problems = []
+  let facts = []
   for (let attempt = 1; attempt <= args.attempts; attempt += 1) {
-    problems = (await checkOnce({ ...args, nonce })).problems
+    const result = await checkOnce({ ...args, nonce })
+    problems = result.problems
+    facts = result.ok
     if (problems.length === 0) break
     if (attempt < args.attempts) {
       console.log(
@@ -300,6 +310,9 @@ async function main() {
     process.exit(1)
   }
 
+  // Print what passed, so the deploy job's log shows which facts were checked
+  // rather than only that nothing failed.
+  for (const fact of facts) console.log(`  ✓ ${fact}`)
   console.log(
     '✓ live origin matches this build, a deep link serves the app shell, and the cache policy is applied.'
   )
