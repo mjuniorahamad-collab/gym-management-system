@@ -20,6 +20,12 @@
  *      same name).
  *   4. A deep SPA route (`/login` by default) answers 200 with the app shell,
  *      proving the hosting rewrite is live — otherwise deep links 404 for users.
+ *   5. The cache policy `firebase.json` declares is actually applied: the shell
+ *      (`/` and the deep route) answers `Cache-Control: no-cache`, and every
+ *      `/assets/**` file answers `immutable`. Header rules match the original
+ *      request path and the last match wins, so a reordered `headers` array can
+ *      silently put the shell back on Hosting's one hour default — which is how
+ *      a stale shell survives a deploy and asks for chunks that no longer exist.
  *
  * WHAT IT NEVER DOES
  *   Write, purge, deploy or authenticate. The only traffic is GET requests to
@@ -109,8 +115,9 @@ async function get(url, asBytes) {
   })
   if (!res.ok) throw new Error(`GET ${url} → HTTP ${res.status} ${res.statusText}`)
   const contentType = (res.headers.get('content-type') || '').toLowerCase()
+  const cacheControl = (res.headers.get('cache-control') || '').toLowerCase()
   const body = asBytes ? Buffer.from(await res.arrayBuffer()) : await res.text()
-  return { contentType, body }
+  return { contentType, cacheControl, body }
 }
 
 function expectedType(asset) {
@@ -167,6 +174,14 @@ export async function checkOnce({ baseUrl, dist, route, nonce }) {
       `${shellUrl} answered content-type "${shell.contentType || '(none)'}", expected text/html — the hosting release or rewrite is wrong.`
     )
   }
+  if (!shell.cacheControl.includes('no-cache')) {
+    problems.push(
+      `GET / answered cache-control "${shell.cacheControl || '(none)'}", expected no-cache — ` +
+        'a shell cached for up to an hour keeps pointing at the previous build after a deploy.'
+    )
+  } else {
+    ok.push('the shell is served with Cache-Control: no-cache')
+  }
 
   const liveAssets = assetsIn(shell.body)
   const missing = assets.filter((asset) => !shell.body.includes(asset))
@@ -199,6 +214,12 @@ export async function checkOnce({ baseUrl, dist, route, nonce }) {
         `${asset} served as "${served.contentType || '(none)'}" — the asset is not being served as built.`
       )
     }
+    if (!served.cacheControl.includes('immutable')) {
+      problems.push(
+        `${asset} served cache-control "${served.cacheControl || '(none)'}", expected immutable — ` +
+          'hashed build output must not be revalidated on every load.'
+      )
+    }
     const localHash = sha256(local.get(asset))
     const servedHash = sha256(served.body)
     if (servedHash !== localHash) {
@@ -223,6 +244,14 @@ export async function checkOnce({ baseUrl, dist, route, nonce }) {
       )
     } else {
       ok.push(`deep link ${route} serves the app shell through the rewrite`)
+    }
+    if (!deep.cacheControl.includes('no-cache')) {
+      problems.push(
+        `deep link ${route} answered cache-control "${deep.cacheControl || '(none)'}", expected no-cache — ` +
+          'the shell must not be cached on any route, not just "/".'
+      )
+    } else {
+      ok.push(`deep link ${route} is served with Cache-Control: no-cache`)
     }
   } catch (err) {
     problems.push(
@@ -271,7 +300,9 @@ async function main() {
     process.exit(1)
   }
 
-  console.log('✓ live origin matches this build, and a deep link serves the app shell.')
+  console.log(
+    '✓ live origin matches this build, a deep link serves the app shell, and the cache policy is applied.'
+  )
   console.log('Hosting smoke check passed.')
 }
 

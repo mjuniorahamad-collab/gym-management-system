@@ -156,13 +156,18 @@ describe('parseArgs', () => {
 //
 // The deploy job stops on this function's `problems` array, so each way a release
 // can be wrong gets a test with a real HTTP response rather than a stub: a stale
-// edge, a truncated upload, an asset served under the wrong content type, and a
-// missing SPA rewrite are the four failures that have actually happened or been
-// feared. Nothing here touches a network other than 127.0.0.1.
+// edge, a truncated upload, an asset served under the wrong content type, a
+// missing SPA rewrite, and a cache policy that is not applied are the failures
+// that have actually happened or been feared. Nothing here touches a network
+// other than 127.0.0.1.
 // ---------------------------------------------------------------------------
 
 const BUILD_JS = 'console.log("build one")\n'
 const BUILD_CSS = '.app{color:#111}\n'
+
+// What `firebase.json` declares: a no-cache shell and immutable hashed assets.
+const SHELL_CACHE = 'no-cache, max-age=0, must-revalidate'
+const ASSET_CACHE = 'public, max-age=31536000, immutable'
 
 const BUILD_INDEX = `<!doctype html>
 <html lang="en">
@@ -202,8 +207,10 @@ function writeBuild({
 
 /**
  * A loopback origin standing in for Hosting. `routes` maps a pathname to
- * `{ body, type, status }`; `rewrite` serves the shell for any path that is not an
- * asset, which is what the SPA rewrite in `firebase.json` does.
+ * `{ body, type, status, cache }`; `rewrite` serves the shell for any path that is
+ * not an asset, which is what the SPA rewrite in `firebase.json` does. A route
+ * without `cache` answers with the header its path is supposed to carry, so only
+ * the case under test has to state one.
  */
 async function serve(routes, { rewrite = false } = {}) {
   const server = createServer((req, res) => {
@@ -215,7 +222,8 @@ async function serve(routes, { rewrite = false } = {}) {
       res.end('not found')
       return
     }
-    res.writeHead(target.status || 200, { 'content-type': target.type })
+    const cache = target.cache ?? (pathname.startsWith('/assets/') ? ASSET_CACHE : SHELL_CACHE)
+    res.writeHead(target.status || 200, { 'content-type': target.type, 'cache-control': cache })
     res.end(target.body)
   })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -246,6 +254,8 @@ describe('checkOnce', () => {
     expect(ok.join('\n')).toContain('references this build')
     expect(ok.join('\n')).toContain('/assets/index-one.js served identically')
     expect(ok.join('\n')).toContain('deep link /login serves the app shell')
+    expect(ok.join('\n')).toContain('the shell is served with Cache-Control: no-cache')
+    expect(ok.join('\n')).toContain('deep link /login is served with Cache-Control: no-cache')
   })
 
   it('fails a stale release, and blames the shell instead of the rewrite', async () => {
@@ -266,7 +276,8 @@ describe('checkOnce', () => {
     expect(problems[0]).toContain('/assets/index-one.js')
     expect(problems[0]).toContain('/assets/index-old.js')
     // A stale shell short-circuits: the rewrite is not blamed as a second reason.
-    expect(ok).toEqual([])
+    expect(ok.join('\n')).not.toContain('deep link')
+    expect(ok.join('\n')).not.toContain('served identically')
   })
 
   it('fails when an asset is a truncated copy of the build', async () => {
@@ -318,5 +329,48 @@ describe('checkOnce', () => {
     expect(problems).toHaveLength(1)
     expect(problems[0]).toContain('no local build at')
     expect(problems[0]).toContain('npm run build')
+  })
+
+  it("fails when the shell falls back to Hosting's one hour cache", async () => {
+    const baseUrl = await serveBuild({
+      '/': { body: BUILD_INDEX, type: 'text/html', cache: 'max-age=3600' },
+    })
+
+    const { problems } = await run(baseUrl, writeBuild())
+
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toContain('GET / answered cache-control "max-age=3600"')
+    expect(problems[0]).toContain('expected no-cache')
+    expect(problems[0]).toContain('previous build after a deploy')
+  })
+
+  it('fails when only the deep link is cached, so the shell is cached on routes', async () => {
+    const baseUrl = await serve(
+      {
+        '/': { body: BUILD_INDEX, type: 'text/html', cache: SHELL_CACHE },
+        '/login': { body: BUILD_INDEX, type: 'text/html', cache: 'max-age=3600' },
+        '/assets/index-one.js': { body: BUILD_JS, type: 'text/javascript' },
+        '/assets/index-one.css': { body: BUILD_CSS, type: 'text/css' },
+      },
+      { rewrite: true }
+    )
+
+    const { problems } = await run(baseUrl, writeBuild())
+
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toContain('deep link /login answered cache-control "max-age=3600"')
+    expect(problems[0]).toContain('on any route, not just')
+  })
+
+  it('fails when a hashed asset is not immutable', async () => {
+    const baseUrl = await serveBuild({
+      '/assets/index-one.js': { body: BUILD_JS, type: 'text/javascript', cache: 'no-cache' },
+    })
+
+    const { problems } = await run(baseUrl, writeBuild())
+
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toContain('/assets/index-one.js served cache-control "no-cache"')
+    expect(problems[0]).toContain('expected immutable')
   })
 })
