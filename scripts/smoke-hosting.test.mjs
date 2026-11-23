@@ -155,11 +155,11 @@ describe('parseArgs', () => {
 // The verdict itself: `checkOnce` against a loopback origin.
 //
 // The deploy job stops on this function's `problems` array, so each way a release
-// can be wrong gets a test with a real HTTP response rather than a stub: a stale
-// edge, a truncated upload, an asset served under the wrong content type, a
-// missing SPA rewrite, and a cache policy that is not applied are the failures
-// that have actually happened or been feared. Nothing here touches a network
-// other than 127.0.0.1.
+// can be wrong gets a test with a real HTTP response rather than a stub. The five
+// failures covered are the ones that have actually happened or been feared: a
+// stale edge, a truncated upload, an asset served under the wrong content type, a
+// missing SPA rewrite, and a cache policy that is not applied (a cached shell or a
+// non-immutable hashed asset). Nothing here touches a network other than 127.0.0.1.
 // ---------------------------------------------------------------------------
 
 const BUILD_JS = 'console.log("build one")\n'
@@ -256,6 +256,7 @@ describe('checkOnce', () => {
     expect(ok.join('\n')).toContain('deep link /login serves the app shell')
     expect(ok.join('\n')).toContain('the shell is served with Cache-Control: no-cache')
     expect(ok.join('\n')).toContain('deep link /login is served with Cache-Control: no-cache')
+    expect(ok.join('\n')).toContain('every entry asset is served with Cache-Control: immutable')
   })
 
   it('fails a stale release, and blames the shell instead of the rewrite', async () => {
