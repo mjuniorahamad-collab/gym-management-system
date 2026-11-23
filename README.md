@@ -79,6 +79,7 @@ from the gym's data.
 | `npm run test`     | Run the Vitest suite (once)            |
 | `npm run test:watch` | Run tests in watch mode             |
 | `npm run smoke:hosting` | Check the live site against `dist/` (see Deploying) |
+| `npm run rollback` | Dry-run (default) or apply a hosting / Firestore rules rollback |
 
 ## Project structure
 
@@ -221,6 +222,41 @@ firebase deploy --only functions --project <project-id>           # needs Blaze
 
 > ⚠️ Make sure the project in `.firebaserc` (or `--project`) is right and that the first admin user
 exists before rules move, so the deploy cannot lock you out.
+
+### Rolling back (incident procedure)
+
+A rollback republishes a known-good release. Nothing is deleted: the bad hosting release and the bad
+ruleset stay in the history, so the incident can be diffed afterwards.
+`scripts/rollback-release.mjs` plans a rollback for **hosting** or **Firestore rules**, and writes
+nothing unless it is given `--apply`. A dry run only calls the list/get endpoints and prints the live
+release plus the candidates it would pick.
+
+1. **Freeze the pipeline.** Cancel any running *Deploy* run in Actions. The workflow's
+   `concurrency: deploy-${{ github.ref }}` group queues a new dispatch behind it, so nothing ships
+   while you are rolling back. Do not dispatch a deploy to "fix" the problem.
+2. **Plan it (dry run).** Default target is the previous release / the previous ruleset. Add
+   `--to=<version id>` or `--to=<ruleset id>` to pick another one from the printed candidates.
+
+   ```bash
+   TOKEN="$(gcloud auth print-access-token)"
+   npm run rollback -- --target=hosting --project=himalye-wonders-gym --access-token="$TOKEN"
+   npm run rollback -- --target=rules   --project=himalye-wonders-gym --access-token="$TOKEN"
+   ```
+
+3. **Apply, then verify.** Re-run the same command with `--apply`. For hosting, prove the live origin
+   is the older bundle with `npm run smoke:hosting`; for rules, sign in and open one payment, because a
+   rules regression only shows up on a real read/write.
+
+   ```bash
+   npm run rollback -- --target=hosting --project=himalye-wonders-gym --access-token="$TOKEN" --apply
+   npm run smoke:hosting
+   ```
+
+Permissions: `firebasehosting.releases.create` for hosting, and `firebaserules.rulesets.create` plus
+`firebaserules.releases.update` for rules. Neither path calls `firebaserules.googleapis.com:test` — the
+call that still 403s for the deploy service account — so a rules rollback does not wait on
+`roles/firebaserules.admin`. **Neither path has been exercised against the production project yet:**
+the first real use is a dry run, then `--apply`, then the verification step above.
 
 ## Production deployment checklist
 
