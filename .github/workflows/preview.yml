@@ -1,0 +1,130 @@
+name: Preview channel (hosting)
+
+# A hosting change is only checked against a real URL AFTER it is merged: the
+# deploy workflow builds from `main`, so a reordered `headers` array or a broken
+# rewrite ships first and is caught by the smoke check too late. This workflow
+# deploys the pull request's build to a Firebase Hosting preview channel, runs
+# the SAME smoke check against that origin (entry hashes, bytes, SPA rewrite,
+# cache policy), and comments the URL on the PR.
+#
+# SCOPE: hosting only. This never deploys rules, indexes or storage rules — a
+# preview channel carries no security surface, and the staging order in
+# deploy.yml stays the only path for those.
+#
+# The channel URL is public (unguessable, not indexed): it serves the same
+# login-gated bundle, and it is deleted automatically after 7 days.
+#
+# Skipped for fork PRs, which never receive repository secrets.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: 'Pull request number to preview'
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: write # comment the preview URL on the PR
+
+concurrency:
+  group: preview-pr-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
+
+env:
+  PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID || 'himalye-wonders-gym' }}
+
+jobs:
+  preview:
+    name: Deploy preview channel
+    # A fork PR gets no secrets, so there is nothing to deploy with; skipping is
+    # honest, and it keeps outside PRs from showing a permanent red check.
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Build hosting bundle
+        run: npm run build
+
+      - name: Check deploy credential
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+        run: |
+          if [ -z "$FIREBASE_SERVICE_ACCOUNT" ]; then
+            echo "::error::Repository secret FIREBASE_SERVICE_ACCOUNT is not set, so no preview channel can be deployed."
+            exit 1
+          fi
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
+      # One channel per PR, reused on every push to the branch. --expires keeps
+      # Firebase from retaining channels for closed PRs; nothing is deleted here.
+      - name: Deploy preview channel
+        id: channel
+        run: |
+          set -euo pipefail
+          CHANNEL="pr-${{ github.event.pull_request.number || inputs.pr }}"
+          npx --yes firebase-tools@15 hosting:channel:deploy "$CHANNEL" \
+            --expires 7d \
+            --project "$PROJECT_ID" \
+            --non-interactive \
+            --json > channel.json
+          URL=$(node -e '
+            const fs = require("node:fs")
+            const parsed = JSON.parse(fs.readFileSync("channel.json", "utf8"))
+            const first = Object.values(parsed.result || {})[0] || {}
+            process.stdout.write(first.url || "")
+          ')
+          if [ -z "$URL" ]; then
+            echo "::error::The channel deploy reported success but returned no URL:"
+            cat channel.json
+            exit 1
+          fi
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "channel=$CHANNEL" >> "$GITHUB_OUTPUT"
+          echo "Preview channel: $URL"
+
+      # The same script the deploy workflow runs after a release, so a PR fails
+      # here for the reasons a release would fail after merge — stale shell,
+      # wrong asset bytes, missing SPA rewrite, lost cache policy.
+      - name: Smoke check the preview URL
+        env:
+          PREVIEW_URL: ${{ steps.channel.outputs.url }}
+        run: node scripts/smoke-hosting.mjs --base-url="$PREVIEW_URL" --dist=dist --attempts=4
+
+      - name: Comment the preview URL on the PR
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PREVIEW_URL: ${{ steps.channel.outputs.url }}
+          CHANNEL: ${{ steps.channel.outputs.channel }}
+        run: |
+          set -euo pipefail
+          MARKER='<!-- preview-channel -->'
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          BODY=$(printf '%s\n**Hosting preview:** %s\n\nChannel `%s`, built from %s, expires in 7 days. Hosting only — rules, indexes and storage rules are not part of a preview channel.\n' \
+            "$MARKER" "$PREVIEW_URL" "$CHANNEL" "${GITHUB_SHA:0:7}")
+          # One sticky comment: update the existing one instead of adding a new
+          # comment on every push to the branch.
+          COMMENT_ID=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --paginate \
+            --jq ".[] | select(.body | startswith(\"${MARKER}\")) | .id" | head -n 1)
+          if [ -n "$COMMENT_ID" ]; then
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${COMMENT_ID}" -f body="$BODY" > /dev/null
+          else
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" -f body="$BODY" > /dev/null
+          fi

@@ -206,6 +206,24 @@ hand against the live site: `npm run smoke:hosting` (add
 The workflow is dispatch-only for now; the `push: branches: [main]` trigger in the file is the
 Phase 2 switch for auto-deploy, and every gate above still applies.
 
+### Previewing a hosting change before merge
+
+`.github/workflows/preview.yml` runs on every pull request to `main`: it builds the branch, deploys it to
+a Firebase Hosting **preview channel** (`pr-<number>`), runs the same `scripts/smoke-hosting.mjs` check
+against that URL, and posts the URL as one sticky PR comment. So a stale shell, wrong asset bytes, a
+broken SPA rewrite or a reordered `headers` array fails on the PR instead of after merge.
+
+- **Hosting only.** A preview channel never carries rules, indexes or storage rules; those still ship
+  through the staged scopes above.
+- Channels expire after **7 days** (`--expires 7d`), so closed PRs do not accumulate. One channel per PR
+  is reused on every push.
+- The URL is public but unguessable and serves the same login-gated bundle.
+- **Fork PRs are skipped**, because they never receive `FIREBASE_SERVICE_ACCOUNT`.
+- It is not a required check: a hosting change can still be merged without it, so treat a failing preview
+  as a blocker by convention, not by branch protection.
+- If the comment step fails with `403 Resource not accessible by integration`, set
+  Settings → Actions → General → Workflow permissions to **Read and write**.
+
 ### Deploying from your machine (break-glass, same order)
 
 `git push` deploys nothing, and there is no supported one-shot `firebase deploy`:
