@@ -194,9 +194,12 @@ expected to plan ~10 deletions; review them in the job summary.
 
 After the hosting step, `scripts/smoke-hosting.mjs` compares the live URL with the bundle that was
 just built: the served `index.html` must reference the same hashed entry files, the entry bytes must
-match (sha256), and a deep link (`/login`) must serve the app through the SPA rewrite. A deploy that
-publishes a stale or broken bundle fails the job there, before rules or indexes move. The same check
-can be run by hand against the live site: `npm run smoke:hosting` (add
+match (sha256), and a deep link (`/login`) must serve the app through the SPA rewrite. It also checks
+the cache policy `firebase.json` declares, because header rules match the original request path and
+the last match wins: the shell (`/` and the deep link) must answer `Cache-Control: no-cache`, and every
+`/assets/**` file must answer `immutable`. A deploy that publishes a stale or broken bundle, or that
+loses the cache policy, fails the job there, before rules or indexes move. The same check can be run by
+hand against the live site: `npm run smoke:hosting` (add
 `-- --base-url=https://<project-id>.web.app` for another project).
 
 The workflow is dispatch-only for now; the `push: branches: [main]` trigger in the file is the
