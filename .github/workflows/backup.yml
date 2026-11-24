@@ -1,0 +1,112 @@
+name: Firestore backup (JSON, free)
+
+# The production database has no export on any schedule. `functions/dailyBackup` needs
+# Blaze and a Storage bucket, and `gcloud firestore export` does too, so this workflow
+# takes the free path: the Admin SDK reads every document and writes NDJSON, which is
+# uploaded as a workflow artifact. No bucket, no billing, no new credential — it signs
+# in with the same FIREBASE_SERVICE_ACCOUNT secret the deploy workflow uses.
+#
+# READ-ONLY. `scripts/backup-firestore.mjs` has a --restore mode for an operator
+# machine; this job only ever calls --out.
+#
+# WHAT A GREEN RUN PROVES, AND WHAT IT DOES NOT
+#   * It proves the service account can read every collection and that the dump
+#     finished: the manifest in the job summary carries the per-collection counts.
+#   * It does NOT prove a restore works. Rehearse that against the emulator with the
+#     same file (docs/backup-restore-runbook.md §4) before relying on this.
+#   * Auth users and Storage objects are not covered — see §5 of the runbook.
+#
+# RETENTION. GitHub keeps the artifact for `retention-days`; older dumps expire. Keep
+# one dump outside GitHub as well (the runbook's off-machine copy), because a backup
+# that lives only in the CI account of the same organisation is one lost login away
+# from useless.
+#
+# MANUAL RUN FIRST. Dispatch it once and check the counts against the console before
+# trusting the schedule.
+
+on:
+  workflow_dispatch:
+    inputs:
+      retention_days:
+        description: 'Days to keep the artifact (1-90)'
+        type: number
+        default: 14
+  schedule:
+    # 01:15 Asia/Kathmandu (19:30 UTC the previous day).
+    - cron: '30 19 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firestore-backup
+  cancel-in-progress: false
+
+env:
+  PROJECT_ID: ${{ vars.FIREBASE_PROJECT_ID || 'himalye-wonders-gym' }}
+
+jobs:
+  backup:
+    name: Dump Firestore to JSON
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      # Exports the service-account key and sets GOOGLE_APPLICATION_CREDENTIALS,
+      # which is exactly what the Admin SDK reads. No key ever reaches a log.
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+
+      # The Admin SDK lives in functions/, not at the repository root.
+      - name: Install function dependencies
+        run: npm ci --prefix functions
+
+      - name: Dump Firestore
+        id: dump
+        run: |
+          set -euo pipefail
+          OUT="backup/$(date -u +%Y-%m-%dT%H-%M-%SZ)"
+          node scripts/backup-firestore.mjs --project="$PROJECT_ID" --out="$OUT"
+          echo "dir=$OUT" >> "$GITHUB_OUTPUT"
+
+      # The manifest is the proof the dump finished, so it belongs in the run summary
+      # where it can be read against the console's document counts.
+      - name: Summarise the dump
+        run: |
+          set -euo pipefail
+          DIR="${{ steps.dump.outputs.dir }}"
+          {
+            echo '### Firestore backup'
+            echo ''
+            echo '```json'
+            cat "$DIR/_manifest.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # An empty dump is a failure, not a backup: a credentials problem that returns
+      # zero collections must not upload a green artifact called "backup".
+      - name: Refuse an empty backup
+        run: |
+          set -euo pipefail
+          DIR="${{ steps.dump.outputs.dir }}"
+          DOCS=$(jq -r '.documents' "$DIR/_manifest.json")
+          LINES=$(wc -l < "$DIR/documents.ndjson")
+          if [ "$DOCS" -le 0 ] || [ "$LINES" -le 0 ]; then
+            echo "::error::The dump is empty ($DOCS documents). Nothing was backed up."
+            exit 1
+          fi
+          echo "Backed up $DOCS documents."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: firestore-backup-${{ github.run_id }}
+          path: backup/
+          retention-days: ${{ inputs.retention_days || 14 }}
+          if-no-files-found: error
