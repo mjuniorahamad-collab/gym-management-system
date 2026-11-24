@@ -42,6 +42,15 @@ name: Deploy (hosting · Firestore rules · indexes · storage rules)
 # it stays off until storage is ready to be exercised: mismatched Storage rules
 # only surface at upload/read time, not at deploy time.
 #
+# A RULES DEPLOY PROVES ITSELF. `firebase deploy --only firestore:rules` can report
+# success while the live `cloud.firestore` release still points at an older ruleset,
+# and nothing else checks production: the emulator suites prove what the file WOULD
+# enforce, not what the project DOES. After the rules step,
+# scripts/check-live-rules.mjs reads the release back and compares its ruleset with
+# `firestore.rules` (two GET requests, nothing written). Exit 0 = match, 1 = differs,
+# 2 = could not read; every outcome other than 0 fails the job, so a rules run that
+# cannot show what it published is red instead of green.
+#
 # AFTER THE HOSTING STEP, scripts/smoke-hosting.mjs checks the live URL against
 # the bundle that was just built: the build must carry the Firebase web config
 # (no `apiKey: void 0`), the served index.html must reference the same entry
@@ -206,6 +215,32 @@ jobs:
             --only firestore:rules \
             --project "$PROJECT_ID" \
             --non-interactive
+
+      # Step 2c: prove the release. The deploy command only says the upload was
+      # accepted; this reads the live release back and compares it with the file that
+      # was just deployed. A mismatch is retried for ~40 s (a read can briefly trail
+      # the write), then fails the job. Exit 2 ("could not check": token, permission,
+      # network) is not retried — the deploy is unproven either way.
+      - name: Verify the live rules match firestore.rules
+        if: contains(inputs.deploy_scope, 'rules')
+        run: |
+          set -euo pipefail
+          ACCESS_TOKEN=$(gcloud auth print-access-token)
+          for attempt in 1 2 3 4 5; do
+            status=0
+            node scripts/check-live-rules.mjs               --project="$PROJECT_ID"               --access-token="$ACCESS_TOKEN" || status=$?
+            if [ "$status" -eq 0 ]; then
+              exit 0
+            fi
+            if [ "$status" -ne 1 ]; then
+              echo "::error::Live rules verification could not run (exit ${status})."
+              exit "$status"
+            fi
+            echo "Attempt ${attempt}/5: the live ruleset still differs; retrying in 10s."
+            sleep 10
+          done
+          echo "::error::firestore.rules was deployed but production still enforces a different ruleset."
+          exit 1
 
       # Step 2b: Storage rules for member photos and gym logos. Opt-in: the live
       # bucket still runs the default deny-all ruleset, and flipping it is only

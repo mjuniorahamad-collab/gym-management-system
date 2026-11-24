@@ -2154,3 +2154,28 @@ Deploy log: 51 files in `dist`, `file upload complete` 09:50:42Z, `version final
 
 Not shown: a before/after bundle diff. The release completed at 09:50:42Z and the first snapshot could only be
 taken at 09:50:49Z, so the pre-deploy bundle was never captured; only the post-deploy state is observed.
+
+### 30.22.1 — The rules check exists, and a rules deploy now verifies itself
+
+Two gaps sat behind "the deploy was green". First, `firestore.rules` in the repository was never compared with
+the ruleset the `cloud.firestore` release actually points at — the emulator suites prove what the file *would*
+enforce, not what production *does*, and a console edit or an older release is invisible to CI. Second, the
+database had no backup at all: no export on any schedule, no restore ever rehearsed.
+
+- **`scripts/check-live-rules.mjs`** (PR #26, merge `a5be6bf`) is the read-only answer: `releases.list`, then
+  `rulesets.get`, normalise CRLF/trailing whitespace, compare with `firestore.rules`, and print the first
+  differing lines. Two GET requests, nothing written, so `roles/firebaserules.viewer` is enough; it never calls
+  `rulesets.test` (the 403 in run #13). `npm run check:live-rules --access-token=…` for a manual run; exit
+  0 = match, 1 = differs or never released, 2 = could not check.
+- **`deploy.yml` runs it right after `Deploy Firestore rules`** (`deploy_scope` containing `rules`). A mismatch
+  is retried five times over ~40 s, then the job fails; "could not check" fails immediately. A rules deploy that
+  cannot show what it published is now red, not green.
+- **`docs/backup-restore-runbook.md`** (same PR) documents the free path (Admin-SDK JSON dump + emulator
+  rehearsal) and the managed export that needs Blaze, with retention and a hand-over checklist. It records the
+  honest status: **no backup exists yet**; the checklist's first box is the dump that has not been taken.
+
+The check still needs one manual run with a token to prove the *live* ruleset matches this repository — the
+deploy step is what performs it from now on, and its log is the evidence.
+
+Checks: `scripts/check-live-rules.test.mjs` (16 assertions: match, mismatch, never-deployed, 403, network,
+missing source, CRLF) and eslint/prettier clean locally; PR #26 merged on 4/4 green checks, `main` 3/3 green.
