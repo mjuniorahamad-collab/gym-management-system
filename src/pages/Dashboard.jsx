@@ -29,6 +29,7 @@ import { RenewalModal } from '@/components/common/RenewalModal'
 import { ReceiptModal } from '@/components/common/ReceiptModal'
 import { PaymentForm } from '@/components/common/PaymentForm'
 import { OutstandingDuesCard } from '@/components/dashboard/OutstandingDuesCard'
+import { AtRiskMembersCard } from '@/components/dashboard/AtRiskMembersCard'
 import { MigrationBanner } from '@/components/dashboard/MigrationBanner'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -43,6 +44,7 @@ import { parseDate, addDays } from '@/utils/dateHelpers'
 import { gymDayKey, gymLastNMonthKeys, gymMonthKey } from '@/utils/gymTime'
 import { getCurrentMembershipExpiry, getDaysRemaining, getExpiryBucket, matchesExpiryFilter } from '@/utils/membership'
 import { computeMemberFinanceRollups } from '@/utils/dues'
+import { buildAtRiskMembers } from '@/utils/churnRisk'
 
 const MAX_EXPIRING_ROWS = 50
 
@@ -163,6 +165,30 @@ export default function Dashboard() {
     })
     return rows
   }, [members.items, planMap, memberships.items, timezone, freezes.items])
+
+  // Churn / at-risk list. Reuses the dues rollup above, so the dashboard does
+  // not walk every member ledger a second time just for dues aging.
+  const atRisk = useMemo(
+    () =>
+      buildAtRiskMembers({
+        members: members.items,
+        plans: plans.items,
+        memberships: memberships.items,
+        freezes: freezes.items,
+        attendance: attendance.items,
+        duesRows: dues.rows,
+        timezone,
+      }),
+    [
+      members.items,
+      plans.items,
+      memberships.items,
+      freezes.items,
+      attendance.items,
+      dues.rows,
+      timezone,
+    ]
+  )
 
   const filteredExpiring = useMemo(() => {
     const list =
@@ -375,6 +401,15 @@ export default function Dashboard() {
           }
         />
       )}
+
+      <AtRiskMembersCard
+        rows={atRisk.rows}
+        summary={atRisk.summary}
+        settings={settings}
+        canFinance={canFinance}
+        canWrite={canFinanceWrite}
+        onRenew={({ member, plan, expiry }) => setRenewTarget({ member, plan, expiry })}
+      />
 
       <Card className="overflow-hidden">
         <CardHeader
