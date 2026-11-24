@@ -141,6 +141,7 @@ export const DATE_FORMATS = [
 export const NAV_ITEMS = [
   { to: '/', label: 'Dashboard', icon: 'LayoutDashboard', end: true },
   { to: '/members', label: 'Members', icon: 'Users', permission: 'members.view' },
+  { to: '/leads', label: 'Leads', icon: 'UserPlus', permission: 'members.view' },
   { to: '/trainers', label: 'Trainers', icon: 'Dumbbell', permission: 'trainers.view' },
   { to: '/classes', label: 'Classes', icon: 'CalendarDays', permission: 'members.view' },
   { to: '/attendance', label: 'Attendance', icon: 'ClipboardCheck', permission: 'members.view' },

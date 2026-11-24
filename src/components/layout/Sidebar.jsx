@@ -9,6 +9,7 @@ import {
   LogOut,
   Receipt,
   Settings as SettingsIcon,
+  UserPlus,
   Users,
   Wallet,
   X,
@@ -22,6 +23,7 @@ import { useLayout } from './Layout'
 const ICON_MAP = {
   LayoutDashboard,
   Users,
+  UserPlus,
   Dumbbell,
   CalendarDays,
   ClipboardCheck,
