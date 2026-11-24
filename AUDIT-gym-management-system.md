@@ -2179,3 +2179,25 @@ deploy step is what performs it from now on, and its log is the evidence.
 
 Checks: `scripts/check-live-rules.test.mjs` (16 assertions: match, mismatch, never-deployed, 403, network,
 missing source, CRLF) and eslint/prettier clean locally; PR #26 merged on 4/4 green checks, `main` 3/3 green.
+
+### 30.22.2 — The live rules now match the repository, and the first backup exists
+
+Everything 30.22.1 added was used on 2026-11-24, in one afternoon, on `main` @ `ec4afd3`:
+
+- **Rules (run `45389484290`, `deploy_scope=hosting+rules`).** `Deploy Firestore rules` succeeded and the new
+  gate proved it: `the live projects/…/releases/cloud.firestore matches firestore.rules (672 lines)`,
+  ruleset `8f3a768d-…`, release updated `2026-11-24T12:02:02.991802Z`. The rules that were live since November
+  were replaced, and for the first time production is compared with the file that shipped. Had the release
+  stayed behind, that step would have been red instead of the deploy.
+- **Indexes (run `45389766723`, `deploy_scope=hosting+indexes`, `confirm_index_deletions=false`).** The gate
+  reported `desired 19 · live 19 · unchanged 19 · to create 0 · to delete 0` — "Project indexes already match
+  the file" — so the step ran and changed nothing. Nothing was deleted because there was nothing to delete.
+- **Backup (PR #28, run `45390079046`).** `scripts/backup-firestore.mjs` wrote 554 documents across 14
+  collections to `firestore-backup-45390079046` (41,090 bytes, retained until 2026-12-08), and
+  `backup.yml` now repeats that nightly at 01:15 Asia/Kathmandu on the free path — same service-account
+  secret, no bucket, no Blaze.
+
+Not proven yet, and worth saying plainly: **no restore has run** (the emulator rehearsal in
+`docs/backup-restore-runbook.md` §4 is still empty), the 554 documents have not been compared with the console
+by the owner, and Auth users plus Storage objects are outside a Firestore dump. The finished hosting deploys
+were checked by the smoke step on both runs, so the live site was still serving this build afterwards.

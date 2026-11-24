@@ -1,10 +1,11 @@
 # Firestore backup & restore — runbook
 
-Status: **a dump now runs on a schedule; nothing has been restored yet.**
-`.github/workflows/backup.yml` dumps the production database every night by the free
-path in §2 and keeps 14 days of artifacts. `functions/dailyBackup` still needs Blaze
-and is not deployed. Until a dump is checked against the console and a restore (§4)
-has passed, this is a schedule, not a recovery plan.
+Status: **dumps run nightly and the first one completed on 2026-11-24 (554 documents);
+nothing has been restored yet.** `.github/workflows/backup.yml` dumps the production
+database every night by the free path in §2 and keeps 14 days of artifacts.
+`functions/dailyBackup` still needs Blaze and is not deployed. Until a restore (§4) has
+passed and the counts are checked against the console, this is a schedule, not a
+recovery plan.
 
 | | |
 | --- | --- |
@@ -51,6 +52,16 @@ Do B now, keep this runbook's A section for the day billing is approved.
    `_manifest.json` in the run summary;
 4. **fails** on an empty dump, so a credentials problem cannot upload a green artifact
    called "backup".
+
+**First run — 2026-11-24, run `45390079046`:** 554 documents across 14 collections
+(`auditLog` 311, `payments` 73, `memberships` 52, `members` 39, `membershipPlans` 20,
+`attendance` 15, `weightRecords` 15, `gyms` 12, `expenses` 7, `counters` 4, `users` 3,
+`classes` 1, `settings` 1, `trainers` 1), artifact `firestore-backup-45390079046`
+(41,090 bytes, retained until 2026-12-08). The nightly run starts at 01:15 Asia/Kathmandu;
+run it by hand from **Actions → Firestore backup (JSON, free) → Run workflow**.
+
+Still open: those counts have not been compared with the console by the owner, and no
+restore has been rehearsed.
 
 The service account needs read access to every collection (`roles/datastore.viewer`,
 included in Editor and in the Firebase Admin SDK role). The job only ever calls `--out`;
