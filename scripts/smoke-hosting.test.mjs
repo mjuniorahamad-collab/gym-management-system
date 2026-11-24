@@ -162,7 +162,10 @@ describe('parseArgs', () => {
 // non-immutable hashed asset). Nothing here touches a network other than 127.0.0.1.
 // ---------------------------------------------------------------------------
 
-const BUILD_JS = 'console.log("build one")\n'
+// Shaped like a real Vite build: the Firebase web config is inlined into the
+// entry chunk, so a build that ran with VITE_FIREBASE_* carries the api key.
+const BUILD_JS =
+  'const firebaseConfig={apiKey:"AIzaSySmokeFixtureKey0000000000000000000"};console.log("build one")\n'
 const BUILD_CSS = '.app{color:#111}\n'
 
 // What `firebase.json` declares: a no-cache shell and immutable hashed assets.
@@ -251,12 +254,32 @@ describe('checkOnce', () => {
     const { problems, ok } = await run(await serveBuild(), writeBuild())
 
     expect(problems).toEqual([])
+    expect(ok.join('\n')).toContain('carries the Firebase web config')
     expect(ok.join('\n')).toContain('references this build')
     expect(ok.join('\n')).toContain('/assets/index-one.js served identically')
     expect(ok.join('\n')).toContain('deep link /login serves the app shell')
     expect(ok.join('\n')).toContain('the shell is served with Cache-Control: no-cache')
     expect(ok.join('\n')).toContain('deep link /login is served with Cache-Control: no-cache')
     expect(ok.join('\n')).toContain('every entry asset is served with Cache-Control: immutable')
+  })
+
+  it('fails a build that was made without the Firebase environment', async () => {
+    const dist = writeBuild({
+      files: {
+        'assets/index-one.js': 'console.log("build made without VITE_FIREBASE_*")\n',
+        'assets/index-one.css': BUILD_CSS,
+      },
+    })
+
+    const { problems, ok } = await run(await serveBuild(), dist)
+
+    expect(problems).toHaveLength(1)
+    expect(problems[0]).toContain('carries no Firebase api key')
+    expect(problems[0]).toContain('VITE_FIREBASE_*')
+    expect(problems[0]).toContain('Firebase is not configured')
+    // The verdict is local: a build with no config is named before any request,
+    // so a release cannot publish it and only fail afterwards.
+    expect(ok.join('\n')).not.toContain('served identically')
   })
 
   it('fails a stale release, and blames the shell instead of the rewrite', async () => {
