@@ -62,6 +62,29 @@ export default function Classes() {
   const bookingsForClass = (classId) =>
     bookings.filter((b) => b.classId === classId && b.status === 'booked')
 
+  /**
+   * Capacity is a LIMIT, not a badge.
+   *
+   * The schedule showed "3/2 booked" but the Book button still wrote the
+   * booking, so a full class could be oversold by any staff member who did not
+   * read the count. `capacity` of 0/blank keeps its old meaning: unlimited.
+   *
+   * This is a single-device guard. Two front desks booking the last slot at the
+   * same moment can still both succeed, because the count is read from the
+   * already-subscribed booking list; making the limit transactional would need
+   * a booking counter per class. The realistic desk flow (one person booking a
+   * member who is standing there) is protected, and no booking is ever silently
+   * dropped.
+   */
+  const capacityOf = (gymClass) => {
+    const capacity = Number(gymClass?.capacity)
+    return Number.isFinite(capacity) && capacity > 0 ? capacity : 0
+  }
+
+  const isClassFull = (gymClass) =>
+    capacityOf(gymClass) > 0 &&
+    bookingsForClass(gymClass?.id).length >= capacityOf(gymClass)
+
   // Classes are weekly-recurring by `dayOfWeek`, so one booking covers every
   // occurrence and a member can never legitimately be booked into the same
   // class twice. Keying the document on (classId, memberId) therefore cannot
@@ -129,6 +152,12 @@ export default function Classes() {
       const existing = bookingsForClass(bookingFor.id).find((b) => b.memberId === selectedMember)
       if (existing) {
         toast.error(`${memberMap[selectedMember]?.name || 'That member'} is already booked into this class`)
+        return
+      }
+      if (isClassFull(bookingFor)) {
+        toast.error(
+          `${bookingFor.name} is full (${bookingsForClass(bookingFor.id).length}/${capacityOf(bookingFor)}). Remove a booking or raise the class capacity first.`
+        )
         return
       }
       const id = bookingKey(bookingFor.id, selectedMember)
@@ -309,9 +338,18 @@ export default function Classes() {
         onClose={() => setBookingFor(null)}
         size="md"
         title={bookingFor?.name}
-        subtitle="Manage member bookings"
+        subtitle={
+          bookingFor
+            ? `${bookingsForClass(bookingFor.id).length}/${capacityOf(bookingFor) || '∞'} booked`
+            : 'Manage member bookings'
+        }
       >
         <div className="space-y-4">
+          {bookingFor && isClassFull(bookingFor) && (
+            <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-500/10 dark:text-amber-300">
+              This class is full. Remove a booking or raise the capacity to add someone else.
+            </p>
+          )}
           <div className="flex items-center gap-2">
             <Select value={selectedMember} onChange={(e) => setSelectedMember(e.target.value)} className="flex-1">
               <option value="">Select a member…</option>
@@ -321,7 +359,11 @@ export default function Classes() {
                 </option>
               ))}
             </Select>
-            <Button onClick={handleAddBooking} loading={submitting} disabled={!selectedMember}>
+            <Button
+              onClick={handleAddBooking}
+              loading={submitting}
+              disabled={!selectedMember || (bookingFor && isClassFull(bookingFor))}
+            >
               Book
             </Button>
           </div>
