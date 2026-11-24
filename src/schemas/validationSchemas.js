@@ -79,6 +79,16 @@ export const memberSchema = z.object({
     .transform((v) => (v === '' ? null : v)),
 })
 
+export const leadSchema = z.object({
+  name: z.string().min(2, 'Name must be at least 2 characters').max(80),
+  phone,
+  source: z.string().min(1, 'Select a source'),
+  interestedPlanId: z.string().optional().or(z.literal('')),
+  followUpDate: z.string().optional().or(z.literal('')),
+  status: z.enum(['new', 'contacted', 'trial', 'joined', 'lost']),
+  notes: z.string().max(1000).optional().or(z.literal('')),
+})
+
 export const trainerSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters').max(80),
   email: email.optional().or(z.literal('')),

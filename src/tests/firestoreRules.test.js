@@ -103,7 +103,7 @@ describe('firestore rules — renewal write path', () => {
   })
 
   it('scopes every business collection by gymId (tenancy)', () => {
-    const scoped = ['members', 'trainers', 'membershipPlans', 'memberships', 'membershipFreezes', 'payments', 'expenses', 'attendance', 'classes', 'bookings', 'auditLog', 'weightRecords']
+    const scoped = ['members', 'leads', 'trainers', 'membershipPlans', 'memberships', 'membershipFreezes', 'payments', 'expenses', 'attendance', 'classes', 'bookings', 'auditLog', 'weightRecords']
     for (const collection of scoped) {
       const block = extractBlock(rulesText, collection)
       expect(block, `match /${collection}/{id} block missing`).not.toBeNull()
@@ -132,6 +132,20 @@ describe('firestore rules — renewal write path', () => {
     expect(block).toContain('allow read: if isStaff()')
     expect(block).toContain('allow create, update: if isStaff()')
     expect(block).toContain('allow delete: if (isRole(\'admin\') || isOwner()) && canDeleteTenant(resource)')
+  })
+
+  /**
+   * Leads are front-desk territory: anyone on staff records the enquiry, but
+   * only admin/owner can delete one, and the field guards refuse a blank name or
+   * an invented status at the boundary rather than trusting the form.
+   */
+  it('keeps lead writes staff-wide but deletes admin/owner, with field guards', () => {
+    const block = extractBlock(rulesText, 'leads')
+    expect(block, 'match /leads/{id} block missing').not.toBeNull()
+    expect(block).toContain('allow read: if isStaff() && canReadTenant(resource)')
+    expect(block).toContain('allow create: if isStaff() && canWriteTenant(resource) && validLeadCreate()')
+    expect(block).toContain('allow delete: if (isRole(\'admin\') || isOwner()) && canDeleteTenant(resource)')
+    expect(normalize(rulesText)).toContain("request.resource.data.status in ['new', 'contacted', 'trial', 'joined', 'lost']")
   })
 
   it('scopes members deletes to admin/owner within the gym', () => {

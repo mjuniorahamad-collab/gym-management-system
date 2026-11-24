@@ -67,6 +67,7 @@ const OWNER_B = 'cc-owner-b'
 /** One doc per gym per collection, so a leaked read has something to reveal. */
 const COLLECTIONS = [
   'members',
+  'leads',
   'payments',
   'bookings',
   'counters',

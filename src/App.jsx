@@ -13,6 +13,7 @@ import { Spinner } from '@/components/ui/Spinner'
 const Login = lazy(() => import('@/pages/Login'))
 const Dashboard = lazy(() => import('@/pages/Dashboard'))
 const Members = lazy(() => import('@/pages/Members'))
+const Leads = lazy(() => import('@/pages/Leads'))
 const MemberDetail = lazy(() => import('@/pages/MemberDetail'))
 const MemberPortal = lazy(() => import('@/pages/MemberPortal'))
 const Trainers = lazy(() => import('@/pages/Trainers'))
@@ -58,6 +59,7 @@ export default function App() {
 
                       <Route path="members" element={<Members />} />
                       <Route path="members/:id" element={<MemberDetail />} />
+                      <Route path="leads" element={<Leads />} />
                       <Route
                         path="trainers"
                         element={

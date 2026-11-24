@@ -19,6 +19,7 @@ let initialized = false
 
 export const store = {
   members: [],
+  leads: [],
   trainers: [],
   membershipPlans: [],
   memberships: [],

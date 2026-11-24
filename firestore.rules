@@ -107,6 +107,35 @@ service cloud.firestore {
       return sameGym(resource);
     }
 
+    // ---------- Lead field guards ------------------------------------------
+    // A lead is a walk-in enquiry, not a money record. Its value is the
+    // follow-up diary, so a document with no name or an invented status is
+    // useless to the next staff member and is refused here rather than left to
+    // the client to remember. The status list is duplicated from
+    // `src/utils/leads.js` on purpose: the rules are the boundary and must not
+    // depend on a client module that a writer can bypass.
+    //
+    // create and update are separate because an update may be partial (marking
+    // a lead joined sends only status + convertedMemberId); requiring `name` on
+    // every update would make that flow impossible.
+    function validLeadCreate() {
+      return 'name' in request.resource.data
+        && request.resource.data.name is string
+        && request.resource.data.name.size() > 0
+        && request.resource.data.name.size() <= 120
+        && 'status' in request.resource.data
+        && request.resource.data.status in ['new', 'contacted', 'trial', 'joined', 'lost'];
+    }
+
+    function validLeadUpdate() {
+      return (!('name' in request.resource.data)
+          || (request.resource.data.name is string
+            && request.resource.data.name.size() > 0
+            && request.resource.data.name.size() <= 120))
+        && (!('status' in request.resource.data)
+          || request.resource.data.status in ['new', 'contacted', 'trial', 'joined', 'lost']);
+    }
+
     // ---------- Payment receipt integrity -----------------------------------
     // A receipt number is a brand, not a label: it is printed on receipts and
     // persisted onto payment records, so a finance client must not be able to
@@ -444,6 +473,18 @@ service cloud.firestore {
     match /weightRecords/{id} {
       allow read: if isStaff() && canReadTenant(resource);
       allow create, update: if isStaff() && canWriteTenant(resource);
+      allow delete: if (isRole('admin') || isOwner()) && canDeleteTenant(resource);
+    }
+
+    // ---------- Leads (walk-in enquiries + follow-up diary) ----------------
+    // Any staff member (front desk included) can record and update a lead: the
+    // enquiry arrives at the desk, and waiting for an owner to type it in is how
+    // enquiries get lost. Deletes stay with admin/owner, matching members, so a
+    // disputed lead cannot be erased by the same person who dropped the ball.
+    match /leads/{id} {
+      allow read: if isStaff() && canReadTenant(resource);
+      allow create: if isStaff() && canWriteTenant(resource) && validLeadCreate();
+      allow update: if isStaff() && canWriteTenant(resource) && validLeadUpdate();
       allow delete: if (isRole('admin') || isOwner()) && canDeleteTenant(resource);
     }
 
