@@ -8,12 +8,18 @@
  */
 
 import { spawnSync } from 'node:child_process'
+import path from 'node:path'
 import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
 import { REQUIRED_FIREBASE_VARS, missingFirebaseVars } from './check-firebase-env.mjs'
 
-const SCRIPT = fileURLToPath(new URL('./check-firebase-env.mjs', import.meta.url))
+// The default vitest environment here is jsdom, which presents import.meta.url as
+// an http:// URL, so fileURLToPath cannot take it. `npm test` always runs from the
+// repository root, which is also where the deploy workflow runs this script.
+const SCRIPT = import.meta.url.startsWith('file:')
+  ? path.join(path.dirname(fileURLToPath(import.meta.url)), 'check-firebase-env.mjs')
+  : path.resolve(process.cwd(), 'scripts', 'check-firebase-env.mjs')
 
 // A complete, obviously fake config: the check only reads presence, never values.
 const COMPLETE = {
