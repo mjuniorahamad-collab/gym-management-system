@@ -1,7 +1,7 @@
 # Firestore backup & restore — runbook
 
-Status: **dumps run nightly and the first one completed on 2026-11-24 (554 documents);
-nothing has been restored yet.** `.github/workflows/backup.yml` dumps the production
+Status: **dumps run nightly, the first one completed on 2026-11-24 (554 documents), and
+the first restore rehearsal passed on 2026-11-24 (§4).** `.github/workflows/backup.yml` dumps the production
 database every night by the free path in §2 and keeps 14 days of artifacts.
 `functions/dailyBackup` still needs Blaze and is not deployed. Until a restore (§4) has
 passed and the counts are checked against the console, this is a schedule, not a
@@ -60,8 +60,7 @@ Do B now, keep this runbook's A section for the day billing is approved.
 (41,090 bytes, retained until 2026-12-08). The nightly run starts at 01:15 Asia/Kathmandu;
 run it by hand from **Actions → Firestore backup (JSON, free) → Run workflow**.
 
-Still open: those counts have not been compared with the console by the owner, and no
-restore has been rehearsed.
+Still open: those counts have not been compared with the console by the owner.
 
 The service account needs read access to every collection (`roles/datastore.viewer`,
 included in Editor and in the Firebase Admin SDK role). The job only ever calls `--out`;
@@ -160,7 +159,25 @@ passing rehearsal in this file.
 
 | Rehearsal | Dump used | Result |
 | --- | --- | --- |
-| _none yet_ | | |
+| 2026-11-24 | artifact `firestore-backup-45390079046` (dump `2026-11-24T12-05-06Z`) | **Passed.** 554 documents restored into the `demo-himalye-gym` emulator. A fresh dump of the emulator was byte-identical to the artifact's `documents.ndjson` (empty `diff`), and its per-collection counts matched `_manifest.json` (14 collections, `auditLog` 311 / `payments` 73 / `memberships` 52 / `members` 39). |
+
+The 2026-11-24 rehearsal ran the artifact's dump directory directly, with no
+credentials on the machine — the emulator accepts the Admin SDK with
+`FIRESTORE_EMULATOR_HOST` set and no service account:
+
+```bash
+unzip firestore-backup-45390079046.zip -d /tmp/backup        # from the run's Artifacts
+firebase emulators:start --project demo-himalye-gym --only firestore
+export FIRESTORE_EMULATOR_HOST=127.0.0.1:8080
+node scripts/backup-firestore.mjs --restore=/tmp/backup/2026-11-24T12-05-06Z --project=demo-himalye-gym
+node scripts/backup-firestore.mjs --out=/tmp/verify --project=demo-himalye-gym
+diff /tmp/backup/2026-11-24T12-05-06Z/documents.ndjson /tmp/verify/documents.ndjson
+```
+
+Restore is not idempotent-by-content in one respect worth knowing: documents written
+after the dump are untouched by a restore (the dump only writes the paths it holds),
+so a real recovery is still `--restore` followed by a check of what the team did
+between the dump and the loss.
 
 ---
 
@@ -186,7 +203,7 @@ passing rehearsal in this file.
 - [ ] A dump exists for today — locally or as the nightly `firestore-backup-*` artifact
       — and `_manifest.json` counts match the console.
 - [ ] One dump is stored off this machine.
-- [ ] A restore rehearsal passed on the emulator (§4) and is recorded above.
+- [x] A restore rehearsal passed on the emulator (§4) and is recorded above.
 - [ ] The key file is not in the repository and never will be
       (`git status` clean, key stored outside the project folder).
 - [ ] Someone other than the developer knows this file exists and where dumps live.
