@@ -15,6 +15,9 @@ firebase-debug.log
 # Frozen baseline JSON reports (scripts/assert-frozen-baseline.mjs)
 .frozen/
 
+# Firestore dumps (member data -- never commit)
+backups/
+
 # Environment variables (never commit real keys)
 .env
 .env.local

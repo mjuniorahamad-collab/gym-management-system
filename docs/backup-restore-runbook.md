@@ -1,9 +1,10 @@
 # Firestore backup & restore — runbook
 
-Status: **no backup exists today.** Nothing exports the production database on any
-schedule, and no restore has ever been rehearsed. `functions/dailyBackup` was written
-but never deployed (it needs Blaze). This document is the manual procedure until one
-of the two paths below is set up.
+Status: **a dump now runs on a schedule; nothing has been restored yet.**
+`.github/workflows/backup.yml` dumps the production database every night by the free
+path in §2 and keeps 14 days of artifacts. `functions/dailyBackup` still needs Blaze
+and is not deployed. Until a dump is checked against the console and a restore (§4)
+has passed, this is a schedule, not a recovery plan.
 
 | | |
 | --- | --- |
@@ -38,109 +39,62 @@ Do B now, keep this runbook's A section for the day billing is approved.
 
 ## 2. Path B — free JSON dump and restore
 
-### 2.1 One-time setup (free)
+### 2.1 What runs today
 
-1. Google Cloud console → **IAM & Admin → Service accounts** →
-   `https://console.cloud.google.com/iam-admin/serviceaccounts?project=himalye-wonders-gym`
-   → *Create service account*, name it `firestore-backup-reader`.
-2. Grant it exactly one role: **Cloud Datastore Import Export Admin**
-   (`roles/datastore.importExportAdmin`) — needed for the Admin SDK to read every
-   collection — or, for a read-only dump, **Datastore Viewer** (`roles/datastore.viewer`).
-3. Keys → *Add key → JSON* → download. **This file is a credential.** Keep it out of
-   the repo (never under the project folder), and set
-   `GOOGLE_APPLICATION_CREDENTIALS` to its path only for the run.
-4. `firebase-admin` is already installed under `functions/node_modules`.
+`.github/workflows/backup.yml` (nightly at 01:15 Asia/Kathmandu, plus **Run workflow**):
 
-### 2.2 Dump
+1. signs in with the same `FIREBASE_SERVICE_ACCOUNT` secret the deploy uses — no new
+   credential and no bucket, so nothing here needs Blaze;
+2. runs `node scripts/backup-firestore.mjs --project=himalye-wonders-gym --out=…`
+   (`npm run backup:firestore` locally);
+3. uploads `backup/<timestamp>/` as the artifact `firestore-backup-<run id>` and prints
+   `_manifest.json` in the run summary;
+4. **fails** on an empty dump, so a credentials problem cannot upload a green artifact
+   called "backup".
 
-Save this outside the repository (for example `~/gym-backups/dump.mjs`) and run it
-from `functions/` so `firebase-admin` resolves:
+The service account needs read access to every collection (`roles/datastore.viewer`,
+included in Editor and in the Firebase Admin SDK role). The job only ever calls `--out`;
+restoring is deliberately an operator action.
 
-```js
-// node dump.mjs <output-dir>   — run from functions/, credentials via GOOGLE_APPLICATION_CREDENTIALS
-import { initializeApp, cert } from 'firebase-admin/app'
-import { getFirestore } from 'firebase-admin/firestore'
-import { mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+### 2.2 The dump format
 
-const out = process.argv[2]
-initializeApp({ credential: cert(process.env.GOOGLE_APPLICATION_CREDENTIALS) })
-const db = getFirestore()
-mkdirSync(out, { recursive: true })
+| File | Contents |
+| --- | --- |
+| `documents.ndjson` | one JSON line per document: `{"path": "members/<id>", "data": {…}}`, sorted by path |
+| `_manifest.json` | `format`, `project`, `dumpedAt`, total `documents`, per-collection counts |
 
-const NDJSON = (docs) => docs.map((d) => JSON.stringify(d)).join('\n') + '\n'
+Subcollections are walked recursively, so the file stays complete if the schema grows
+one. Firestore value types that plain JSON cannot carry are tagged and rebuilt on
+restore — `timestamp`, `geopoint`, `reference`, `bytes` — because writing a timestamp
+back as a map would silently corrupt the field.
 
-async function dump() {
-  const counts = {}
-  for (const collection of await db.listCollections()) {
-    const docs = await collection.get() // whole-collection read; fine at this size
-    writeFileSync(join(out, `${collection.id}.ndjson`), NDJSON(docs.docs.map((d) => ({ id: d.id, ...d.data() }))))
-    counts[collection.id] = docs.size
-  }
-  writeFileSync(join(out, '_manifest.json'), JSON.stringify({ dumpedAt: new Date().toISOString(), counts }, null, 2))
-  console.log(counts)
-}
-
-dump().catch((err) => {
-  console.error(err)
-  process.exit(1)
-})
-```
-
-Subcollections are not walked by the loop above. There are none in this schema
-today (every collection is top-level with a `gymId` field, per
-`src/services/firestore.js`), but add a recursive walk before that changes.
+### 2.3 Local run (free)
 
 ```bash
-cd functions
-export GOOGLE_APPLICATION_CREDENTIALS=~/gym-backups/key.json
-node ~/gym-backups/dump.mjs ~/gym-backups/$(date +%Y-%m-%d)
+npm ci --prefix functions          # the Admin SDK lives in functions/
+gcloud auth application-default login   # or: export GOOGLE_APPLICATION_CREDENTIALS=~/gym-backups/key.json
+node scripts/backup-firestore.mjs --out="$HOME/gym-backups/$(date +%F)"
 ```
 
-`_manifest.json` is the proof the run finished: check its counts against the
-console's document counts before you trust the folder.
+Check the printed counts against the console's document counts before you trust the
+folder. `backups/` is git-ignored on purpose: a dump is member data.
 
-### 2.3 Retention
+### 2.4 Retention
 
 Keep **14 daily** and **4 weekly** dumps, and copy one off the laptop (an encrypted
 archive in cloud storage or an external disk) — a backup on the same disk as the
-project is not a backup. Never delete the last two dumps until a restore rehearsal
-(§4) has passed on the newer one.
+project, or only in the CI account of the same organisation, is not a backup. Never
+delete the last two dumps until a restore rehearsal (§4) has passed on the newer one.
 
-### 2.4 Restore
+### 2.5 Restore
 
-Restore is a **write** back into the target project, and it will overwrite documents
-with the same id. Set the target explicitly so a rehearsal cannot hit production:
+Restore is a **write** into the target project and it replaces documents at the same
+paths. Always dry-run first, and always name the target so a rehearsal cannot reach
+production:
 
-```js
-// node restore.mjs <dump-dir> <project-id>
-import { initializeApp, cert } from 'firebase-admin/app'
-import { getFirestore } from 'firebase-admin/firestore'
-import { readdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
-
-const [dir, projectId] = process.argv.slice(2)
-initializeApp({ credential: cert(process.env.GOOGLE_APPLICATION_CREDENTIALS), projectId })
-const db = getFirestore()
-db.settings({ ignoreUndefinedProperties: true })
-
-async function restore() {
-  for (const file of readdirSync(dir).filter((f) => f.endsWith('.ndjson'))) {
-    const collection = file.replace(/\.ndjson$/, '')
-    const rows = readFileSync(join(dir, file), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
-    for (let i = 0; i < rows.length; i += 400) {
-      const batch = db.batch()
-      for (const { id, ...data } of rows.slice(i, i + 400)) batch.set(db.collection(collection).doc(id), data)
-      await batch.commit()
-    }
-    console.log(`${collection}: ${rows.length} documents`)
-  }
-}
-
-restore().catch((err) => {
-  console.error(err)
-  process.exit(1)
-})
+```bash
+node scripts/backup-firestore.mjs --restore="$HOME/gym-backups/2026-11-24" --dry-run
+node scripts/backup-firestore.mjs --restore="$HOME/gym-backups/2026-11-24" --project=demo-himalye-gym
 ```
 
 Spark allows 20k writes/day, so a large restore may need a second run.
@@ -183,10 +137,10 @@ emulator, which costs nothing:
 
 ```bash
 firebase emulators:start --project demo-himalye-gym --only firestore
-# in another shell, with GOOGLE_APPLICATION_CREDENTIALS pointing at a key for the
-# demo project, point restore.mjs at the emulator:
+# in another shell, with credentials available for the demo project, point the same
+# script at the emulator:
 export FIRESTORE_EMULATOR_HOST=127.0.0.1:8080
-node restore.mjs ~/gym-backups/2026-11-24 demo-himalye-gym
+node scripts/backup-firestore.mjs --restore="$HOME/gym-backups/2026-11-24" --project=demo-himalye-gym
 ```
 
 Then read a few documents back (console at `127.0.0.1:8080`, or `curl` the emulator
@@ -218,7 +172,8 @@ passing rehearsal in this file.
 
 ## 6. Checklist before hand-over
 
-- [ ] A dump exists for today and `_manifest.json` counts match the console.
+- [ ] A dump exists for today — locally or as the nightly `firestore-backup-*` artifact
+      — and `_manifest.json` counts match the console.
 - [ ] One dump is stored off this machine.
 - [ ] A restore rehearsal passed on the emulator (§4) and is recorded above.
 - [ ] The key file is not in the repository and never will be
