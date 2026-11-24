@@ -119,6 +119,24 @@ describe('class booking duplicates', () => {
     expect(mocks.logAudit).not.toHaveBeenCalled()
   })
 
+  /**
+   * The schedule showed "2/2 booked" but Book still wrote, so a full class
+   * could be oversold. Capacity is now a hard limit for the person at the desk.
+   */
+  it('refuses to book into a full class and disables the button', async () => {
+    collections.bookings = [
+      { id: 'cl1__m1', classId: 'cl1', memberId: 'm1', status: 'booked', gymId: 'demo-gym' },
+      { id: 'cl1__m2', classId: 'cl1', memberId: 'm2', status: 'booked', gymId: 'demo-gym' },
+    ]
+    // A third member exists but the class capacity is 2.
+    collections.members = [...MEMBERS, { id: 'm3', name: 'Chandra', gymId: 'demo-gym' }]
+
+    const bookButton = await openBookingManager()
+    expect(bookButton).toBeDisabled()
+    expect(screen.getByText(/this class is full/i)).toBeInTheDocument()
+    expect(mocks.upsertDoc).not.toHaveBeenCalled()
+  })
+
   it('allows a different member to book the same class', async () => {
     collections.bookings = [
       { id: 'cl1__m2', classId: 'cl1', memberId: 'm2', status: 'booked', gymId: 'demo-gym' },
