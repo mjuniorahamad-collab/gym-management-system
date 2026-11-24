@@ -15,6 +15,9 @@ name: Preview channel (hosting)
 # login-gated bundle, and it is deleted automatically after 7 days.
 #
 # Skipped for fork PRs, which never receive repository secrets.
+#
+# The Firebase web config is checked before the build (scripts/check-firebase-env.mjs):
+# a preview channel built without it is a login page nobody can use.
 
 on:
   pull_request:
@@ -44,6 +47,16 @@ jobs:
     # honest, and it keeps outside PRs from showing a permanent red check.
     if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    env:
+      # The Firebase web config, inlined by Vite at build time. Public by design
+      # - these values end up in the bundle - so they live in repository secrets
+      # and the job refuses to build when one is empty (see the check below).
+      VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
+      VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
+      VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
+      VITE_FIREBASE_STORAGE_BUCKET: ${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}
+      VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+      VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
     steps:
       - uses: actions/checkout@v4
 
@@ -52,20 +65,20 @@ jobs:
           node-version: '20'
           cache: npm
 
+      # Same guard as deploy.yml: a preview channel built without the config
+      # would serve the "Firebase is not configured" login page, and the smoke
+      # check can only say so after the channel exists.
+      - name: Check Firebase web config
+        run: node scripts/check-firebase-env.mjs
+
       - name: Install
         run: npm ci
 
-      # Same build-time config as deploy.yml: without these the bundle ships
-      # `apiKey: void 0` and the preview channel serves the "Firebase is not
-      # configured" login page. The smoke check below refuses that build.
+      # Same build-time config as deploy.yml, from the job-level env above.
+      # Without it the bundle ships `apiKey: void 0` and the preview channel
+      # serves the "Firebase is not configured" login page; the guard above
+      # refuses that build before it starts.
       - name: Build hosting bundle
-        env:
-          VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
-          VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
-          VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
-          VITE_FIREBASE_STORAGE_BUCKET: ${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}
-          VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
-          VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
         run: npm run build
 
       - name: Check deploy credential

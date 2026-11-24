@@ -6,7 +6,7 @@ name: Deploy (hosting · Firestore rules · indexes · storage rules)
 # means `npm ci --prefix functions`, `npm --prefix functions run build` and
 # `functions` in the --only list (see AUDIT-gym-management-system.md).
 #
-# THREE GATES RUN BEFORE ANYTHING IS DEPLOYED
+# FOUR GATES RUN BEFORE ANYTHING IS DEPLOYED
 #   1. Green CI — a completed, successful run of ci.yml for this exact commit.
 #   2. Deploy credential — FIREBASE_SERVICE_ACCOUNT must exist.
 #   3. Index diff (only when indexes are in scope) — `firebase deploy --only
@@ -14,6 +14,10 @@ name: Deploy (hosting · Firestore rules · indexes · storage rules)
 #      project but is absent from firestore.indexes.json, including ones created
 #      in the console. scripts/index-diff.mjs prints what would be created and
 #      deleted, and fails the run when deletions were not confirmed.
+#   4. Firebase web config - all six VITE_FIREBASE_* secrets must be set.
+#      scripts/check-firebase-env.mjs fails the job before the build, because a
+#      build without them inlines `apiKey: void 0` and the smoke check can only
+#      catch that after the broken bundle is already on Hosting.
 #
 # STAGED SCOPE (deploy_scope input). The security surface and the hosting bundle
 # carry different risks, so they ship as separate, reviewable steps:
@@ -87,6 +91,16 @@ jobs:
   deploy:
     name: Firebase deploy (${{ inputs.deploy_scope || 'hosting' }})
     runs-on: ubuntu-latest
+    env:
+      # The Firebase web config, inlined by Vite at build time. Public by design
+      # - these values end up in the bundle - so they live in repository secrets
+      # and the job refuses to build when one is empty (see the check below).
+      VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
+      VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
+      VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
+      VITE_FIREBASE_STORAGE_BUCKET: ${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}
+      VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+      VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
     steps:
       - uses: actions/checkout@v4
 
@@ -144,24 +158,24 @@ jobs:
           node-version: '20'
           cache: npm
 
+      # Gate 4. Vite inlines the config at build time, so an empty secret is
+      # invisible until the bundle is built - and in this workflow the bundle is
+      # on Hosting before the smoke check can refuse it. Fail here, before
+      # install and build, and name the secret that is missing.
+      - name: Check Firebase web config
+        run: node scripts/check-firebase-env.mjs
+
       - name: Install
         run: npm ci
 
       # The Firebase web config is baked into the bundle at build time: Vite
       # inlines every VITE_FIREBASE_* variable it finds in the environment, so a
       # build without them ships `apiKey: void 0` and every user sees "Firebase is
-      # not configured" on the login page. These values are public by design —
-      # they end up in the bundle — and come from repository secrets so a rebuilt
-      # release is never half configured. scripts/smoke-hosting.mjs fails the run
-      # if the bundle it produced carries no Firebase api key.
+      # not configured" on the login page. The job-level env above supplies the
+      # six values from repository secrets, Gate 4 refuses the run when one is
+      # empty, and scripts/smoke-hosting.mjs fails it if the bundle that came out
+      # carries no Firebase api key.
       - name: Build hosting bundle
-        env:
-          VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
-          VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
-          VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
-          VITE_FIREBASE_STORAGE_BUCKET: ${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}
-          VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
-          VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
         run: npm run build
 
       # Step 1 of the staged scope: the bundle only. Rules stay as they are, so a
