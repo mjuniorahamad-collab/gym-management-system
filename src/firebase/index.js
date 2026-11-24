@@ -4,8 +4,9 @@ import {
   persistentLocalCache,
   persistentMultipleTabManager,
 } from 'firebase/firestore'
-import { getAuth } from 'firebase/auth'
-import { getStorage } from 'firebase/storage'
+import { connectAuthEmulator, getAuth } from 'firebase/auth'
+import { connectFirestoreEmulator } from 'firebase/firestore'
+import { connectStorageEmulator, getStorage } from 'firebase/storage'
 import { firebaseConfig, isFirebaseConfigured } from './config'
 
 export let app = null
@@ -22,6 +23,15 @@ if (isFirebaseConfigured) {
   })
   auth = getAuth(app)
   storage = getStorage(app)
+
+  // Local development against the Firebase emulators. Opt-in only: nothing
+  // changes unless VITE_FIREBASE_EMULATORS=true is set, so a production build
+  // can never point at a localhost emulator.
+  if (import.meta.env.VITE_FIREBASE_EMULATORS === 'true') {
+    connectAuthEmulator(auth, 'http://127.0.0.1:9099', { disableWarnings: true })
+    connectFirestoreEmulator(db, '127.0.0.1', 8080)
+    connectStorageEmulator(storage, '127.0.0.1', 9199)
+  }
 }
 
 export { isFirebaseConfigured }
