@@ -12,15 +12,20 @@
  *   live silently.
  *
  * WHAT IT CHECKS
- *   1. `<base>/` answers 200 `text/html` for a cache-busted URL.
- *   2. That HTML references the SAME hashed entry files (`/assets/...`) as
+ *   1. The build in `dist/` carries the Firebase web config: at least one entry
+ *      JavaScript file holds a real `AIza…` api key. The config is inlined at
+ *      build time from `VITE_FIREBASE_*`, so a build that ran without those
+ *      variables ships `apiKey: void 0` and every user gets the "Firebase is not
+ *      configured" login page. This is checked locally, before any request.
+ *   2. `<base>/` answers 200 `text/html` for a cache-busted URL.
+ *   3. That HTML references the SAME hashed entry files (`/assets/...`) as
  *      `dist/index.html`, i.e. the live site is this build and not an older one.
- *   3. Every entry asset answers 200 with the right content type and hashes to
+ *   4. Every entry asset answers 200 with the right content type and hashes to
  *      the same sha256 as the local file (nothing truncated or swapped under the
  *      same name).
- *   4. A deep SPA route (`/login` by default) answers 200 with the app shell,
+ *   5. A deep SPA route (`/login` by default) answers 200 with the app shell,
  *      proving the hosting rewrite is live — otherwise deep links 404 for users.
- *   5. The cache policy `firebase.json` declares is actually applied: the shell
+ *   6. The cache policy `firebase.json` declares is actually applied: the shell
  *      (`/` and the deep route) answers `Cache-Control: no-cache`, and every
  *      `/assets/**` file answers `immutable`. Header rules match the original
  *      request path and the last match wins, so a reordered `headers` array can
@@ -60,6 +65,20 @@ const DEFAULTS = {
 // A `?query` or `#fragment` suffix is allowed and dropped, so a cache-busting
 // parameter on the shell cannot hide the very files this check compares.
 const ASSET_RE = /(?:src|href)="(\/assets\/[^"?#]+)(?:[?#][^"]*)?"/g
+
+// A Firebase browser api key, as `src/firebase/config.js` inlines it into the
+// entry chunk at build time. Loose on length on purpose: the point is to catch
+// `void 0` (no VITE_FIREBASE_* environment), not to validate the key.
+const FIREBASE_KEY_RE = /AIza[0-9A-Za-z_-]{30,}/
+
+/** The `/assets/*.js` files in a build that carry a real Firebase api key. */
+export function firebaseConfigIn(files) {
+  const found = []
+  for (const [asset, bytes] of files) {
+    if (asset.endsWith('.js') && FIREBASE_KEY_RE.test(bytes.toString('utf8'))) found.push(asset)
+  }
+  return found
+}
 
 /** The `/assets/...` files an index.html references, de-duplicated. */
 export function assetsIn(html) {
@@ -160,6 +179,21 @@ export async function checkOnce({ baseUrl, dist, route, nonce }) {
     }
   }
   if (problems.length) return { problems, ok }
+
+  // 0. The build itself, before the network: a bundle built without the
+  // VITE_FIREBASE_* variables is served perfectly and still cannot sign anyone
+  // in, so it must fail here rather than after a release.
+  const configured = firebaseConfigIn(local)
+  if (configured.length === 0) {
+    problems.push(
+      `the local build carries no Firebase api key (checked ${assets.filter((asset) => asset.endsWith('.js')).join(', ')}) — ` +
+        '`npm run build` ran without the VITE_FIREBASE_* environment, so the deployed site would show ' +
+        '"Firebase is not configured" on the login page. Add the VITE_FIREBASE_* repository secrets and pass ' +
+        'them to the build step.'
+    )
+    return { problems, ok }
+  }
+  ok.push(`the build carries the Firebase web config (${configured.join(', ')})`)
 
   // 1. The live shell, cache-busted so a cached index.html cannot pass the check.
   const shellUrl = `${baseUrl}/?smoke=${nonce}`
