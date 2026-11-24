@@ -39,9 +39,10 @@ name: Deploy (hosting · Firestore rules · indexes · storage rules)
 # only surface at upload/read time, not at deploy time.
 #
 # AFTER THE HOSTING STEP, scripts/smoke-hosting.mjs checks the live URL against
-# the bundle that was just built: the served index.html must reference the same
-# entry hashes, the entry bytes must match (sha256), and a deep link must serve
-# the app through the SPA rewrite. A release that did not publish, or publishes a
+# the bundle that was just built: the build must carry the Firebase web config
+# (no `apiKey: void 0`), the served index.html must reference the same entry
+# hashes, the entry bytes must match (sha256), and a deep link must serve the app
+# through the SPA rewrite. A release that did not publish, or publishes a
 # truncated bundle, fails the job before rules or indexes move.
 #
 # PHASE 1 (current): workflow_dispatch only. PHASE 2: uncomment the push trigger
@@ -146,7 +147,21 @@ jobs:
       - name: Install
         run: npm ci
 
+      # The Firebase web config is baked into the bundle at build time: Vite
+      # inlines every VITE_FIREBASE_* variable it finds in the environment, so a
+      # build without them ships `apiKey: void 0` and every user sees "Firebase is
+      # not configured" on the login page. These values are public by design —
+      # they end up in the bundle — and come from repository secrets so a rebuilt
+      # release is never half configured. scripts/smoke-hosting.mjs fails the run
+      # if the bundle it produced carries no Firebase api key.
       - name: Build hosting bundle
+        env:
+          VITE_FIREBASE_API_KEY: ${{ secrets.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ secrets.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_PROJECT_ID: ${{ secrets.VITE_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_STORAGE_BUCKET: ${{ secrets.VITE_FIREBASE_STORAGE_BUCKET }}
+          VITE_FIREBASE_MESSAGING_SENDER_ID: ${{ secrets.VITE_FIREBASE_MESSAGING_SENDER_ID }}
+          VITE_FIREBASE_APP_ID: ${{ secrets.VITE_FIREBASE_APP_ID }}
         run: npm run build
 
       # Step 1 of the staged scope: the bundle only. Rules stay as they are, so a
