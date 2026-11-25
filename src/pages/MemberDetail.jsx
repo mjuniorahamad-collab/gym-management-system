@@ -356,13 +356,11 @@ const canWrite = can('members.write')
     }
   }
 
-// Only the object PATH is persisted. A getDownloadURL() token is deliberately
-  // NOT stored: it bypasses storage.rules for whoever holds it, so persisting one
-  // turns a revocable access decision into a permanent capability. Reads go
-  // through useSecureImage, which re-authorises every render.
-  const handlePhoto = async ({ path: photoPath }) => {
+  // The bytes live in memberPhotos/{memberId}; nothing about the photo is
+  // written to the member document, so an edit can never race the image write.
+  // The audit entry is the only record that a photo was replaced.
+  const handlePhoto = async () => {
     try {
-      await updateDocById('members', id, { photoPath })
       await logAudit({ action: 'update', entity: 'members', entityId: id, details: { photo: true } })
       toast.success('Photo updated')
       reload()
@@ -370,7 +368,6 @@ const canWrite = can('members.write')
       toast.error(e?.message || 'Could not update photo')
     }
   }
-
   const handlePayment = async (values) => {
     setSubmitting(true)
     try {

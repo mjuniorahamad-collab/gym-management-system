@@ -1,42 +1,43 @@
 /**
- * STORAGE PHASE 3B — MEMBER PHOTO UPLOAD FLOW
+ * MEMBER PHOTO UPLOAD FLOW (Firestore store)
  *
- * Phase 3A changed the object layout to
- *   gyms/{gymId}/memberPhotos/{memberId}/{fileName}
- * and Phase 3B moved the client onto it. The rules decide who may write, but the
- * client decides WHERE it writes and WHICH gym it claims to be writing for, so
- * this suite pins the client half of that contract:
+ * Cloud Storage needs a billing plan this project does not have, so an avatar is
+ * now a 320px base64 thumbnail in `memberPhotos/{memberId}`. The client half of
+ * that contract still has to be pinned:
  *
  *   - the gym id comes from the signed-in profile, never from the member
  *     document or a prop (a member row cannot redirect an upload into another
- *     gym's prefix)
- *   - each member gets their own object
+ *     gym)
+ *   - each member gets their own document
  *   - staff who may write get the control; a viewer does not
- *   - rejected files never reach Storage
- *
- * MemberPhoto surfaces failures via console.error rather than a toast, so the
- * error cases assert on the absence of an upload instead of on a message.
+ *   - a failure is reported (toast + console), not swallowed
+ *   - rendering prefers stored bytes over any legacy path or URL, and never
+ *     shows one member's photo under another member's name
  */
-import { describe, beforeEach, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemberPhoto } from '@/components/common/MemberPhoto'
 
-const { mocks, authValue } = vi.hoisted(() => ({
-  mocks: { uploadMemberPhoto: vi.fn(), readObjectUrl: vi.fn() },
+const { mocks, authValue, photoState } = vi.hoisted(() => ({
+  mocks: { saveMemberPhoto: vi.fn(), readObjectUrl: vi.fn(), toastError: vi.fn() },
   authValue: { gymId: 'gym-alpha' },
+  photoState: { dataUrl: null, loading: false, error: null },
 }))
 
-vi.mock('@/services/storage', () => ({
-  uploadMemberPhoto: mocks.uploadMemberPhoto,
-  readObjectUrl: mocks.readObjectUrl,
-}))
+vi.mock('@/services/photoStore', () => ({ saveMemberPhoto: mocks.saveMemberPhoto }))
+vi.mock('@/hooks/usePhotoStore', () => ({ useMemberPhoto: () => photoState }))
+vi.mock('@/services/storage', () => ({ readObjectUrl: mocks.readObjectUrl }))
 vi.mock('@/context/AuthContext', () => ({ useAuth: () => authValue }))
+vi.mock('@/context/ToastContext', () => ({
+  useToast: () => ({ error: mocks.toastError, success: vi.fn(), info: vi.fn(), toast: vi.fn() }),
+}))
 
 const GYM_ID = 'gym-alpha'
 const MEMBER = { id: 'member-1', name: 'Ayesha Khan', gymId: 'gym-alpha' }
-
 const PHOTO_PATH = `gyms/${GYM_ID}/memberPhotos/${MEMBER.id}/photo.jpg`
+const STORED = 'data:image/webp;base64,AAAA'
+const UPLOADED = 'data:image/webp;base64,BBBB'
 
 const pngFile = (bytes = 8, type = 'image/png', name = 'photo.png') =>
   new File([new Uint8Array(bytes)], name, { type })
@@ -52,25 +53,24 @@ describe('MemberPhoto upload', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     authValue.gymId = GYM_ID
-    mocks.uploadMemberPhoto.mockResolvedValue({ path: PHOTO_PATH })
+    photoState.dataUrl = null
+    photoState.loading = false
+    photoState.error = null
+    mocks.saveMemberPhoto.mockResolvedValue({ dataUrl: UPLOADED, memberId: MEMBER.id })
     mocks.readObjectUrl.mockResolvedValue('blob:mock-url')
-    // jsdom implements neither half of the blob URL lifecycle.
     global.URL.createObjectURL = vi.fn(() => 'blob:mock-url')
     global.URL.revokeObjectURL = vi.fn()
-    // Expected for the rejection cases; silenced so the run stays readable.
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
   })
 
-  it('uploads with the gym from the signed-in profile and reports the stored path', async () => {
+  it('saves with the authenticated gym and reports the stored bytes', async () => {
     const onUpload = vi.fn()
     const { container } = render(<MemberPhoto member={MEMBER} editable onUpload={onUpload} />)
 
     await pick(container)
 
-    // The callback receives a PATH, not a URL. Nothing is persisted that would
-    // keep working for someone who later loses access.
-    await waitFor(() => expect(onUpload).toHaveBeenCalledWith({ path: PHOTO_PATH }))
-    const [gymIdArg, memberIdArg, fileArg] = mocks.uploadMemberPhoto.mock.calls[0]
+    await waitFor(() => expect(onUpload).toHaveBeenCalledWith({ dataUrl: UPLOADED }))
+    const [gymIdArg, memberIdArg, fileArg] = mocks.saveMemberPhoto.mock.calls[0]
     expect(gymIdArg).toBe(GYM_ID)
     expect(memberIdArg).toBe(MEMBER.id)
     expect(fileArg).toBeInstanceOf(File)
@@ -78,95 +78,122 @@ describe('MemberPhoto upload', () => {
 
   // The trust boundary. A caller controls `member`, so the member's own gymId
   // field is attacker-controlled data. If the component trusted it, a member row
-  // pointing at another gym would push the upload into that gym's prefix.
+  // pointing at another gym would file the photo under that gym.
   it('ignores the member document gymId and uses the authenticated gym', async () => {
     const foreign = { id: 'member-1', name: 'Ayesha Khan', gymId: 'gym-victim' }
     const { container } = render(<MemberPhoto member={foreign} editable onUpload={vi.fn()} />)
 
     await pick(container)
 
-    await waitFor(() => expect(mocks.uploadMemberPhoto).toHaveBeenCalled())
-    expect(mocks.uploadMemberPhoto.mock.calls[0][0]).toBe(GYM_ID)
-    expect(mocks.uploadMemberPhoto.mock.calls[0][0]).not.toBe('gym-victim')
+    await waitFor(() => expect(mocks.saveMemberPhoto).toHaveBeenCalled())
+    expect(mocks.saveMemberPhoto.mock.calls[0][0]).toBe(GYM_ID)
+    expect(mocks.saveMemberPhoto.mock.calls[0][0]).not.toBe('gym-victim')
   })
 
-  it('gives each member a distinct object', async () => {
+  it('gives each member a distinct document', async () => {
     const a = render(<MemberPhoto member={{ id: 'm1', name: 'A' }} editable onUpload={vi.fn()} />)
     const b = render(<MemberPhoto member={{ id: 'm2', name: 'B' }} editable onUpload={vi.fn()} />)
 
     await pick(a.container)
-    await waitFor(() => expect(mocks.uploadMemberPhoto).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(mocks.saveMemberPhoto).toHaveBeenCalledTimes(1))
     await pick(b.container)
-    await waitFor(() => expect(mocks.uploadMemberPhoto).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(mocks.saveMemberPhoto).toHaveBeenCalledTimes(2))
 
-    const paths = mocks.uploadMemberPhoto.mock.calls.map(([, memberId]) => memberId)
-    expect(paths).toEqual(['m1', 'm2'])
+    const ids = mocks.saveMemberPhoto.mock.calls.map(([, memberId]) => memberId)
+    expect(ids).toEqual(['m1', 'm2'])
   })
 
-  // storage.rules allow create/update for owner, admin and front-desk, and deny
-  // trainer. MemberDetail passes editable={canWrite}, where canWrite is
-  // members.write, so a viewer is never offered the control. The rules remain the
-  // authority; this asserts the UI does not invite a write that would be denied.
-  it('offers the upload control only when editable', async () => {
+  it('offers the upload control only when editable', () => {
     const allowed = render(<MemberPhoto member={MEMBER} editable onUpload={vi.fn()} />)
     const denied = render(<MemberPhoto member={MEMBER} editable={false} />)
 
     expect(photoInput(allowed.container)).toBeTruthy()
     expect(denied.container.querySelector('input[type="file"]')).toBeNull()
     expect(denied.container.querySelector('[aria-label="Upload photo"]')).toBeNull()
-    expect(mocks.uploadMemberPhoto).not.toHaveBeenCalled()
+    expect(mocks.saveMemberPhoto).not.toHaveBeenCalled()
   })
 
-  it('renders the existing photo when one is stored', () => {
-    // A document written before Phase 3C still has only a stored URL and no path,
-    // so it keeps rendering until it is migrated. Reading it does NOT mint a new
-    // token.
-    const legacyUrl = 'https://example.test/legacy/photo.jpg'
+  it('renders the stored thumbnail from memberPhotos and ignores a stale URL', () => {
+    photoState.dataUrl = STORED
     const { container } = render(
-      <MemberPhoto member={{ ...MEMBER, photoUrl: legacyUrl }} />,
+      <MemberPhoto member={{ ...MEMBER, photoUrl: 'https://stale/token' }} />
     )
+
     const img = container.querySelector('img')
-    expect(img?.getAttribute('src')).toBe(legacyUrl)
-    expect(img?.getAttribute('alt')).toBe(MEMBER.name)
+    expect(img?.getAttribute('src')).toBe(STORED)
+    expect(img?.getAttribute('src')).not.toContain('stale')
+    // Stored bytes are already in hand: nothing is fetched, nothing leaks.
     expect(mocks.readObjectUrl).not.toHaveBeenCalled()
   })
 
-  // The D1 behaviour: a member with a path is fetched by path, so the read is
-  // authorised by storage.rules at render time.
-  it('reads a stored path through the secure reader instead of a stored URL', async () => {
-    const { container } = render(
-      <MemberPhoto member={{ ...MEMBER, photoPath: PHOTO_PATH, photoUrl: 'https://stale/token' }} />,
-    )
+  // Bytes from the store win over a path, because the path points at a bucket
+  // that does not exist for this project.
+  it('prefers stored bytes over a legacy object path', () => {
+    photoState.dataUrl = STORED
+    render(<MemberPhoto member={{ ...MEMBER, photoPath: PHOTO_PATH }} />)
+
+    expect(mocks.readObjectUrl).not.toHaveBeenCalled()
+  })
+
+  // Documents written while Cloud Storage was still intended keep rendering.
+  it('reads a legacy object path when no thumbnail is stored', async () => {
+    const { container } = render(<MemberPhoto member={{ ...MEMBER, photoPath: PHOTO_PATH }} />)
 
     await waitFor(() => expect(mocks.readObjectUrl).toHaveBeenCalledWith(PHOTO_PATH))
     const img = await waitFor(() => container.querySelector('img'))
     expect(img.getAttribute('src')).toBe('blob:mock-url')
-    // The stale bearer URL is ignored entirely once a path exists.
-    expect(img.getAttribute('src')).not.toContain('stale')
   })
 
-  it('revokes the blob URL when it unmounts', async () => {
-    const revoke = vi.fn()
-    global.URL.revokeObjectURL = revoke
-    const { container, unmount } = render(
-      <MemberPhoto member={{ ...MEMBER, photoPath: PHOTO_PATH }} />,
+  it('renders a legacy stored URL when there is no thumbnail and no path', () => {
+    const legacyUrl = 'https://example.test/legacy/photo.jpg'
+    const { container } = render(<MemberPhoto member={{ ...MEMBER, photoUrl: legacyUrl }} />)
+
+    expect(container.querySelector('img')?.getAttribute('src')).toBe(legacyUrl)
+    expect(mocks.readObjectUrl).not.toHaveBeenCalled()
+  })
+
+  it('shows the upload it just made without waiting for a re-read', async () => {
+    const { container } = render(<MemberPhoto member={MEMBER} editable onUpload={vi.fn()} />)
+
+    await pick(container)
+
+    const img = await waitFor(() => container.querySelector('img'))
+    expect(img.getAttribute('src')).toBe(UPLOADED)
+  })
+
+  // A member list reuses one MemberPhoto instance per row position, so the
+  // upload preview must be tied to the member it came from. Without that tie the
+  // previous member's face stayed on screen under the next member's name.
+  it('drops the upload preview when the row points at another member', async () => {
+    const { container, rerender } = render(
+      <MemberPhoto member={MEMBER} editable onUpload={vi.fn()} />
     )
+    await pick(container)
+    await waitFor(() => expect(container.querySelector('img')?.getAttribute('src')).toBe(UPLOADED))
 
-    await waitFor(() => expect(container.querySelector('img')).toBeTruthy())
-    unmount()
-    expect(revoke).toHaveBeenCalledWith('blob:mock-url')
-  })
-
-  // A denied read must not silently degrade into the old token: the photo is
-  // absent and no legacy URL is substituted for a document that has a path.
-  it('does not fall back to a stored URL when a stored path cannot be read', async () => {
-    mocks.readObjectUrl.mockRejectedValue(new Error('storage/unauthorized'))
-    const { container } = render(
-      <MemberPhoto member={{ ...MEMBER, photoPath: PHOTO_PATH, photoUrl: 'https://stale/token' }} />,
+    rerender(
+      <MemberPhoto member={{ id: 'member-2', name: 'Bilal Khan' }} editable onUpload={vi.fn()} />
     )
 
     await waitFor(() => expect(container.querySelector('img')).toBeNull())
-    expect(container.textContent).toContain('AK')
+    expect(container.textContent).toContain('BK')
+  })
+
+  // The other half of the same rule: the new row's own stored thumbnail is what
+  // must render, not the bytes left behind by the previous member.
+  it("renders the new member's stored thumbnail instead of the previous upload", async () => {
+    const { container, rerender } = render(
+      <MemberPhoto member={MEMBER} editable onUpload={vi.fn()} />
+    )
+    await pick(container)
+    await waitFor(() => expect(container.querySelector('img')?.getAttribute('src')).toBe(UPLOADED))
+
+    photoState.dataUrl = STORED
+    rerender(
+      <MemberPhoto member={{ id: 'member-2', name: 'Bilal Khan' }} editable onUpload={vi.fn()} />
+    )
+
+    await waitFor(() => expect(container.querySelector('img')?.getAttribute('src')).toBe(STORED))
   })
 
   it('falls back to initials when there is no photo', () => {
@@ -177,53 +204,46 @@ describe('MemberPhoto upload', () => {
 
   // The component holds no identity of its own to substitute, so the only
   // correct behaviour when the profile has no gym is to forward that absence
-  // and let the service refuse. The real guard is asserted against the service in
-  // storagePaths.test.js; what matters here is that the component neither invents
-  // a gym nor reports a photo the upload never produced.
+  // and let the service refuse.
   it('forwards the missing gym identity and surfaces the refusal', async () => {
     authValue.gymId = null
-    mocks.uploadMemberPhoto.mockImplementation((gymId) =>
-      gymId ? Promise.resolve({ path: PHOTO_PATH }) : Promise.reject(new Error('No gym identity')),
+    mocks.saveMemberPhoto.mockImplementation((gymId) =>
+      gymId
+        ? Promise.resolve({ dataUrl: UPLOADED })
+        : Promise.reject(new Error('A gym identity is required'))
     )
     const onUpload = vi.fn()
     const { container } = render(<MemberPhoto member={MEMBER} editable onUpload={onUpload} />)
 
     await pick(container)
 
-    await waitFor(() => expect(mocks.uploadMemberPhoto).toHaveBeenCalled())
-    expect(mocks.uploadMemberPhoto.mock.calls[0][0]).toBeNull()
+    await waitFor(() => expect(mocks.saveMemberPhoto).toHaveBeenCalled())
+    expect(mocks.saveMemberPhoto.mock.calls[0][0]).toBeNull()
     await waitFor(() => expect(errorSpy).toHaveBeenCalled())
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalled())
     expect(onUpload).not.toHaveBeenCalled()
   })
 
-  // NOTE: file-type, extension and size rejection is deliberately NOT re-tested
-  // here. Those guards live inside uploadMemberPhoto, which this suite mocks, so
-  // asserting them at the component layer would only test the mock. They are
-  // pinned against the real service in storagePaths.test.js ("rejects an
-  // unsupported type before uploading", "rejects an oversize photo before
-  // uploading"). The one component-level guarantee that matters for a rejected
-  // file is that no photo is reported, covered below.
-
-  it('surfaces a Storage failure and does not report a photo', async () => {
-    mocks.uploadMemberPhoto.mockRejectedValue(new Error('storage/unauthorized'))
+  // Regression: the failure used to be console-only, so the operator clicked a
+  // dead button. The message must reach the screen.
+  it('shows the failure and does not report a photo', async () => {
+    mocks.saveMemberPhoto.mockRejectedValue(new Error('permission-denied'))
     const onUpload = vi.fn()
     const { container } = render(<MemberPhoto member={MEMBER} editable onUpload={onUpload} />)
 
     await pick(container)
 
-    await waitFor(() => expect(errorSpy).toHaveBeenCalled())
+    await waitFor(() => expect(mocks.toastError).toHaveBeenCalledWith('permission-denied'))
     expect(onUpload).not.toHaveBeenCalled()
   })
 
-  // Without the reset, re-picking the same file fires no change event and the
-  // operator cannot retry or replace a photo they just uploaded.
   it('allows re-picking the same file after an attempt', async () => {
     const { container } = render(<MemberPhoto member={MEMBER} editable onUpload={vi.fn()} />)
 
     await pick(container)
-    await waitFor(() => expect(mocks.uploadMemberPhoto).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(mocks.saveMemberPhoto).toHaveBeenCalledTimes(1))
     await pick(container)
-    await waitFor(() => expect(mocks.uploadMemberPhoto).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(mocks.saveMemberPhoto).toHaveBeenCalledTimes(2))
   })
 
   it('clears the uploader when the attempt finishes, so the control is usable again', async () => {
@@ -232,7 +252,7 @@ describe('MemberPhoto upload', () => {
     await pick(container)
 
     await waitFor(() =>
-      expect(container.querySelector('[aria-label="Upload photo"]')).not.toBeDisabled(),
+      expect(container.querySelector('[aria-label="Upload photo"]')).not.toBeDisabled()
     )
   })
 })

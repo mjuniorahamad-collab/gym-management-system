@@ -6,6 +6,8 @@ import { Badge } from '@/components/ui/Badge'
 import { formatCurrency, formatDate } from '@/utils/formatters'
 import { PAYMENT_STATUS_LABELS } from '@/utils/renewal'
 import { useSecureImage } from '@/hooks/useSecureImage'
+import { useGymLogo } from '@/hooks/usePhotoStore'
+import { useAuth } from '@/context/AuthContext'
 
 const STATUS_TONES = { paid: 'success', partial: 'warning', due: 'danger' }
 
@@ -126,15 +128,17 @@ function ReceiptContent({ payment, member, plan, settings, summary, receiptNo, l
 }
 
 export function ReceiptModal({ open, onClose, payment, member, plan, settings, summary }) {
-  // The logo is fetched once here from the stored path and handed to both the
-  // modal and the print copy, so opening a receipt costs a single read. Reading
-  // it inside each ReceiptContent instead would download it twice, and the
-  // print copy is the one that must not be racing a network call.
+  // The logo is fetched once here and handed to both the modal and the print
+  // copy, so opening a receipt costs a single read. The bytes come from
+  // gyms/{gymId}/settings/branding, authorised by firestore.rules at render
+  // time; settings.logoPath / settings.logoUrl are legacy fallbacks only.
+  const gymId = useAuth()?.gymId ?? null
+  const { dataUrl: logoDataUrl } = useGymLogo(gymId)
   const { url: logoSrc, loading: logoLoading } = useSecureImage(
     settings?.logoPath,
-    settings?.logoUrl
+    settings?.logoUrl,
+    logoDataUrl
   )
-
   if (!payment) return null
 
   // `payment.receiptNo` is authoritative. Only when it is absent do we fall
