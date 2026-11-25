@@ -130,6 +130,10 @@ describe('composite index coverage', () => {
       'bookings',
       'trainers',
       'auditLog',
+      // Added with the Leads page (#33). Missing from this list for a while, which
+      // is why the live query shipped with no index and failed with
+      // FAILED_PRECONDITION in production while CI stayed green.
+      'leads',
       // NOT 'counters': counters are read and written by id only (member-number
       // and receipt sequences), and those documents carry no createdAt, so no
       // ordered listing exists for this list to cover. Asserting one here only
