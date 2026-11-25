@@ -37,7 +37,14 @@ export function MemberPhoto({ member, size = 'md', editable = false, onUpload })
   const gymId = useAuth()?.gymId ?? null
   const toast = useToast()
 
-  const { dataUrl: storedUrl } = useMemberPhoto(member?.id)
+  // A members page renders 20 rows, and Firestore bills one document read per
+  // avatar — whether or not a photo exists. `hasPhoto` is written in the same
+  // commit as the bytes (services/photoStore.js), so a row without it is known to
+  // have no avatar and asks for nothing: that alone removes most of the reads on
+  // a list where only some members have a photo. For the ones that do have one,
+  // usePhotoStore answers from this session's cache after the first read.
+  const hasStoredPhoto = member?.hasPhoto === true
+  const { dataUrl: storedUrl } = useMemberPhoto(hasStoredPhoto ? member.id : null)
 
   const handleFile = async (e) => {
     const file = e.target.files?.[0]

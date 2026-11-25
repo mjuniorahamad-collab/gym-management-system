@@ -356,9 +356,10 @@ const canWrite = can('members.write')
     }
   }
 
-  // The bytes live in memberPhotos/{memberId}; nothing about the photo is
-  // written to the member document, so an edit can never race the image write.
-  // The audit entry is the only record that a photo was replaced.
+  // The bytes live in memberPhotos/{memberId}; the member document only carries
+  // the `hasPhoto` flag, written in the same commit as the bytes so a list can
+  // skip the read entirely for members without a photo. The audit entry is the
+  // only record that a photo was replaced.
   const handlePhoto = async () => {
     try {
       await logAudit({ action: 'update', entity: 'members', entityId: id, details: { photo: true } })

@@ -12,6 +12,16 @@
  *   - exactly the seven keys the rules allowlist accepts, no more
  *   - a client-side size refusal BEFORE the write, so the operator sees a
  *     message instead of PERMISSION_DENIED
+ *
+ * and the property that decides how many reads a list costs:
+ *
+ *   - the member document's `hasPhoto` flag is written in the SAME commit as the
+ *     bytes, so no list can be told about a photo that was never written, and a
+ *     row without the flag is never asked for
+ *
+ * There is deliberately no cache layer: every load is one server read, so a photo
+ * replaced on another device appears on the next render instead of staying stale
+ * in this browser.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -20,6 +30,8 @@ const { mocks } = vi.hoisted(() => ({
     doc: vi.fn(() => ({ id: 'ref' })),
     getDoc: vi.fn(),
     setDoc: vi.fn(),
+    writeBatch: vi.fn(),
+    batch: { set: vi.fn(), update: vi.fn(), commit: vi.fn() },
     serverTimestamp: vi.fn(() => 'SERVER_TS'),
     makeThumbnail: vi.fn(),
   },
@@ -29,6 +41,7 @@ vi.mock('firebase/firestore', () => ({
   doc: mocks.doc,
   getDoc: mocks.getDoc,
   setDoc: mocks.setDoc,
+  writeBatch: mocks.writeBatch,
   serverTimestamp: mocks.serverTimestamp,
 }))
 
@@ -41,6 +54,7 @@ vi.mock('@/utils/image', () => ({
 
 const {
   BRANDING_DOC_ID,
+  MEMBERS_COLLECTION,
   MEMBER_PHOTOS_COLLECTION,
   loadGymLogo,
   loadMemberPhoto,
@@ -62,24 +76,46 @@ const file = () => new File([new Uint8Array(8)], 'photo.jpg', { type: 'image/jpe
 /** The document path the mocked `doc()` was asked for, minus the db argument. */
 const docPath = (call = 0) => mocks.doc.mock.calls[call].slice(1)
 
-describe('saveMemberPhoto', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-    mocks.makeThumbnail.mockResolvedValue(THUMB)
-    mocks.setDoc.mockResolvedValue(undefined)
-  })
+const snapshot = (value) => ({ exists: () => value !== undefined, data: () => value })
 
-  it('writes one deterministic document per member', async () => {
+beforeEach(() => {
+  vi.clearAllMocks()
+  mocks.writeBatch.mockReturnValue(mocks.batch)
+  mocks.batch.commit.mockResolvedValue(undefined)
+  mocks.makeThumbnail.mockResolvedValue(THUMB)
+  mocks.setDoc.mockResolvedValue(undefined)
+})
+
+describe('saveMemberPhoto', () => {
+  it('writes the thumbnail document and marks the member in one commit', async () => {
     await saveMemberPhoto(GYM, MEMBER, file())
 
-    expect(docPath()).toEqual([MEMBER_PHOTOS_COLLECTION, MEMBER])
-    expect(mocks.setDoc).toHaveBeenCalledTimes(1)
+    expect(docPath(0)).toEqual([MEMBER_PHOTOS_COLLECTION, MEMBER])
+    expect(docPath(1)).toEqual([MEMBERS_COLLECTION, MEMBER])
+    expect(mocks.writeBatch).toHaveBeenCalledTimes(1)
+    expect(mocks.batch.set).toHaveBeenCalledTimes(1)
+    expect(mocks.batch.update).toHaveBeenCalledTimes(1)
+    expect(mocks.batch.commit).toHaveBeenCalledTimes(1)
+    // The unbatched writer is for the logo only: a photo must never land without
+    // its flag.
+    expect(mocks.setDoc).not.toHaveBeenCalled()
+  })
+
+  it('sets hasPhoto on the member so lists can skip the read', async () => {
+    await saveMemberPhoto(GYM, MEMBER, file())
+
+    const [, patch] = mocks.batch.update.mock.calls[0]
+    expect(patch).toEqual({
+      hasPhoto: true,
+      photoUpdatedAt: 'SERVER_TS',
+      updatedAt: 'SERVER_TS',
+    })
   })
 
   it('writes exactly the keys the rules allowlist accepts', async () => {
     await saveMemberPhoto(GYM, MEMBER, file(), { uploadedBy: 'uid-1' })
 
-    const [, payload] = mocks.setDoc.mock.calls[0]
+    const [, payload] = mocks.batch.set.mock.calls[0]
     expect(Object.keys(payload).sort()).toEqual(
       ['contentType', 'data', 'gymId', 'height', 'updatedAt', 'updatedBy', 'width'].sort()
     )
@@ -100,12 +136,12 @@ describe('saveMemberPhoto', () => {
   it('refuses to build a document without a gym identity', async () => {
     await expect(saveMemberPhoto(null, MEMBER, file())).rejects.toThrow(/gym identity/i)
     await expect(saveMemberPhoto('   ', MEMBER, file())).rejects.toThrow(/gym identity/i)
-    expect(mocks.setDoc).not.toHaveBeenCalled()
+    expect(mocks.writeBatch).not.toHaveBeenCalled()
   })
 
   it('refuses to build a document without a member id', async () => {
     await expect(saveMemberPhoto(GYM, '', file())).rejects.toThrow(/member id/i)
-    expect(mocks.setDoc).not.toHaveBeenCalled()
+    expect(mocks.writeBatch).not.toHaveBeenCalled()
   })
 
   // The rules cap the stored string at 300 KB. Checking here first turns that
@@ -113,23 +149,25 @@ describe('saveMemberPhoto', () => {
   it('refuses a thumbnail that the rules would reject', async () => {
     mocks.makeThumbnail.mockResolvedValue({ ...THUMB, bytes: 400 * 1024 })
     await expect(saveMemberPhoto(GYM, MEMBER, file())).rejects.toThrow(/too large/)
-    expect(mocks.setDoc).not.toHaveBeenCalled()
+    expect(mocks.writeBatch).not.toHaveBeenCalled()
   })
 
   it('does not swallow an encode failure', async () => {
     mocks.makeThumbnail.mockRejectedValue(new Error('Unsupported image type'))
     await expect(saveMemberPhoto(GYM, MEMBER, file())).rejects.toThrow(/Unsupported image type/)
-    expect(mocks.setDoc).not.toHaveBeenCalled()
+    expect(mocks.writeBatch).not.toHaveBeenCalled()
+  })
+
+  // A refused member update (trainer role, deleted member, rules denial) must not
+  // leave the photo behind: the batch is all-or-nothing, and the caller hears
+  // about it.
+  it('reports a refused write instead of claiming success', async () => {
+    mocks.batch.commit.mockRejectedValue(new Error('permission-denied'))
+    await expect(saveMemberPhoto(GYM, MEMBER, file())).rejects.toThrow('permission-denied')
   })
 })
 
 describe('saveGymLogo', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-    mocks.makeThumbnail.mockResolvedValue(THUMB)
-    mocks.setDoc.mockResolvedValue(undefined)
-  })
-
   it('writes the gym branding document the settings rules already gate', async () => {
     await saveGymLogo(GYM, file())
 
@@ -146,16 +184,22 @@ describe('saveGymLogo', () => {
 })
 
 describe('reads', () => {
-  const snapshot = (value) => ({ exists: () => value !== undefined, data: () => value })
-
-  beforeEach(() => {
-    vi.clearAllMocks()
-  })
-
   it('returns the stored data URL for a member', async () => {
     mocks.getDoc.mockResolvedValue(snapshot({ data: THUMB.dataUrl }))
     await expect(loadMemberPhoto(MEMBER)).resolves.toBe(THUMB.dataUrl)
     expect(docPath()).toEqual([MEMBER_PHOTOS_COLLECTION, MEMBER])
+  })
+
+  // No cache layer, on purpose: a photo replaced on another device must appear on
+  // the next render instead of being served stale from this browser. The saving
+  // comes from the `hasPhoto` flag, not from hiding reads that are already stale.
+  it('reads from the server every time', async () => {
+    mocks.getDoc.mockResolvedValue(snapshot({ data: THUMB.dataUrl }))
+
+    await loadMemberPhoto(MEMBER)
+    await expect(loadMemberPhoto(MEMBER)).resolves.toBe(THUMB.dataUrl)
+
+    expect(mocks.getDoc).toHaveBeenCalledTimes(2)
   })
 
   it('returns null when no photo is stored', async () => {

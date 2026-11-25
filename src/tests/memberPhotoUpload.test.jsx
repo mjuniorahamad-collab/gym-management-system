@@ -20,13 +20,13 @@ import userEvent from '@testing-library/user-event'
 import { MemberPhoto } from '@/components/common/MemberPhoto'
 
 const { mocks, authValue, photoState } = vi.hoisted(() => ({
-  mocks: { saveMemberPhoto: vi.fn(), readObjectUrl: vi.fn(), toastError: vi.fn() },
+  mocks: { saveMemberPhoto: vi.fn(), useMemberPhoto: vi.fn(), readObjectUrl: vi.fn(), toastError: vi.fn() },
   authValue: { gymId: 'gym-alpha' },
   photoState: { dataUrl: null, loading: false, error: null },
 }))
 
 vi.mock('@/services/photoStore', () => ({ saveMemberPhoto: mocks.saveMemberPhoto }))
-vi.mock('@/hooks/usePhotoStore', () => ({ useMemberPhoto: () => photoState }))
+vi.mock('@/hooks/usePhotoStore', () => ({ useMemberPhoto: mocks.useMemberPhoto }))
 vi.mock('@/services/storage', () => ({ readObjectUrl: mocks.readObjectUrl }))
 vi.mock('@/context/AuthContext', () => ({ useAuth: () => authValue }))
 vi.mock('@/context/ToastContext', () => ({
@@ -56,6 +56,7 @@ describe('MemberPhoto upload', () => {
     photoState.dataUrl = null
     photoState.loading = false
     photoState.error = null
+    mocks.useMemberPhoto.mockReturnValue(photoState)
     mocks.saveMemberPhoto.mockResolvedValue({ dataUrl: UPLOADED, memberId: MEMBER.id })
     mocks.readObjectUrl.mockResolvedValue('blob:mock-url')
     global.URL.createObjectURL = vi.fn(() => 'blob:mock-url')
@@ -200,6 +201,18 @@ describe('MemberPhoto upload', () => {
     const { container } = render(<MemberPhoto member={MEMBER} />)
     expect(container.querySelector('img')).toBeNull()
     expect(container.textContent).toContain('AK')
+  })
+
+  // Read cost. A members page renders 20 rows and Firestore bills one document
+  // read per avatar, so a row for a member with no photo must ask for nothing.
+  it('does not ask for a photo when the member has none', () => {
+    render(<MemberPhoto member={MEMBER} />)
+    expect(mocks.useMemberPhoto).toHaveBeenCalledWith(null)
+  })
+
+  it('asks for the stored photo only for a member flagged hasPhoto', () => {
+    render(<MemberPhoto member={{ ...MEMBER, hasPhoto: true }} />)
+    expect(mocks.useMemberPhoto).toHaveBeenCalledWith(MEMBER.id)
   })
 
   // The component holds no identity of its own to substitute, so the only
