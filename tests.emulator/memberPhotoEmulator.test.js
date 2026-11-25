@@ -45,6 +45,11 @@ const MEMBER_A2 = 'photo-member-a2'
 const MEMBER_A3 = 'photo-member-a3'
 const MEMBER_B = 'photo-member-b'
 
+// Photo documents with no member document behind them, used to prove what the
+// read rule does and does not look at.
+const ORPHAN_PHOTO = 'photo-orphan'
+const NO_GYM_PHOTO = 'photo-no-gym'
+
 const DATA = 'data:image/webp;base64,' + 'A'.repeat(2048)
 
 /** The exact payload shape the client writes (src/services/photoStore.js). */
@@ -228,6 +233,40 @@ describe('memberPhotos rules', () => {
 
     const after = await assertSucceeds(getDoc(doc(fs, 'members', MEMBER_A3)))
     expect(after.data().hasPhoto).toBeUndefined()
+  })
+
+  // READ COST. Every avatar read used to perform an exists() and a get() on
+  // members/{memberId} inside the rules. The photo document carries its own
+  // gymId, so a read needs nothing else — pinned with a photo whose member
+  // document does not exist, which the previous rule denied.
+  it('reads a photo without looking at the member document', async () => {
+    await env.withSecurityRulesDisabled(async (context) => {
+      await context.firestore().doc(`memberPhotos/${ORPHAN_PHOTO}`).set(photoPayload(GYM_A))
+    })
+
+    const snapshot = await assertSucceeds(getDoc(photoDoc(client(DESK_A), ORPHAN_PHOTO)))
+    expect(snapshot.data().gymId).toBe(GYM_A)
+
+    // Dropping the member lookup must not drop the tenant boundary.
+    await assertFails(getDoc(photoDoc(client(OWNER_B), ORPHAN_PHOTO)))
+  })
+
+  // The member check MOVED to writes, and it still stops staff parking bytes on
+  // a member id that does not exist.
+  it('refuses a write for a member that does not exist', async () => {
+    await assertFails(setDoc(photoDoc(client(OWNER_A), ORPHAN_PHOTO), photoPayload(GYM_A)))
+  })
+
+  // A read now trusts the photo document's own gymId, so a document without one
+  // must stay unreadable rather than fall through.
+  it('refuses to read a photo document that carries no gym', async () => {
+    await env.withSecurityRulesDisabled(async (context) => {
+      await context.firestore()
+        .doc(`memberPhotos/${NO_GYM_PHOTO}`)
+        .set({ data: DATA, contentType: 'image/webp' })
+    })
+
+    await assertFails(getDoc(photoDoc(client(OWNER_A), NO_GYM_PHOTO)))
   })
 
   // A role that may not write members cannot use the flag as a side channel, and
