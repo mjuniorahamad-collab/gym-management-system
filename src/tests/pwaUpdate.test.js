@@ -12,8 +12,8 @@
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
-import { createPwaUpdates } from '@/utils/pwaUpdates'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createPwaUpdates, UPDATE_CHECK_INTERVAL_MS } from '@/utils/pwaUpdates'
 
 function fakeWorker(state = 'installing') {
   const handlers = {}
@@ -52,10 +52,23 @@ function fakeContainer(controlled = true) {
   }
 }
 
+const instances = []
+
+afterEach(() => {
+  while (instances.length) instances.pop().stop()
+  setVisibility('visible')
+})
+
+function setVisibility(state) {
+  Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state })
+  document.dispatchEvent(new Event('visibilitychange'))
+}
+
 function setup({ controlled = true, waiting = null } = {}) {
   const container = fakeContainer(controlled)
   const reload = vi.fn()
   const updates = createPwaUpdates({ reload, serviceWorker: container })
+  instances.push(updates)
   const seen = []
   updates.subscribe((available) => seen.push(available))
   const registration = fakeRegistration({ waiting })
@@ -118,6 +131,82 @@ describe('PWA update prompt', () => {
     const { updates, seen } = setup({ waiting: fakeWorker('installed') })
     updates.apply()
     expect(seen).toEqual([false, true, false])
+  })
+})
+
+describe('periodic update checks for a long-lived app', () => {
+  it('checks every 30 minutes while the app is visible', () => {
+    vi.useFakeTimers()
+    try {
+      const { registration } = setup()
+      expect(registration.update).not.toHaveBeenCalled()
+
+      vi.advanceTimersByTime(UPDATE_CHECK_INTERVAL_MS - 1000)
+      expect(registration.update).not.toHaveBeenCalled()
+
+      vi.advanceTimersByTime(2000)
+      expect(registration.update).toHaveBeenCalledTimes(1)
+
+      vi.advanceTimersByTime(UPDATE_CHECK_INTERVAL_MS)
+      expect(registration.update).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('polls nothing while hidden and checks immediately when it returns', () => {
+    vi.useFakeTimers()
+    try {
+      setVisibility('hidden')
+      const { registration } = setup()
+
+      vi.advanceTimersByTime(2 * 60 * 60 * 1000)
+      expect(registration.update).not.toHaveBeenCalled()
+
+      setVisibility('visible')
+      expect(registration.update).toHaveBeenCalledTimes(1)
+
+      vi.advanceTimersByTime(UPDATE_CHECK_INTERVAL_MS)
+      expect(registration.update).toHaveBeenCalledTimes(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('stops polling when the watcher is stopped', () => {
+    vi.useFakeTimers()
+    try {
+      const { updates, registration } = setup()
+      updates.stop()
+
+      vi.advanceTimersByTime(3 * UPDATE_CHECK_INTERVAL_MS)
+      expect(registration.update).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('a background check that finds a new worker still raises the prompt', () => {
+    vi.useFakeTimers()
+    try {
+      const { registration, seen } = setup()
+
+      // The browser only fires updatefound once update() finds new bytes.
+      const installing = fakeWorker('installing')
+      registration.update.mockImplementation(() => {
+        registration.installing = installing
+        registration.fire('updatefound')
+        return Promise.resolve()
+      })
+
+      vi.advanceTimersByTime(UPDATE_CHECK_INTERVAL_MS)
+      installing.state = 'installed'
+      installing.fire('statechange')
+
+      expect(seen).toEqual([false, true])
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

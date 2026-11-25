@@ -11,15 +11,33 @@
  * cached shell again, which is the exact "stuck on the old version" bug this
  * prompt exists to fix.
  *
+ * The browser only looks for a service worker update on a navigation (or once
+ * a day), and an installed gym app can sit open on one screen all day. So while
+ * the page is VISIBLE this polls registration.update() every 30 minutes; a
+ * hidden tab, a backgrounded phone or a closed app polls nothing. Coming back
+ * to the foreground checks immediately and restarts the interval.
+ *
  * Everything is injectable so the flow can be tested without a browser.
  */
 
-export function createPwaUpdates({ reload, serviceWorker } = {}) {
+export const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000
+
+export function createPwaUpdates({
+  reload,
+  serviceWorker,
+  checkIntervalMs = UPDATE_CHECK_INTERVAL_MS,
+  timers,
+} = {}) {
   const sw = () => serviceWorker ?? (typeof navigator === 'undefined' ? null : navigator.serviceWorker)
   const reloadPage = reload || (() => window.location.reload())
+  const setIntervalFn = timers?.setInterval || ((fn, ms) => setInterval(fn, ms))
+  const clearIntervalFn = timers?.clearInterval || ((id) => clearInterval(id))
 
+  let activeRegistration = null
   let waiting = null
   let reloading = false
+  let timer = null
+  let visibilityHandler = null
   const listeners = new Set()
 
   const publish = () => {
@@ -34,6 +52,21 @@ export function createPwaUpdates({ reload, serviceWorker } = {}) {
     publish()
   }
 
+  const checkForUpdate = () => {
+    activeRegistration?.update?.().catch(() => undefined)
+  }
+
+  const startPolling = () => {
+    if (timer !== null || !activeRegistration || checkIntervalMs <= 0) return
+    timer = setIntervalFn(checkForUpdate, checkIntervalMs)
+  }
+
+  const stopPolling = () => {
+    if (timer === null) return
+    clearIntervalFn(timer)
+    timer = null
+  }
+
   const subscribe = (listener) => {
     listeners.add(listener)
     listener(Boolean(waiting))
@@ -43,6 +76,7 @@ export function createPwaUpdates({ reload, serviceWorker } = {}) {
   const register = (registration) => {
     if (!registration) return
 
+    activeRegistration = registration
     adopt(registration.waiting)
 
     registration.addEventListener('updatefound', () => {
@@ -53,13 +87,30 @@ export function createPwaUpdates({ reload, serviceWorker } = {}) {
       })
     })
 
-    // An installed app can sit open for days. Look again whenever it comes back
-    // to the foreground so the prompt appears without a manual reload.
-    if (typeof document !== 'undefined') {
-      document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState === 'visible') registration.update?.().catch(() => undefined)
-      })
+    if (typeof document === 'undefined') {
+      startPolling()
+      return
     }
+
+    visibilityHandler = () => {
+      if (document.visibilityState === 'visible') {
+        checkForUpdate()
+        startPolling()
+      } else {
+        stopPolling()
+      }
+    }
+    document.addEventListener('visibilitychange', visibilityHandler)
+    if (document.visibilityState === 'visible') startPolling()
+  }
+
+  const stop = () => {
+    stopPolling()
+    if (visibilityHandler && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', visibilityHandler)
+    }
+    visibilityHandler = null
+    activeRegistration = null
   }
 
   const apply = () => {
@@ -78,7 +129,7 @@ export function createPwaUpdates({ reload, serviceWorker } = {}) {
     return true
   }
 
-  return { subscribe, register, apply }
+  return { subscribe, register, apply, stop }
 }
 
 export const pwaUpdates = createPwaUpdates()
