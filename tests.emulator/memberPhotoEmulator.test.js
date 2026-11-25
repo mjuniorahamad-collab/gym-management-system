@@ -23,7 +23,7 @@ import {
   assertSucceeds,
   initializeTestEnvironment,
 } from '@firebase/rules-unit-testing'
-import { deleteDoc, doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore'
+import { deleteDoc, doc, getDoc, serverTimestamp, setDoc, writeBatch } from 'firebase/firestore'
 
 const PROJECT_ID = 'demo-himalye-gym'
 const emulatorHost = process.env.FIRESTORE_EMULATOR_HOST || '127.0.0.1:8080'
@@ -42,6 +42,7 @@ const OWNER_B = 'photo-owner-b'
 
 const MEMBER_A = 'photo-member-a'
 const MEMBER_A2 = 'photo-member-a2'
+const MEMBER_A3 = 'photo-member-a3'
 const MEMBER_B = 'photo-member-b'
 
 const DATA = 'data:image/webp;base64,' + 'A'.repeat(2048)
@@ -80,6 +81,7 @@ describe('memberPhotos rules', () => {
       }
       await fs.doc(`members/${MEMBER_A}`).set({ gymId: GYM_A, name: 'Member A' })
       await fs.doc(`members/${MEMBER_A2}`).set({ gymId: GYM_A, name: 'Member A2' })
+      await fs.doc(`members/${MEMBER_A3}`).set({ gymId: GYM_A, name: 'Member A3' })
       await fs.doc(`members/${MEMBER_B}`).set({ gymId: GYM_B, name: 'Member B' })
       await fs.doc(`memberPhotos/${MEMBER_A}`).set(photoPayload(GYM_A))
       await fs.doc(`memberPhotos/${MEMBER_A2}`).set(photoPayload(GYM_A))
@@ -158,5 +160,41 @@ describe('memberPhotos rules', () => {
     const anon = env.unauthenticatedContext().firestore()
     await assertFails(getDoc(photoDoc(anon, MEMBER_A)))
     await assertFails(setDoc(photoDoc(anon, MEMBER_A), photoPayload(GYM_A)))
+  })
+
+  // The client writes the bytes and the member's `hasPhoto` flag in ONE commit
+  // (src/services/photoStore.js), because that flag is what stops a members page
+  // paying a read for every row that has no photo. Both writes must be legal for
+  // the same role, or the whole upload fails.
+  it('front-desk can write the photo and the member flag in one batch', async () => {
+    const fs = client(DESK_A)
+    const batch = writeBatch(fs)
+    batch.set(photoDoc(fs, MEMBER_A), photoPayload(GYM_A))
+    batch.update(doc(fs, 'members', MEMBER_A), {
+      hasPhoto: true,
+      photoUpdatedAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    })
+
+    await assertSucceeds(batch.commit())
+
+    const stored = await assertSucceeds(getDoc(doc(fs, 'members', MEMBER_A)))
+    expect(stored.data().hasPhoto).toBe(true)
+    expect(stored.data().gymId).toBe(GYM_A)
+  })
+
+  // A role that may not write members cannot use the flag as a side channel, and
+  // the batch is all-or-nothing: no photo is left behind either.
+  it('a trainer cannot mark a member as having a photo', async () => {
+    const fs = client(TRAINER_A)
+    const batch = writeBatch(fs)
+    batch.set(photoDoc(fs, MEMBER_A3), photoPayload(GYM_A))
+    batch.update(doc(fs, 'members', MEMBER_A3), { hasPhoto: true })
+
+    await assertFails(batch.commit())
+
+    const owner = client(OWNER_A)
+    const member = await assertSucceeds(getDoc(doc(owner, 'members', MEMBER_A3)))
+    expect(member.data().hasPhoto).toBeUndefined()
   })
 })

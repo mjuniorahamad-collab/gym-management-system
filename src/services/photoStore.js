@@ -1,4 +1,4 @@
-import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore'
+import { doc, getDoc, serverTimestamp, setDoc, writeBatch } from 'firebase/firestore'
 import { db, isFirebaseConfigured } from '@/firebase'
 import { MAX_STORED_BYTES, makeThumbnail } from '@/utils/image'
 
@@ -6,6 +6,7 @@ import { MAX_STORED_BYTES, makeThumbnail } from '@/utils/image'
 // Where images live
 //
 //   memberPhotos/{memberId}                  { gymId, data, contentType, ... }
+//   members/{memberId}.hasPhoto              flag written in the SAME commit
 //   gyms/{gymId}/settings/branding           { gymId, data, contentType, ... }
 //
 // WHY FIRESTORE AND NOT CLOUD STORAGE
@@ -29,9 +30,27 @@ import { MAX_STORED_BYTES, makeThumbnail } from '@/utils/image'
 //   One document per member, one per gym. Re-uploading overwrites in place, so
 //   there is never a second copy to find and delete — which is the same reason
 //   storage.js used constant filenames.
+//
+// WHY THE `hasPhoto` FLAG ON THE MEMBER DOCUMENT
+//   Firestore bills one read per document returned, so batching 20 avatars into
+//   one query would cost exactly the same 20 reads. What is avoidable is asking
+//   for photos that do not exist: a members page renders 20 rows, and most gyms
+//   have a photo for only a few of them. The member document is already read to
+//   render the row, so a boolean on it tells the list which avatars are worth a
+//   read at all. The flag is set in the same batched commit as the photo, so it
+//   can never claim a photo that was not written (and the write fails as a whole
+//   if the member update is refused).
+//
+// READS ARE ALWAYS FROM THE SERVER, DELIBERATELY
+//   Serving an already-read avatar from the local cache would save more reads,
+//   but it also means a photo replaced on ANOTHER device keeps showing the old
+//   face here until a reload — a silent "my photo did not change" bug for a
+//   saving that is small next to what the flag above already removes. The flag is
+//   the whole optimisation: no flag, no read.
 // ---------------------------------------------------------------------------
 
 export const MEMBER_PHOTOS_COLLECTION = 'memberPhotos'
+export const MEMBERS_COLLECTION = 'members'
 export const GYMS_COLLECTION = 'gyms'
 export const SETTINGS_SUBCOLLECTION = 'settings'
 export const BRANDING_DOC_ID = 'branding'
@@ -52,6 +71,11 @@ function readDataUrl(snapshot) {
   if (!snapshot || typeof snapshot.exists !== 'function' || !snapshot.exists()) return null
   const value = typeof snapshot.data === 'function' ? snapshot.data()?.data : null
   return typeof value === 'string' && value.startsWith('data:image/') ? value : null
+}
+
+/** One server read. No cache layer: the banner above says why. */
+async function readStoredDataUrl(ref) {
+  return readDataUrl(await getDoc(ref))
 }
 
 /**
@@ -93,11 +117,21 @@ export async function saveMemberPhoto(gymId, memberId, file, { uploadedBy = '' }
 
   const { payload, thumbnail } = await buildPayload(file, gym)
 
-  await setDoc(doc(db, MEMBER_PHOTOS_COLLECTION, member), {
+  // ONE commit: the bytes and the "this member has a photo" flag. A photo that
+  // landed without its flag would never be fetched by any list, and a flag
+  // without a photo would make every page pay for a read that returns nothing.
+  const batch = writeBatch(db)
+  batch.set(doc(db, MEMBER_PHOTOS_COLLECTION, member), {
     ...payload,
     updatedAt: serverTimestamp(),
     updatedBy: uploadedBy,
   })
+  batch.update(doc(db, MEMBERS_COLLECTION, member), {
+    hasPhoto: true,
+    photoUpdatedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  })
+  await batch.commit()
 
   return {
     memberId: member,
@@ -113,8 +147,7 @@ export async function saveMemberPhoto(gymId, memberId, file, { uploadedBy = '' }
 export async function loadMemberPhoto(memberId) {
   const id = typeof memberId === 'string' ? memberId.trim() : ''
   if (!id || !isPhotoStoreReady()) return null
-  const snapshot = await getDoc(doc(db, MEMBER_PHOTOS_COLLECTION, id))
-  return readDataUrl(snapshot)
+  return readStoredDataUrl(doc(db, MEMBER_PHOTOS_COLLECTION, id))
 }
 
 /**
@@ -150,8 +183,5 @@ export async function saveGymLogo(gymId, file, { uploadedBy = '' } = {}) {
 export async function loadGymLogo(gymId) {
   const id = typeof gymId === 'string' ? gymId.trim() : ''
   if (!id || !isPhotoStoreReady()) return null
-  const snapshot = await getDoc(
-    doc(db, GYMS_COLLECTION, id, SETTINGS_SUBCOLLECTION, BRANDING_DOC_ID)
-  )
-  return readDataUrl(snapshot)
+  return readStoredDataUrl(doc(db, GYMS_COLLECTION, id, SETTINGS_SUBCOLLECTION, BRANDING_DOC_ID))
 }
