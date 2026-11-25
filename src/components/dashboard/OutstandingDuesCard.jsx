@@ -5,6 +5,8 @@ import { MemberPhoto } from '@/components/common/MemberPhoto'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
+import { CSVExportButton } from '@/components/common/CSVExportButton'
+import { exportDuesToCsv } from '@/services/export'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { formatCurrency } from '@/utils/formatters'
 
@@ -19,10 +21,21 @@ export function OutstandingDuesCard({ rows = [], totalDue = 0, count = 0, settin
         subtitle="Members with unpaid membership amounts"
         actions={
           rows.length > 0 ? (
-            <Button variant="ghost" size="sm" onClick={() => setExpanded((v) => !v)}>
-              {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-              {expanded ? 'Collapse' : 'Expand'}
-            </Button>
+            <div className="flex items-center gap-2">
+              {/*
+                The ledger here is the canonical one (computeMemberFinanceRollups),
+                so the accountant's "pending" sheet and the dashboard cannot
+                disagree. CSV injection is handled by the shared downloadCsv.
+              */}
+              <CSVExportButton
+                label="Export dues CSV"
+                onExport={() => exportDuesToCsv(rows, settings)}
+              />
+              <Button variant="ghost" size="sm" onClick={() => setExpanded((v) => !v)}>
+                {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                {expanded ? 'Collapse' : 'Expand'}
+              </Button>
+            </div>
           ) : undefined
         }
       />
