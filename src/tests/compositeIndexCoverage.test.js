@@ -22,8 +22,9 @@
  * ## What it does
  *
  * Enumerates the query shapes the codebase can build — from the filter tables in
- * the UI, the generic fetch path, and the bounded range-query module — and
- * asserts a declared index satisfies each.
+ * the UI, and from the call sites of the generic fetch path (scanned from source,
+ * so a new collection cannot be forgotten here), plus the bounded range-query
+ * module — and asserts a declared index satisfies each.
  *
  * ## How Firestore's rule is modelled
  *
@@ -33,6 +34,8 @@
  * That single exception is modelled explicitly below rather than being waved
  * through, because over-approximating here would make the test useless.
  */
+import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { join, relative } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import indexes from '../../firestore.indexes.json'
 import { MEMBER_STATUS_FILTERS } from '@/utils/constants'
@@ -85,6 +88,85 @@ function satisfies(collection, equalities, firstOrderBy) {
 /** The generic fetch path in services/firestore.js always scopes by gymId. */
 const TENANT_SCOPE = 'gymId'
 
+/** Every non-test source file under src/. */
+function sourceFiles(dir) {
+  return readdirSync(dir).flatMap((entry) => {
+    if (entry === 'tests' || entry.includes('.test.')) return []
+    const path = join(dir, entry)
+    if (statSync(path).isDirectory()) return sourceFiles(path)
+    return /\.(js|jsx)$/.test(entry) ? [path] : []
+  })
+}
+
+/**
+ * Index of the `)` that closes the `(` at `openIndex`, or -1 when unbalanced.
+ *
+ * A bracket counter rather than a regex because the call options nest:
+ * `listAll('payments', { where: { field: 'memberId', value } })`. The argument
+ * text here never contains brackets inside string literals, so counting is safe.
+ */
+function closeParen(source, openIndex) {
+  let depth = 0
+  for (let i = openIndex; i < source.length; i += 1) {
+    if (source[i] === '(') depth += 1
+    else if (source[i] === ')') {
+      depth -= 1
+      if (depth === 0) return i
+    }
+  }
+  return -1
+}
+
+/**
+ * The read shapes that carry an orderBy, DERIVED from the call sites.
+ *
+ * A hand-maintained list is how `leads` shipped with no index: the page was
+ * added, the list was not, and nothing failed until a production query. So:
+ *
+ * - `useCollection(name)` and `subscribeCollection(name)` subscribe with
+ *   `orderBy('createdAt', 'desc')` — always an ordered tenant read.
+ * - `listAll(name)` adds that ordering only when it is NOT given a `where`
+ *   option; with a single equality it deliberately skips the orderBy and rides
+ *   the automatic single-field index.
+ * - `usePaginatedCollection(name, options)` orders by `options.orderField`
+ *   (`createdAt` by default) through `fetchPage`.
+ */
+function deriveOrderedReads() {
+  const reads = new Map()
+  const add = (collection, orderBy, file) => {
+    const key = `${collection}|${orderBy}`
+    if (!reads.has(key)) {
+      reads.set(key, { collection, orderBy, source: relative(process.cwd(), file) })
+    }
+  }
+  const argsOf = (source, match) => {
+    const openIndex = match.index + match[0].indexOf('(')
+    const end = closeParen(source, openIndex)
+    return end === -1 ? '' : source.slice(openIndex, end)
+  }
+
+  for (const file of sourceFiles(join(process.cwd(), 'src'))) {
+    const source = readFileSync(file, 'utf8')
+
+    for (const match of source.matchAll(/\b(?:useCollection|subscribeCollection)\(\s*'([A-Za-z0-9_]+)'/g)) {
+      add(match[1], 'createdAt', file)
+    }
+
+    for (const match of source.matchAll(/\blistAll\(\s*'([A-Za-z0-9_]+)'/g)) {
+      if (!/\bwhere\s*:/.test(argsOf(source, match))) add(match[1], 'createdAt', file)
+    }
+
+    for (const match of source.matchAll(/\busePaginatedCollection\(\s*'([A-Za-z0-9_]+)'/g)) {
+      const orderBy = argsOf(source, match).match(/orderField\s*:\s*'([A-Za-z0-9_]+)'/)?.[1]
+      add(match[1], orderBy || 'createdAt', file)
+    }
+  }
+
+  return [...reads.values()].sort(
+    (a, b) => a.collection.localeCompare(b.collection) || a.orderBy.localeCompare(b.orderBy)
+  )
+}
+
 describe('composite index coverage', () => {
   describe('the members list', () => {
     it('covers the unfiltered list', () => {
@@ -115,35 +197,26 @@ describe('composite index coverage', () => {
   })
 
   describe('the generic list path', () => {
-    // Every collection read through useCollection/fetchPage orders by createdAt
-    // within the tenant scope. This is the single most common query shape in the
-    // app, so it is checked as a block.
-    const TENANT_SCOPED_COLLECTIONS = [
-      'members',
-      'membershipPlans',
-      'membershipFreezes',
-      'memberships',
-      'payments',
-      'expenses',
-      'attendance',
-      'classes',
-      'bookings',
-      'trainers',
-      'auditLog',
-      // Added with the Leads page (#33). Missing from this list for a while, which
-      // is why the live query shipped with no index and failed with
-      // FAILED_PRECONDITION in production while CI stayed green.
-      'leads',
-      // NOT 'counters': counters are read and written by id only (member-number
-      // and receipt sequences), and those documents carry no createdAt, so no
-      // ordered listing exists for this list to cover. Asserting one here only
-      // kept a never-reachable index alive in firestore.indexes.json.
-      'weightRecords',
-    ]
+    // Derived from source, not listed by hand: a hand-kept list is exactly how
+    // `leads` shipped without an index while CI stayed green.
+    const orderedReads = deriveOrderedReads()
 
-    it.each(TENANT_SCOPED_COLLECTIONS)('covers %s ordered by createdAt', (collection) => {
-      expect(satisfies(collection, [TENANT_SCOPE], 'createdAt')).toBe(true)
+    it('derives reads from the call sites instead of a hand-kept list', () => {
+      // Guards against a scan that silently stops matching anything and then
+      // passes every case below by simply having none.
+      expect(orderedReads.length).toBeGreaterThan(0)
+      expect(orderedReads.map((read) => read.collection)).toEqual(
+        // `leads` is the regression that motivated deriving this.
+        expect.arrayContaining(['members', 'payments', 'leads'])
+      )
     })
+
+    it.each(orderedReads.map((read) => [read.collection, read.orderBy, read.source]))(
+      'covers %s ordered by %s (read in %s)',
+      (collection, orderBy) => {
+        expect(satisfies(collection, [TENANT_SCOPE], orderBy)).toBe(true)
+      }
+    )
   })
 
   describe('bounded report range queries', () => {
