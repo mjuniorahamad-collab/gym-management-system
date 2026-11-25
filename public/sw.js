@@ -13,9 +13,14 @@
  * - Hashed build assets under /assets/ are cache-first, because their file
  *   name changes with their contents.
  *
+ * - A new worker does NOT take over by itself. It waits until the page asks it
+ *   to, so a phone that has been left on the app is never silently switched to
+ *   a new bundle mid-form. The UI shows "A new version is available" and the
+ *   user reloads when it suits them (see src/utils/pwaUpdates.js).
+ *
  * Bump CACHE when the shell list changes; `activate` deletes older caches.
  */
-const CACHE = 'gym-shell-v1'
+const CACHE = 'gym-shell-v2'
 
 const SHELL = [
   '/',
@@ -34,8 +39,14 @@ self.addEventListener('install', (event) => {
       .then((cache) => cache.addAll(SHELL))
       // A missing shell file must not block activation; the network still works.
       .catch(() => undefined)
-      .then(() => self.skipWaiting())
   )
+})
+
+// The page sends this only after the user accepts the "new version" prompt.
+// Without it the new worker stays in `waiting`, which is exactly what keeps a
+// stale shell from being swapped in under someone who is still working.
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'SKIP_WAITING') self.skipWaiting()
 })
 
 self.addEventListener('activate', (event) => {
