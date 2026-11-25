@@ -9,6 +9,7 @@ import {
   RefreshCcw,
   Sparkles,
   TrendingUp,
+  UserPlus,
   Users,
 } from 'lucide-react'
 import { useAuth } from '@/context/AuthContext'
@@ -41,10 +42,11 @@ import { PageHeader } from '@/components/layout/PageHeader'
 import { formatCurrency, formatDate, formatDateTime, formatNumber } from '@/utils/formatters'
 import { safeLoadMessage } from '@/utils/loadErrors'
 import { parseDate, addDays } from '@/utils/dateHelpers'
-import { gymDayKey, gymLastNMonthKeys, gymMonthKey } from '@/utils/gymTime'
+import { gymDayKey, gymLastNMonthKeys, gymMonthKey, gymTodayKey } from '@/utils/gymTime'
 import { getCurrentMembershipExpiry, getDaysRemaining, getExpiryBucket, matchesExpiryFilter } from '@/utils/membership'
 import { computeMemberFinanceRollups } from '@/utils/dues'
 import { buildAtRiskMembers } from '@/utils/churnRisk'
+import { countFollowUps } from '@/utils/leads'
 
 const MAX_EXPIRING_ROWS = 50
 
@@ -100,6 +102,7 @@ export default function Dashboard() {
   const bookings = useCollection('bookings')
   const memberships = useCollection('memberships')
   const freezes = useCollection('membershipFreezes')
+  const leads = useCollection('leads')
 
   const loading =
     members.loading || payments.loading || expenses.loading || attendance.loading || plans.loading
@@ -188,6 +191,13 @@ export default function Dashboard() {
       dues.rows,
       timezone,
     ]
+  )
+
+  // The follow-up diary's day's work: due today plus what was missed. Shown as
+  // a banner because a leads list nobody opens is still a paper diary.
+  const leadFollowUps = useMemo(
+    () => countFollowUps(leads.items, gymTodayKey(timezone)),
+    [leads.items, timezone]
   )
 
   const filteredExpiring = useMemo(() => {
@@ -354,6 +364,27 @@ export default function Dashboard() {
           ) : undefined
         }
       />
+
+      {leadFollowUps.today + leadFollowUps.overdue > 0 && (
+        <Link
+          to="/leads"
+          className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-amber-900 transition-colors hover:bg-amber-100 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200 dark:hover:bg-amber-500/15"
+        >
+          <div className="flex items-center gap-3">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-300">
+              <UserPlus size={17} />
+            </div>
+            <div>
+              <p className="text-sm font-semibold">Lead follow-ups due</p>
+              <p className="text-xs text-amber-800/80 dark:text-amber-200/80">
+                {leadFollowUps.today} due today · {leadFollowUps.overdue} overdue — call them
+                before they join somewhere else.
+              </p>
+            </div>
+          </div>
+          <span className="text-sm font-semibold">Open Leads →</span>
+        </Link>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard
