@@ -91,7 +91,7 @@ const TENANT_SCOPE = 'gymId'
 /** Every non-test source file under src/. */
 function sourceFiles(dir) {
   return readdirSync(dir).flatMap((entry) => {
-    if (entry === 'tests' || entry.includes('.test.')) return []
+    if (entry === 'tests' || entry === 'test' || entry.includes('.test.')) return []
     const path = join(dir, entry)
     if (statSync(path).isDirectory()) return sourceFiles(path)
     return /\.(js|jsx)$/.test(entry) ? [path] : []
@@ -164,6 +164,104 @@ function deriveOrderedReads() {
 
   return [...reads.values()].sort(
     (a, b) => a.collection.localeCompare(b.collection) || a.orderBy.localeCompare(b.orderBy)
+  )
+}
+
+/**
+ * The chained calls that follow a `collection('name')` reference, e.g.
+ * `.where('gymId', '==', gymId).orderBy('dueDate')`.
+ *
+ * Uses a sticky regex rather than \G (which JavaScript does not have) and the
+ * bracket counter above to step over each argument list, so the chain can span
+ * lines and nest parentheses.
+ */
+function chainCalls(source, startIndex) {
+  const calls = []
+  const call = /\s*\.\s*([A-Za-z_$][\w$]*)\s*\(/y
+  call.lastIndex = startIndex
+  let match = call.exec(source)
+  while (match) {
+    const openIndex = call.lastIndex - 1
+    const end = closeParen(source, openIndex)
+    if (end === -1) break
+    calls.push({ method: match[1], args: source.slice(openIndex + 1, end) })
+    call.lastIndex = end + 1
+    match = call.exec(source)
+  }
+  return calls
+}
+
+/** Admin-SDK write methods. A write never needs an index. */
+const WRITE_METHODS = new Set(['add', 'set', 'update', 'delete'])
+
+/**
+ * The index requirement of one admin-SDK read chain.
+ *
+ * Firestore serves equality-only queries from single-field indexes (merge
+ * join), and every index carries `__name__`, so ordering by document id is free
+ * as well. What does need a composite is ordering by a DATA field, or a range /
+ * `in` / array filter narrowed by another filter or an ordering.
+ *
+ * Returns null for a write. A filter or ordering it cannot read is returned with
+ * `modelled: false` instead of being assumed harmless: the suite fails on those
+ * so a new shape cannot slip through as "no index needed".
+ *
+ * @param {string} collection
+ * @param {{ method: string, args: string }[]} calls
+ */
+function readShapeOf(collection, calls) {
+  if (calls.some((call) => WRITE_METHODS.has(call.method))) return null
+
+  const equalities = []
+  let rangeFilters = 0
+  let orderBy = null
+  let modelled = true
+
+  for (const call of calls) {
+    if (call.method === 'where') {
+      const parsed = call.args.match(/^\s*'([A-Za-z0-9_.]+)'\s*,\s*'([^']*)'/)
+      if (!parsed) {
+        modelled = false
+      } else if (parsed[2] === '==') {
+        equalities.push(parsed[1])
+      } else {
+        rangeFilters += 1
+      }
+    } else if (call.method === 'orderBy') {
+      const named = call.args.match(/^\s*'([A-Za-z0-9_.]+)'/)
+      if (named) orderBy = named[1]
+      else if (/FieldPath\s*\.\s*documentId|'__name__'/.test(call.args)) orderBy = '__name__'
+      else modelled = false
+    }
+  }
+
+  const orderedByData = orderBy !== null && orderBy !== '__name__'
+  const narrowedFurther = rangeFilters > 0 && (equalities.length > 0 || orderBy !== null)
+
+  return {
+    collection,
+    equalities,
+    orderBy,
+    modelled,
+    needsComposite: orderedByData || narrowedFurther,
+    equalitiesText: equalities.length > 0 ? equalities.join(' + ') : '(no equality)',
+  }
+}
+
+/** Every admin-SDK read in a snippet of source. */
+function readsIn(source, file = 'inline') {
+  const reads = []
+  for (const match of source.matchAll(/\bcollection\(\s*'([A-Za-z0-9_]+)'\s*\)/g)) {
+    const shape = readShapeOf(match[1], chainCalls(source, match.index + match[0].length))
+    if (shape) reads.push({ ...shape, source: file })
+  }
+  return reads
+}
+
+/** Every admin-SDK read in functions/, tests excluded. */
+function deriveFunctionReads() {
+  return sourceFiles(join(process.cwd(), 'functions')).flatMap((file) =>
+    readsIn(readFileSync(file, 'utf8'), relative(process.cwd(), file))
   )
 }
 
@@ -274,5 +372,64 @@ describe('composite index coverage', () => {
       }
       expect(dupes).toEqual([])
     })
+  })
+
+  describe('Cloud Functions (admin SDK) queries', () => {
+    // The projection jobs query Firestore with the admin SDK, which enforces
+    // composite indexes exactly like the client SDK. They are deployed by a
+    // separate workflow, so a missing index surfaces as a failing sweep in
+    // production rather than in the page that added it. Scanned from source for
+    // the same reason as the client reads above.
+    const functionReads = deriveFunctionReads()
+    const needingIndex = functionReads.filter((read) => read.needsComposite)
+
+    it('scans the Cloud Functions sources', () => {
+      expect(functionReads.length).toBeGreaterThan(0)
+      expect(functionReads.map((read) => read.collection)).toEqual(
+        expect.arrayContaining(['members', 'memberships', 'membershipFreezes', 'membershipPlans', 'gyms'])
+      )
+    })
+
+    it('models every chain it scans, so an unparsed shape fails loudly', () => {
+      // A filter or ordering it cannot read must not be waved through as
+      // "needs no index": that is how a gap reaches production.
+      expect(functionReads.filter((read) => !read.modelled)).toEqual([])
+    })
+
+    it('treats a documentId ordering as needing no composite', () => {
+      // `orderBy(FieldPath.documentId())` is `__name__`, which every single-field
+      // index already carries, so it adds no index requirement.
+      const [read] = readsIn("db.collection('members').where('gymId', '==', gymId).orderBy(FieldPath.documentId())")
+      expect(read.orderBy).toBe('__name__')
+      expect(read.needsComposite).toBe(false)
+    })
+
+    it('needs no composite for equality-only reads', () => {
+      // Firestore serves multiple equality filters by merging single-field
+      // indexes, so no composite entry is required for this shape.
+      const [read] = readsIn(
+        "db.collection('memberships').where('memberId', '==', memberId).where('gymId', '==', gymId)"
+      )
+      expect(read.equalities).toEqual(['memberId', 'gymId'])
+      expect(read.needsComposite).toBe(false)
+    })
+
+    it('flags an ordering by a data field as a gap the index file must close', () => {
+      const [read] = readsIn("db.collection('members').where('gymId', '==', gymId).orderBy('dueDate')")
+      expect(read.needsComposite).toBe(true)
+      // And it really is a gap: no declared index has that shape.
+      expect(satisfies(read.collection, read.equalities, read.orderBy)).toBe(false)
+    })
+
+    it('skips writes, which never need an index', () => {
+      expect(readsIn("db.collection('auditLog').add({ gymId, at })")).toEqual([])
+    })
+
+    it.each(needingIndex)(
+      'declares an index for $collection ($equalitiesText ordered by $orderBy, from $source)',
+      (read) => {
+        expect(satisfies(read.collection, read.equalities, read.orderBy)).toBe(true)
+      }
+    )
   })
 })
