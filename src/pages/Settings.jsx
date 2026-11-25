@@ -5,7 +5,7 @@ import { Building2, Database, Dumbbell, Loader2, MessageCircle, ShieldCheck, Upl
 import { settingsFormSchema, ptSurchargeSchema } from '@/schemas/validationSchemas'
 import { useSettings, DEFAULT_SETTINGS } from '@/context/SettingsContext'
 import { useToast } from '@/context/ToastContext'
-import { uploadGymLogo, isStorageReady } from '@/services/storage'
+import { saveGymLogo } from '@/services/photoStore'
 import { getPtSurcharge, setPtSurcharge as persistPtSurcharge } from '@/services/pt'
 import { getWhatsAppLink, setWhatsAppLink } from '@/services/whatsappGroup'
 import { loadSampleData } from '@/services/seedService'
@@ -21,6 +21,7 @@ import { CURRENCIES, DATE_FORMATS } from '@/utils/constants'
 import { formatCurrency } from '@/utils/formatters'
 import { COMMON_GYM_TIMEZONES, resolveGymTimezone } from '@/utils/gymTime'
 import { useSecureImage } from '@/hooks/useSecureImage'
+import { useGymLogo } from '@/hooks/usePhotoStore'
 import { useAuth } from '@/context/AuthContext'
 import { IntegrityCard } from '@/components/settings/IntegrityCard'
 import { isFirebaseConfigured } from '@/firebase'
@@ -54,11 +55,12 @@ export default function Settings() {
   // storage.rules trusts. Branding writes are owner-only server-side, so the
   // gym id must be the caller's own gym and can never be supplied by the form.
   const gymId = useAuth()?.gymId ?? null
-  // The preview reads the stored object PATH, so the bytes are fetched with the
-  // signed-in user's credentials and re-checked against storage.rules on every
-  // render. settings.logoUrl is consulted only for documents written before the
-  // path field existed; once a path is present the URL is never the access path.
-  const { url: logoSrc } = useSecureImage(settings.logoPath, settings.logoUrl)
+  // Branding bytes live in gyms/{gymId}/settings/branding as a 320px thumbnail,
+  // so every render is authorised by firestore.rules and no public URL (or
+  // Storage download token) is ever minted. settings.logoPath / settings.logoUrl
+  // are legacy fallbacks for gyms configured before this store existed.
+  const { dataUrl: logoDataUrl, refresh: refreshLogo } = useGymLogo(gymId)
+  const { url: logoSrc } = useSecureImage(settings.logoPath, settings.logoUrl, logoDataUrl)
 
   const [saving, setSaving] = useState(false)
   const [uploading, setUploading] = useState(false)
@@ -191,39 +193,20 @@ export default function Settings() {
     }
   }
 
+  // One deterministic document per gym: re-uploading replaces it in place, so
+  // there is nothing to clean up if the write fails. Only a thumbnail is kept,
+  // which is why no download URL is minted or persisted.
   const handleLogo = async (e) => {
     const file = e.target.files?.[0]
     if (!file) return
-    if (!isStorageReady()) {
-      toast.error('Firebase Storage is not configured')
-      return
-    }
     if (!gymId) {
       toast.error('Your gym could not be resolved')
       return
     }
     setUploading(true)
     try {
-      // One deterministic object per gym (D2). Re-uploading replaces the logo in
-      // place, so there is no second object to clean up afterwards — which is
-      // precisely why this flow no longer deletes anything. The previous version
-      // minted a fresh `logo-${Date.now()}.${ext}` object on every upload and had
-      // to delete it again when the settings write failed, because it had
-      // stranded a file nothing could reach. storage.rules denies client deletes
-      // on branding, and no product flow needs one.
-      const { path } = await uploadGymLogo(gymId, file)
-      // Only the object PATH is persisted. A getDownloadURL() token is never
-      // stored: it bypasses storage.rules for anyone who holds it. logoPath is
-      // the durable identifier the preview and receipts read through
-      // useSecureImage, so every render is re-authorised.
-      //
-      // updateSettings reports its own failure and returns false rather than
-      // throwing, so its result has to be honoured. Ignoring it showed
-      // "Logo uploaded" next to the error it had just raised, telling the
-      // operator the new logo was live when the settings document still
-      // pointed at the old one.
-      const saved = await updateSettings({ logoPath: path })
-      if (!saved) return
+      await saveGymLogo(gymId, file)
+      refreshLogo()
       toast.success('Logo uploaded')
     } catch (err) {
       toast.error(err.message || 'Upload failed')
@@ -232,7 +215,6 @@ export default function Settings() {
       if (logoRef.current) logoRef.current.value = ''
     }
   }
-
   const handleSeed = async () => {
     setSeeding(true)
     try {

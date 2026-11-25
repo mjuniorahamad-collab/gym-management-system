@@ -450,6 +450,19 @@ service cloud.firestore {
     // affectedKeys", so a client cannot bypass the rule by writing a projection
     // field with the value it already has and only later changing it — the value
     // it must match is the server's, not a client's.
+    // True when members/{memberId} exists and belongs to the caller's gym.
+    //
+    // A photo document is keyed by member id, so the MEMBER document (not the
+    // photo document) is what proves an upload targets a real member of the
+    // caller's own gym. Without it, a stale or foreign member id would let a
+    // staff member park bytes on a record their gym cannot even see.
+    function photoMemberInGym(memberId) {
+      let ref = /databases/$(database)/documents/members/$(memberId);
+      return exists(ref)
+        && 'gymId' in get(ref).data
+        && get(ref).data.gymId == gymOf(request.auth.uid);
+    }
+
     function clientCannotWriteProjection() {
       return resource == null
         ? projectionFieldsAbsent()
@@ -465,6 +478,38 @@ service cloud.firestore {
                     && canWriteTenant(resource)
                     && clientCannotWriteProjection();
       allow delete: if (isRole('admin') || isOwner()) && canDeleteTenant(resource);
+    }
+
+    // ---------- Member photos (base64 thumbnails) -------------------------
+    // Photos are small base64 thumbnails in their OWN documents, keyed by
+    // member id, because Cloud Storage for Firebase needs a billing plan this
+    // project does not have. Keeping them out of the member document means a
+    // member list never pays for photo bytes. 320px is the largest avatar the
+    // UI renders (xl = 128px), so nothing larger is stored.
+    //
+    // Read:   same-gym staff (members.view is all four staff roles).
+    // Write:  owner, admin, front-desk - the same set storage.rules granted
+    //         canWriteMembers(). A trainer cannot replace a member's photo.
+    // Delete: owner/admin only; no product flow deletes a photo today.
+    //
+    // The 300 KB cap lives HERE, not only in the client: rules are the
+    // boundary and a document is limited to 1 MiB regardless. size() counts
+    // characters and base64 is ASCII, so characters are bytes.
+    match /memberPhotos/{memberId} {
+      allow read: if isStaff() && sameGym(resource) && photoMemberInGym(memberId);
+
+      allow create, update: if (isOwner() || isRole('admin') || isRole('front-desk'))
+                             && canWriteTenant(resource)
+                             && photoMemberInGym(memberId)
+                             && request.resource.data.keys().hasOnly([
+                                  'gymId', 'data', 'contentType', 'width', 'height',
+                                  'updatedAt', 'updatedBy'
+                                ])
+                             && request.resource.data.data is string
+                             && request.resource.data.data.size() < 300 * 1024
+                             && request.resource.data.contentType in ['image/webp', 'image/jpeg'];
+
+      allow delete: if (isOwner() || isRole('admin')) && canDeleteTenant(resource);
     }
 
     // ---------- Weight records (member fitness progress) -------------------

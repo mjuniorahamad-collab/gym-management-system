@@ -28,11 +28,20 @@ import { readObjectUrl } from '@/services/storage'
  * Blob URLs are revoked on unmount and whenever the path changes, otherwise the
  * image bytes stay resident for the lifetime of the document.
  */
-export function useSecureImage(path, legacyUrl) {
+export function useSecureImage(path, legacyUrl, dataUrl) {
   const [state, setState] = useState({ url: null, loading: false, error: null })
 
   useEffect(() => {
     const target = typeof path === 'string' ? path.trim() : ''
+    // Bytes already in hand (a Firestore thumbnail) win over any path: there is
+    // nothing to fetch, and the rules that returned them were applied by the
+    // query that produced them.
+    const inline = typeof dataUrl === 'string' ? dataUrl.trim() : ''
+
+    if (inline) {
+      setState({ url: inline, loading: false, error: null })
+      return
+    }
 
     if (!target) {
       // No path: pre-3B document. Show what we have and claim nothing more.
@@ -68,7 +77,7 @@ export function useSecureImage(path, legacyUrl) {
       cancelled = true
       if (objectUrl) URL.revokeObjectURL(objectUrl)
     }
-  }, [path, legacyUrl])
+  }, [path, legacyUrl, dataUrl])
 
   return state
 }

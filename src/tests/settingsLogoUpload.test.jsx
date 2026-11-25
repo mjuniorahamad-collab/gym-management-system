@@ -1,18 +1,31 @@
-import { describe, beforeEach, expect, it, vi } from 'vitest'
+/**
+ * GYM LOGO UPLOAD (Firestore store)
+ *
+ * The logo is a 320px thumbnail in `gyms/{gymId}/settings/branding`, one
+ * deterministic document per gym. The behaviours worth pinning are the ones a
+ * user cannot see failing:
+ *
+ *   - the gym comes from the signed-in profile, never from the file
+ *   - success is only claimed when the write actually resolved
+ *   - a failed write claims nothing
+ *   - re-uploading targets the SAME document, so nothing is stranded
+ */
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import Settings from '@/pages/Settings'
 
-const { mocks, settingsValue, toastValue, authValue, GYM_ID } = vi.hoisted(() => {
+const { mocks, settingsValue, toastValue, authValue, GYM_ID, logoState } = vi.hoisted(() => {
   const GYM_ID = 'gym-alpha'
   return {
     GYM_ID,
+    logoState: { dataUrl: null, loading: false, error: null, refresh: vi.fn() },
     mocks: {
       getPtSurcharge: vi.fn(),
       setPtSurcharge: vi.fn(),
       getWhatsAppLink: vi.fn(),
       setWhatsAppLink: vi.fn(),
-      uploadGymLogo: vi.fn(),
+      saveGymLogo: vi.fn(),
       readObjectUrl: vi.fn(),
       loadSampleData: vi.fn(),
       ensureOriginPeriods: vi.fn(),
@@ -45,15 +58,18 @@ vi.mock('@/services/whatsappGroup', () => ({
   setWhatsAppLink: mocks.setWhatsAppLink,
 }))
 
-// The page now uploads through uploadGymLogo(gymId, file), which owns the
-// deterministic path. There is deliberately no deleteFile export any more:
-// client Storage deletes are denied by storage.rules and the deterministic
-// path removes the orphan they used to clean up.
-vi.mock('@/services/storage', () => ({
-  uploadGymLogo: mocks.uploadGymLogo,
-  readObjectUrl: mocks.readObjectUrl,
-  isStorageReady: () => true,
+// The page writes the logo through saveGymLogo(gymId, file), which owns the
+// resize and the deterministic document. There is deliberately no delete export:
+// one document per gym means a failed write strands nothing.
+vi.mock('@/services/photoStore', () => ({ saveGymLogo: mocks.saveGymLogo }))
+
+vi.mock('@/hooks/usePhotoStore', () => ({
+  useGymLogo: () => logoState,
 }))
+
+// useSecureImage still resolves legacy object paths for documents written
+// before the Firestore store existed.
+vi.mock('@/services/storage', () => ({ readObjectUrl: mocks.readObjectUrl }))
 
 vi.mock('@/services/seedService', () => ({ loadSampleData: mocks.loadSampleData }))
 vi.mock('@/services/migration', () => ({ ensureOriginPeriods: mocks.ensureOriginPeriods }))
@@ -81,8 +97,6 @@ const logoInput = (container) => container.querySelector('input[type="file"]')
 const pickLogo = (container, name = 'logo.png') =>
   userEvent.upload(logoInput(container), new File(['x'], name, { type: 'image/png' }))
 
-const LOGO_PATH = `gyms/${GYM_ID}/branding/logo.png`
-
 describe('Settings logo upload', () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -90,119 +104,100 @@ describe('Settings logo upload', () => {
     mocks.getPtSurcharge.mockResolvedValue(1000)
     mocks.loadSampleData.mockResolvedValue(undefined)
     mocks.ensureOriginPeriods.mockResolvedValue(undefined)
+    mocks.readObjectUrl.mockResolvedValue('blob:logo')
+    logoState.dataUrl = null
     authValue.gymId = GYM_ID
   })
 
-  it('reports success and keeps the object when the settings write succeeds', async () => {
-    mocks.uploadGymLogo.mockResolvedValue({ path: LOGO_PATH })
-    settingsValue.updateSettings.mockResolvedValue(true)
+  it('saves under the authenticated gym and reports success', async () => {
+    mocks.saveGymLogo.mockResolvedValue({ dataUrl: 'data:image/webp;base64,AAAA' })
 
     const { container } = render(<Settings />)
     await waitFor(() => expect(logoInput(container)).toBeTruthy())
 
     await pickLogo(container)
 
-    // Only the object PATH is stored. A getDownloadURL() token is never
-    // persisted: it would bypass storage.rules for anyone who obtained it.
-    await waitFor(() => expect(settingsValue.updateSettings).toHaveBeenCalledWith({
-      logoPath: LOGO_PATH,
-    }))
-    const written = settingsValue.updateSettings.mock.calls[0][0]
-    expect(written.logoUrl).toBeUndefined()
+    await waitFor(() => expect(mocks.saveGymLogo).toHaveBeenCalled())
+    const [gymIdArg, fileArg] = mocks.saveGymLogo.mock.calls[0]
+    expect(gymIdArg).toBe(GYM_ID)
+    expect(fileArg).toBeInstanceOf(File)
     await waitFor(() => expect(toastValue.success).toHaveBeenCalledWith('Logo uploaded'))
+    // The preview must not wait for the next settings read.
+    expect(logoState.refresh).toHaveBeenCalled()
   })
 
-  // updateSettings raises its own error toast and returns false rather than
-  // throwing. The page ignored the boolean, so a failed save showed "Logo
-  // uploaded" immediately after the error, and the settings document kept the
-  // old logo while the operator believed the new one was live.
-  it('does not claim success when the settings write fails', async () => {
-    mocks.uploadGymLogo.mockResolvedValue({ path: LOGO_PATH })
-    settingsValue.updateSettings.mockResolvedValue(false)
+  // The settings document used to carry a logoPath. That field is dead for new
+  // uploads: the branding document is keyed by gym, so nothing about the logo is
+  // written into settings and a failed settings save cannot point at a stale
+  // object.
+  it('does not write anything into the settings document', async () => {
+    mocks.saveGymLogo.mockResolvedValue({ dataUrl: 'data:image/webp;base64,AAAA' })
 
     const { container } = render(<Settings />)
     await waitFor(() => expect(logoInput(container)).toBeTruthy())
 
     await pickLogo(container)
 
-    await waitFor(() => expect(settingsValue.updateSettings).toHaveBeenCalled())
-    expect(toastValue.success).not.toHaveBeenCalledWith('Logo uploaded')
-  })
-
-// PHASE 3B — the old behaviour minted `logo-${Date.now()}.${ext}` and deleted
-  // the stranded object when the settings write failed. The gym now owns exactly
-  // one deterministic branding object, so a failed settings write leaves no
-  // orphan and there is nothing to delete. Re-uploading twice must resolve to the
-  // SAME object: that is the property which makes orphan growth impossible, and it
-  // is what removed the need for a client-side cleanup delete.
-  it('reuses one object path across uploads, so a failed settings write strands nothing', async () => {
-    mocks.uploadGymLogo.mockResolvedValue({ path: LOGO_PATH })
-    settingsValue.updateSettings.mockResolvedValue(false)
-
-    const { container } = render(<Settings />)
-    await waitFor(() => expect(logoInput(container)).toBeTruthy())
-
-    await pickLogo(container)
-    await waitFor(() => expect(mocks.uploadGymLogo).toHaveBeenCalledTimes(1))
-    await pickLogo(container)
-    await waitFor(() => expect(mocks.uploadGymLogo).toHaveBeenCalledTimes(2))
-
-    const gymIds = mocks.uploadGymLogo.mock.calls.map((c) => c[0])
-    expect(gymIds).toEqual([GYM_ID, GYM_ID])
-    // Every attempt targets the gym's single branding object.
-    expect(LOGO_PATH).toBe(`gyms/${GYM_ID}/branding/logo.png`)
-    expect(settingsValue.updateSettings).toHaveBeenCalledTimes(2)
-    expect(toastValue.success).not.toHaveBeenCalledWith('Logo uploaded')
+    await waitFor(() => expect(toastValue.success).toHaveBeenCalledWith('Logo uploaded'))
+    expect(settingsValue.updateSettings).not.toHaveBeenCalled()
   })
 
   it('surfaces a real upload failure and never reports success', async () => {
-    mocks.uploadGymLogo.mockRejectedValue(new Error('storage/unauthorized'))
+    mocks.saveGymLogo.mockRejectedValue(new Error('permission-denied'))
 
     const { container } = render(<Settings />)
     await waitFor(() => expect(logoInput(container)).toBeTruthy())
 
     await pickLogo(container)
 
-    await waitFor(() => expect(toastValue.error).toHaveBeenCalledWith('storage/unauthorized'))
-    expect(settingsValue.updateSettings).not.toHaveBeenCalled()
+    await waitFor(() => expect(toastValue.error).toHaveBeenCalledWith('permission-denied'))
     expect(toastValue.success).not.toHaveBeenCalled()
   })
 
-  // The gym must come from the trusted signed-in profile, never from the file.
-  it('uploads under the gym-scoped branding path storage.rules matches', async () => {
-    mocks.uploadGymLogo.mockResolvedValue({ path: LOGO_PATH })
-    settingsValue.updateSettings.mockResolvedValue(true)
-
-    const { container } = render(<Settings />)
-    await waitFor(() => expect(logoInput(container)).toBeTruthy())
-
-    await pickLogo(container)
-
-    await waitFor(() => expect(mocks.uploadGymLogo).toHaveBeenCalled())
-    const [gymIdArg, fileArg] = mocks.uploadGymLogo.mock.calls[0]
-    // The gym id is taken from the authenticated profile, and the file is passed
-    // through untouched so the service can derive the path.
-    expect(gymIdArg).toBe(GYM_ID)
-    expect(fileArg).toBeInstanceOf(File)
-    // The object name is the deterministic constant, not the user's filename.
-    expect(LOGO_PATH).toBe(`gyms/${GYM_ID}/branding/logo.png`)
-    expect(LOGO_PATH).not.toContain(Date.now().toString())
-  })
-
-  // A gym with no resolved identity must fail before any Storage call rather
-  // than building an unscoped path.
+  // A gym with no resolved identity must fail before any write rather than
+  // building a document under an unscoped id.
   it('refuses to upload when no gym identity is resolved', async () => {
     authValue.gymId = null
-    mocks.uploadGymLogo.mockResolvedValue({ path: LOGO_PATH })
-    settingsValue.updateSettings.mockResolvedValue(true)
 
     const { container } = render(<Settings />)
     await waitFor(() => expect(logoInput(container)).toBeTruthy())
 
     await pickLogo(container)
 
-    await waitFor(() => expect(toastValue.error).toHaveBeenCalledWith('Your gym could not be resolved'))
-    expect(mocks.uploadGymLogo).not.toHaveBeenCalled()
-    expect(settingsValue.updateSettings).not.toHaveBeenCalled()
+    await waitFor(() =>
+      expect(toastValue.error).toHaveBeenCalledWith('Your gym could not be resolved')
+    )
+    expect(mocks.saveGymLogo).not.toHaveBeenCalled()
+  })
+
+  // One document per gym: the second upload targets the same place, which is what
+  // makes orphan growth impossible and removes any need for a cleanup delete
+  // after a failure.
+  it('reuses one branding document across uploads', async () => {
+    mocks.saveGymLogo.mockResolvedValue({ dataUrl: 'data:image/webp;base64,AAAA' })
+
+    const { container } = render(<Settings />)
+    await waitFor(() => expect(logoInput(container)).toBeTruthy())
+
+    await pickLogo(container)
+    await waitFor(() => expect(mocks.saveGymLogo).toHaveBeenCalledTimes(1))
+    await pickLogo(container)
+    await waitFor(() => expect(mocks.saveGymLogo).toHaveBeenCalledTimes(2))
+
+    const gymIds = mocks.saveGymLogo.mock.calls.map((call) => call[0])
+    expect(gymIds).toEqual([GYM_ID, GYM_ID])
+  })
+
+  // The logo is read from the branding document, so a receipt and the settings
+  // preview cannot disagree about which logo is live.
+  it('renders the stored branding thumbnail when one is loaded', async () => {
+    logoState.dataUrl = 'data:image/webp;base64,STORED'
+
+    const { container } = render(<Settings />)
+    await waitFor(() => expect(logoInput(container)).toBeTruthy())
+
+    const image = container.querySelector('img[alt="Gym logo"]')
+    expect(image?.getAttribute('src')).toBe('data:image/webp;base64,STORED')
+    expect(mocks.readObjectUrl).not.toHaveBeenCalled()
   })
 })

@@ -2,9 +2,11 @@ import { useRef, useState } from 'react'
 import { Camera, Loader2 } from 'lucide-react'
 import clsx from 'clsx'
 import { initials } from '@/utils/formatters'
-import { uploadMemberPhoto } from '@/services/storage'
+import { saveMemberPhoto } from '@/services/photoStore'
+import { useMemberPhoto } from '@/hooks/usePhotoStore'
 import { useSecureImage } from '@/hooks/useSecureImage'
 import { useAuth } from '@/context/AuthContext'
+import { useToast } from '@/context/ToastContext'
 
 const SIZES = {
   sm: 'h-9 w-9 text-xs',
@@ -15,10 +17,17 @@ const SIZES = {
 
 export function MemberPhoto({ member, size = 'md', editable = false, onUpload }) {
   const [uploading, setUploading] = useState(false)
+  // The bytes returned by the upload itself, so the new photo is visible before
+  // the re-read lands. Tagged with the member they belong to and compared at
+  // RENDER time, not reset in an effect: a list reuses this component for
+  // whichever row sits in that position, so an untagged value renders the
+  // previous member's face under the next member's name for at least one frame
+  // (and forever if the row never re-mounts).
+  const [localPhoto, setLocalPhoto] = useState(null)
   const inputRef = useRef(null)
 
   // The gym identity comes from the signed-in users/{uid} profile, which is the
-  // same source storage.rules trusts. It is never taken from the member
+  // same source firestore.rules trusts. It is never taken from the member
   // document, the route, or any other client-controlled value, and a caller
   // cannot override it by passing a prop.
   //
@@ -26,29 +35,41 @@ export function MemberPhoto({ member, size = 'md', editable = false, onUpload })
   // tests render this in isolation), so the optional chain keeps rendering
   // working; only an actual upload needs the identity, and it fails loudly.
   const gymId = useAuth()?.gymId ?? null
+  const toast = useToast()
+
+  const { dataUrl: storedUrl } = useMemberPhoto(member?.id)
 
   const handleFile = async (e) => {
     const file = e.target.files?.[0]
     if (!file || !member?.id) return
     setUploading(true)
     try {
-      // The upload returns a PATH, not a URL. No download token is minted, so
-      // nothing is written to the member document that would outlive this
-      // user's access.
-      const { path } = await uploadMemberPhoto(gymId, member.id, file)
-      onUpload?.({ path })
+      // The bytes are resized to a 320px thumbnail and written to
+      // memberPhotos/{memberId}. No public URL and no download token is minted,
+      // so nothing is persisted that would outlive this user's access.
+      const { dataUrl } = await saveMemberPhoto(gymId, member.id, file)
+      setLocalPhoto({ memberId: member.id, dataUrl })
+      onUpload?.({ dataUrl })
     } catch (err) {
-      console.error('Upload failed', err)
+      // Previously swallowed into console.error, which left the operator
+      // clicking a button that silently did nothing.
+      console.error('Photo upload failed', err)
+      toast.error(err?.message || 'Could not upload photo')
     } finally {
       setUploading(false)
       if (inputRef.current) inputRef.current.value = ''
     }
   }
 
-  // Photos are read from the stored path, so every render is checked against
-  // storage.rules. `member.photoUrl` is only consulted for documents that predate
-  // the path field; once a path exists it is never used as the access mechanism.
-  const { url: photoSrc, loading: photoLoading } = useSecureImage(member?.photoPath, member?.photoUrl)
+  // Priority: bytes from the upload in flight → stored thumbnail → a direct
+  // Storage path (documents written when Cloud Storage was still intended) →
+  // a legacy stored URL. Nothing is fetched when the bytes are already here.
+  const localPhotoUrl = localPhoto?.memberId === member?.id ? localPhoto.dataUrl : null
+  const { url: photoSrc, loading: photoLoading } = useSecureImage(
+    member?.photoPath,
+    member?.photoUrl,
+    localPhotoUrl || storedUrl
+  )
 
   return (
     <div className="relative inline-block">
