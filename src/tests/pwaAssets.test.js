@@ -86,6 +86,11 @@ describe('service worker', () => {
   it('is registered only in the production build', () => {
     const main = read('src/main.jsx')
     expect(main).toContain('import.meta.env.PROD')
-    expect(main).toContain("serviceWorker.register('/sw.js')")
+    expect(main).toMatch(/serviceWorker\s*\n?\s*\.register\('\/sw\.js'\)/)
+  })
+
+  it('hands the registration to the update watcher', () => {
+    const main = read('src/main.jsx')
+    expect(main).toContain('pwaUpdates.register(registration)')
   })
 })

@@ -2,6 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App.jsx'
 import './index.css'
+import { pwaUpdates } from '@/utils/pwaUpdates'
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
@@ -17,6 +18,11 @@ ReactDOM.createRoot(document.getElementById('root')).render(
 // web app, so a broken register call must never surface to the user.
 if (import.meta.env.PROD && 'serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    navigator.serviceWorker.register('/sw.js').catch(() => undefined)
+    navigator.serviceWorker
+      .register('/sw.js')
+      // A waiting worker becomes the "new version available" prompt; see
+      // src/components/common/PwaUpdatePrompt.jsx.
+      .then((registration) => pwaUpdates.register(registration))
+      .catch(() => undefined)
   })
 }

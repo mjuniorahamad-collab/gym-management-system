@@ -9,6 +9,7 @@ import { ProtectedRoute } from '@/components/layout/ProtectedRoute'
 import { RoleGuard } from '@/components/layout/RoleGuard'
 import { Layout } from '@/components/layout/Layout'
 import { Spinner } from '@/components/ui/Spinner'
+import { PwaUpdatePrompt } from '@/components/common/PwaUpdatePrompt'
 
 const Login = lazy(() => import('@/pages/Login'))
 const Dashboard = lazy(() => import('@/pages/Dashboard'))
@@ -116,6 +117,7 @@ export default function App() {
                     <Route path="*" element={<NotFound />} />
                   </Routes>
                 </Suspense>
+                <PwaUpdatePrompt />
               </BrowserRouter>
             </SettingsProvider>
           </AuthProvider>
