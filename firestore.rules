@@ -492,11 +492,25 @@ service cloud.firestore {
     //         canWriteMembers(). A trainer cannot replace a member's photo.
     // Delete: owner/admin only; no product flow deletes a photo today.
     //
+    // READS DO NOT TOUCH THE MEMBER DOCUMENT. The photo document carries its own
+    // gymId, written by the client from the signed-in profile and checked against
+    // it on every write, so `sameGym(resource)` is the whole tenancy question for
+    // a read. Asking `photoMemberInGym()` here meant that every avatar read also
+    // performed an exists() + get() on members/{memberId} inside the rules — two
+    // document accesses per photo on a page that renders twenty of them, for an
+    // answer the photo document already contains.
+    //
+    // The member-existence proof is a WRITE-time concern and stays on create
+    // and update: it is what stops staff parking bytes on a member id they cannot
+    // see. One consequence is accepted on purpose: a photo whose member is later
+    // deleted remains readable to same-gym staff (its gymId is still theirs) until
+    // the photo document is removed, instead of silently becoming unreadable.
+    //
     // The 300 KB cap lives HERE, not only in the client: rules are the
     // boundary and a document is limited to 1 MiB regardless. size() counts
     // characters and base64 is ASCII, so characters are bytes.
     match /memberPhotos/{memberId} {
-      allow read: if isStaff() && sameGym(resource) && photoMemberInGym(memberId);
+      allow read: if isStaff() && sameGym(resource);
 
       allow create, update: if (isOwner() || isRole('admin') || isRole('front-desk'))
                              && canWriteTenant(resource)
