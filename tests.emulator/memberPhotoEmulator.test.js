@@ -23,7 +23,7 @@ import {
   assertSucceeds,
   initializeTestEnvironment,
 } from '@firebase/rules-unit-testing'
-import { deleteDoc, doc, getDoc, serverTimestamp, setDoc, writeBatch } from 'firebase/firestore'
+import { deleteDoc, doc, getDoc, serverTimestamp, setDoc, updateDoc, writeBatch } from 'firebase/firestore'
 
 const PROJECT_ID = 'demo-himalye-gym'
 const emulatorHost = process.env.FIRESTORE_EMULATOR_HOST || '127.0.0.1:8080'
@@ -181,6 +181,53 @@ describe('memberPhotos rules', () => {
     const stored = await assertSucceeds(getDoc(doc(fs, 'members', MEMBER_A)))
     expect(stored.data().hasPhoto).toBe(true)
     expect(stored.data().gymId).toBe(GYM_A)
+  })
+
+  // The flag lives on the member document, so a member write that REPLACED the
+  // document would silently erase it and every list would stop showing avatars.
+  // Every member write in the app is a partial update (src/services/firestore.js
+  // -> updateDoc), and this pins what that buys: the form-shaped edit that
+  // Members.jsx / MemberDetail.jsx send leaves the flag alone.
+  it('a member edit keeps the photo flag', async () => {
+    const fs = client(DESK_A)
+    const upload = writeBatch(fs)
+    upload.set(photoDoc(fs, MEMBER_A), photoPayload(GYM_A))
+    upload.update(doc(fs, 'members', MEMBER_A), {
+      hasPhoto: true,
+      photoUpdatedAt: serverTimestamp(),
+    })
+    await assertSucceeds(upload.commit())
+
+    await assertSucceeds(
+      updateDoc(doc(fs, 'members', MEMBER_A), {
+        name: 'Member A renamed',
+        phone: '9800000000',
+        searchName: 'member a renamed',
+        updatedAt: serverTimestamp(),
+      })
+    )
+
+    const after = await assertSucceeds(getDoc(doc(fs, 'members', MEMBER_A)))
+    expect(after.data().hasPhoto).toBe(true)
+    expect(after.data().name).toBe('Member A renamed')
+  })
+
+  // Negative control for the test above: a full overwrite really does drop the
+  // flag, so that assertion is not vacuous — the app's partial update is the
+  // reason avatars survive an edit.
+  it('a full overwrite would drop the photo flag', async () => {
+    const fs = client(OWNER_A)
+    const upload = writeBatch(fs)
+    upload.set(photoDoc(fs, MEMBER_A3), photoPayload(GYM_A))
+    upload.update(doc(fs, 'members', MEMBER_A3), { hasPhoto: true })
+    await assertSucceeds(upload.commit())
+
+    await assertSucceeds(
+      setDoc(doc(fs, 'members', MEMBER_A3), { gymId: GYM_A, name: 'Member A3' })
+    )
+
+    const after = await assertSucceeds(getDoc(doc(fs, 'members', MEMBER_A3)))
+    expect(after.data().hasPhoto).toBeUndefined()
   })
 
   // A role that may not write members cannot use the flag as a side channel, and
