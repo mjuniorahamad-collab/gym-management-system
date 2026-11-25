@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { toCsv } from '@/services/export'
+import { duesExportRows, exportFileName, toCsv } from '@/services/export'
 
 /**
  * Decodes the FIRST data cell of a CSV the way a spreadsheet would, so the
@@ -91,5 +91,60 @@ describe('toCsv spreadsheet formula injection', () => {
   it('returns an empty string when there is nothing to export', () => {
     expect(toCsv([])).toBe('')
     expect(toCsv(null)).toBe('')
+  })
+})
+
+describe('accountant export', () => {
+  it('names a ranged file after the range, so monthly files stay apart', () => {
+    expect(exportFileName('payments', '2026-03-01', '2026-03-31')).toBe(
+      'payments-2026-03-01_to_2026-03-31.csv'
+    )
+    expect(exportFileName('expenses', '2026-04-01', '2026-04-30')).toBe(
+      'expenses-2026-04-01_to_2026-04-30.csv'
+    )
+  })
+
+  it('falls back to today for an unranged (whole-history) export', () => {
+    const today = new Date().toISOString().slice(0, 10)
+    expect(exportFileName('dues')).toBe(`dues-${today}.csv`)
+  })
+
+  /**
+   * The dues export copies the ledger's own figures. Recomputing them here
+   * would let the CSV disagree with the dashboard; this asserts the columns
+   * are a straight projection, including the oldest open period as "pending
+   * since".
+   */
+  it('maps dues rows from the canonical ledger without recomputing', () => {
+    const rows = duesExportRows([
+      {
+        member: { name: 'Ayesha Khan', memberNo: 'MEM-0001', phone: '9800000001' },
+        plan: { name: '3 Months' },
+        planAmount: 5000,
+        totalPaid: 3000,
+        dueAmount: 2000,
+        periods: [
+          { startDate: new Date('2026-02-01T12:00:00'), due: 2000 },
+          { startDate: new Date('2026-05-01T12:00:00'), due: 0 },
+        ],
+      },
+    ])
+
+    expect(rows[0]).toMatchObject({
+      Member: 'Ayesha Khan',
+      MemberNo: 'MEM-0001',
+      Phone: '9800000001',
+      Plan: '3 Months',
+      Billed: 5000,
+      Paid: 3000,
+      Due: 2000,
+    })
+    expect(rows[0].OldestOpenPeriod).toContain('2026')
+  })
+
+  it('produces an empty table for no dues and tolerates a sparse row', () => {
+    expect(duesExportRows([])).toEqual([])
+    const [row] = duesExportRows([{ dueAmount: 500 }])
+    expect(row).toMatchObject({ Member: '', MemberNo: '', Plan: '', Due: 500 })
   })
 })

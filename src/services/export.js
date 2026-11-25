@@ -62,7 +62,22 @@ export function exportMembersToCsv(members, _settings) {
   return downloadCsv(`members-${new Date().toISOString().slice(0, 10)}.csv`, rows)
 }
 
-export function exportPaymentsToCsv(payments, _settings) {
+/**
+ * Filename for an export.
+ *
+ * When a report range is supplied the range is part of the name
+ * (`payments-2026-03-01_to_2026-03-31.csv`), so an accountant holding three
+ * monthly files can tell them apart without opening each one. Without a range
+ * the export is "everything as of today", which keeps the existing buttons
+ * unchanged.
+ */
+export function exportFileName(kind, from, to) {
+  const stamp =
+    from && to ? `${from}_to_${to}` : new Date().toISOString().slice(0, 10)
+  return `${kind}-${stamp}.csv`
+}
+
+export function exportPaymentsToCsv(payments, _settings, options = {}) {
   const rows = payments.map((p) => ({
     Member: p.memberName || p.memberId || '',
     Amount: p.amount,
@@ -71,10 +86,10 @@ export function exportPaymentsToCsv(payments, _settings) {
     Date: formatDate(p.date),
     Note: p.note || '',
   }))
-  return downloadCsv(`payments-${new Date().toISOString().slice(0, 10)}.csv`, rows)
+  return downloadCsv(exportFileName('payments', options.from, options.to), rows)
 }
 
-export function exportExpensesToCsv(expenses) {
+export function exportExpensesToCsv(expenses, options = {}) {
   const rows = expenses.map((e) => ({
     Title: e.title,
     Category: e.category,
@@ -82,5 +97,35 @@ export function exportExpensesToCsv(expenses) {
     Date: formatDate(e.date),
     Note: e.note || '',
   }))
-  return downloadCsv(`expenses-${new Date().toISOString().slice(0, 10)}.csv`, rows)
+  return downloadCsv(exportFileName('expenses', options.from, options.to), rows)
+}
+
+/**
+ * Outstanding dues as an accountant-readable table.
+ *
+ * One row per member with a remaining balance. The ledger's own figures are
+ * copied, never recomputed here: `Billed`/`Paid`/`Due` come from
+ * computeOutstandingDues, the same engine the dashboard and member page use.
+ * `OldestOpenPeriod` is the start of the oldest unpaid period — that is the
+ * date a "pending since" column in a paper khata meant. No GST columns: the app
+ * does not issue tax invoices.
+ */
+export function duesExportRows(rows = []) {
+  return rows.map((r) => ({
+    Member: r.member?.name || '',
+    MemberNo: r.member?.memberNo || '',
+    Phone: r.member?.phone || '',
+    Plan: r.plan?.name || '',
+    Billed: r.planAmount,
+    Paid: r.totalPaid,
+    Due: r.dueAmount,
+    OldestOpenPeriod: formatDate(r.periods?.[0]?.startDate),
+  }))
+}
+
+export function exportDuesToCsv(rows, _settings, options = {}) {
+  return downloadCsv(
+    exportFileName('dues', options.from, options.to),
+    duesExportRows(rows)
+  )
 }

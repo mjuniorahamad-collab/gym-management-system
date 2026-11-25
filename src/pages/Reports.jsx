@@ -20,6 +20,7 @@ import { addDaysToKey, resolveGymTimezone } from '@/utils/gymTime'
 import {
   averageDailyCheckIns,
   defaultReportRange,
+  inRange,
   expensesByCategory,
   monthlyCashFlow,
   monthlyNewMembers,
@@ -130,6 +131,18 @@ export default function Reports() {
     [attendance.items, range, tz]
   )
 
+  // Accountant export: the money records for exactly the selected range. The
+  // header buttons above still export the whole history; these are what an
+  // accountant asks for ("March ka hisaab").
+  const paymentsInRange = useMemo(
+    () => payments.items.filter((p) => inRange(p.date, range, tz)),
+    [payments.items, range, tz]
+  )
+  const expensesInRange = useMemo(
+    () => expenses.items.filter((e) => inRange(e.date, range, tz)),
+    [expenses.items, range, tz]
+  )
+
   const maxPlanValue = Math.max(...planRevenue.map((p) => p.value), 1)
   const dayCount = rangeDayCount(range)
   const rangeLabel = range ? `${range.from} to ${range.to}` : ''
@@ -234,6 +247,28 @@ export default function Reports() {
               {rangeError}
             </p>
           ) : null}
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader
+          title="Accountant export"
+          subtitle={`CSV for the selected range${
+            rangeLabel ? ` (${rangeLabel})` : ''
+          } — only payments and expenses inside it. Outstanding dues are exported from the dashboard's dues card.`}
+        />
+        <CardBody className="flex flex-wrap items-center gap-3">
+          <CSVExportButton
+            label="Payments in range"
+            onExport={() => exportPaymentsToCsv(paymentsInRange, settings, range)}
+          />
+          <CSVExportButton
+            label="Expenses in range"
+            onExport={() => exportExpensesToCsv(expensesInRange, range)}
+          />
+          <p className="text-xs text-slate-400 dark:text-slate-500">
+            Opens in Excel or Google Sheets. No GST columns — the app does not issue tax invoices.
+          </p>
         </CardBody>
       </Card>
 
