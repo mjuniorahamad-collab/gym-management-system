@@ -26,7 +26,7 @@ function ReceiptContent({ payment, member, plan, settings, summary, receiptNo, l
           <img
             src={logoSrc}
             alt="logo"
-            className="mx-auto mb-2 h-12 w-12 rounded-lg bg-white object-contain p-0.5 ring-1 ring-slate-200"
+            className="mx-auto mb-2 h-12 w-20 rounded-lg bg-white object-contain p-0.5 ring-1 ring-slate-200"
           />
         )}
         <h3 className="text-base font-bold text-slate-900 dark:text-slate-100">
