@@ -17,8 +17,41 @@
  *   no EXIF handling (the canvas drops metadata), no dependency.
  */
 
-/** Formats a browser can decode AND that the storage rules allow. */
-export const ALLOWED_SOURCE_TYPES = ['image/jpeg', 'image/png', 'image/webp']
+/**
+ * Formats we will ATTEMPT to decode. Everything that survives decoding is
+ * re-encoded to WebP/JPEG on a canvas, so this list is about what the picker may
+ * hand us, not about what gets stored (`image/heic` never reaches Firestore).
+ *
+ * HEIC/HEIF are here because the iPhone camera roll serves them: Safari decodes
+ * them and the canvas converts them to JPEG, which is the whole point. Browsers
+ * that cannot decode HEIC (Chrome, Firefox) still pass this gate and fail in
+ * `decode` with an instruction the operator can act on, instead of "unsupported
+ * image type" for a file the phone itself produced.
+ */
+export const ALLOWED_SOURCE_TYPES = [
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/heic',
+  'image/heif',
+]
+
+const HEIC_SOURCE_TYPES = ['image/heic', 'image/heif']
+
+/**
+ * True for a HEIC/HEIF upload. The extension is checked as well as the type:
+ * iOS and the Files app occasionally hand over a HEIC with an empty or generic
+ * MIME type, and a `.HEIC` name is the only remaining evidence.
+ */
+function isHeicSource(file) {
+  const type = String(file?.type || '').toLowerCase()
+  const name = String(file?.name || '').toLowerCase()
+  return HEIC_SOURCE_TYPES.includes(type) || /\.hei[cf]$/.test(name)
+}
+
+/** What to tell someone whose browser cannot open the iPhone's own format. */
+export const HEIC_DECODE_MESSAGE =
+  'This iPhone photo is in HEIC, which this browser cannot convert. Change Camera → Formats to "Most Compatible", or export/pick a JPG.'
 
 /** Refuse a source file this large before decoding it in memory. */
 export const MAX_SOURCE_BYTES = 10 * 1024 * 1024
@@ -39,7 +72,12 @@ export const THUMBNAIL_QUALITY = 0.75
  */
 export function validateSourceFile(file) {
   if (!file) return 'No file selected'
-  if (!ALLOWED_SOURCE_TYPES.includes(file.type)) {
+  // iOS sometimes hands over a HEIC with no MIME type (or the generic one), and
+  // the `.HEIC` name is the only evidence left. Accepting it here is not a
+  // loophole: `decode` still refuses a file it cannot actually read.
+  const genericType = !file.type || file.type === 'application/octet-stream'
+  const heicByName = genericType && isHeicSource(file)
+  if (!ALLOWED_SOURCE_TYPES.includes(file.type) && !heicByName) {
     return `Unsupported image type. Use ${ALLOWED_SOURCE_TYPES.join(', ')}`
   }
   if (file.size > MAX_SOURCE_BYTES) {
@@ -78,7 +116,8 @@ async function decode(file) {
     return await new Promise((resolve, reject) => {
       const image = new Image()
       image.onload = () => resolve(image)
-      image.onerror = () => reject(new Error('That image could not be read'))
+      image.onerror = () =>
+        reject(new Error(isHeicSource(file) ? HEIC_DECODE_MESSAGE : 'That image could not be read'))
       image.src = objectUrl
     })
   } finally {

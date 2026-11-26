@@ -121,6 +121,65 @@ describe('makeThumbnail', () => {
   })
 })
 
+// The iPhone camera roll serves HEIC. Safari can decode it and the canvas
+// converts it to WebP/JPEG (which is what gets stored); Chrome cannot, and must
+// say so in terms the operator can act on instead of blaming the file type.
+describe('HEIC source photos', () => {
+  const heic = (name = 'IMG_0042.HEIC', type = 'image/heic') =>
+    new File([new Uint8Array(2048)], name, { type })
+
+  beforeEach(() => {
+    vi.stubGlobal('URL', { createObjectURL: () => 'blob:heic', revokeObjectURL: () => {} })
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    vi.restoreAllMocks()
+  })
+
+  it('accepts HEIC and HEIF as a source format', () => {
+    expect(validateSourceFile(heic())).toBeNull()
+    expect(validateSourceFile(heic('IMG_9.heif', 'image/heif'))).toBeNull()
+    // iOS sometimes reports no MIME type at all; the extension still identifies it
+    expect(validateSourceFile(heic('IMG_7.HEIC', ''))).toBeNull()
+  })
+
+  it('converts a decodable HEIC into a storable thumbnail', async () => {
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => { throw new Error('unsupported') }))
+    vi.stubGlobal('Image', class {
+      set src(_) {
+        setTimeout(() => {
+          this.width = 1600
+          this.height = 1200
+          this.onload?.()
+        }, 0)
+      }
+    })
+    const ctx = { drawImage: vi.fn() }
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(ctx)
+    const canvasSizes = []
+    vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockImplementation(function () {
+      canvasSizes.push([this.width, this.height])
+      return 'data:image/webp;base64,' + 'A'.repeat(400)
+    })
+
+    const result = await makeThumbnail(heic())
+
+    expect(result.contentType).toBe('image/webp')
+    expect(canvasSizes[0]).toEqual([320, 240])
+  })
+
+  it('explains an undecodable HEIC instead of a generic read error', async () => {
+    vi.stubGlobal('createImageBitmap', vi.fn(async () => { throw new Error('unsupported') }))
+    vi.stubGlobal('Image', class {
+      set src(_) {
+        setTimeout(() => this.onerror?.(new Error('nope')), 0)
+      }
+    })
+    await expect(makeThumbnail(heic())).rejects.toThrow(/HEIC/)
+  })
+})
+
 describe('base64Bytes', () => {
   it('counts the payload, not the prefix', () => {
     expect(base64Bytes('data:image/webp;base64,AAAA')).toBe(3)
@@ -134,6 +193,7 @@ describe('validateSourceFile', () => {
     expect(validateSourceFile(file(10, 'image/jpeg'))).toBeNull()
     expect(validateSourceFile(file(10, 'image/png'))).toBeNull()
     expect(validateSourceFile(file(10, 'image/webp'))).toBeNull()
+    expect(validateSourceFile(file(10, 'image/heic', 'a.heic'))).toBeNull()
     expect(validateSourceFile(file(10, 'image/svg+xml'))).toMatch(/Unsupported image type/)
   })
 

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { assertFails, assertSucceeds, initializeTestEnvironment } from '@firebase/rules-unit-testing'
-import { getDoc } from 'firebase/firestore'
+import { deleteDoc, getDoc } from 'firebase/firestore'
 
 const PROJECT_ID = 'demo-himalye-gym'
 const emulatorHost = process.env.FIRESTORE_EMULATOR_HOST || '127.0.0.1:8080'
@@ -1086,5 +1086,93 @@ describe('firestore rules — owner gym self-provisioning (onboarding)', () => {
     it('allows writing members.membershipPlanId and joinDate', async () => {
       await assertSucceeds(db(UID.owner).doc('members/proj-1').update({ membershipPlanId: 'plan-9', joinDate: '2026-02-01' }))
     })
+  })
+})
+
+// The gym logo is stored in `gyms/{gymId}/settings/branding` and the owner may
+// DELETE it — the undo of uploading a wrong logo. `app` lives in the same
+// collection and holds the gym's configuration, so the allowance is scoped to
+// the doc id `branding`, to that gym, and to its owner. These tests pin all three
+// edges, because a widened delete here would be a way to gut a tenant.
+describe('firestore rules — gym branding document deletion', () => {
+  let env
+  const GYM_LOGO_A = 'gym-logo-a'
+  const GYM_LOGO_B = 'gym-logo-b'
+  const GYM_LOGO_C = 'gym-logo-c'
+  const OWNER_A = 'logo-owner-a'
+  const OWNER_B = 'logo-owner-b'
+  const OWNER_C = 'logo-owner-c'
+  const ADMIN_A = 'logo-admin-a'
+  const DESK_A = 'logo-desk-a'
+  const brandPath = (gym) => `gyms/${gym}/settings/branding`
+
+  beforeAll(async () => {
+    env = await initializeTestEnvironment({
+      projectId: PROJECT_ID,
+      firestore: { host: HOST, port: PORT, rules },
+    })
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      const fs = ctx.firestore()
+      await fs.doc(`gyms/${GYM_LOGO_A}`).set({ ownerUid: OWNER_A, name: 'Logo A', receiptPrefix: 'LGA' })
+      await fs.doc(`gyms/${GYM_LOGO_B}`).set({ ownerUid: OWNER_B, name: 'Logo B', receiptPrefix: 'LGB' })
+      await fs.doc(`gyms/${GYM_LOGO_C}`).set({ ownerUid: OWNER_C, name: 'Logo C', receiptPrefix: 'LGC' })
+      await fs.doc(`users/${OWNER_A}`).set({ role: 'owner', gymId: GYM_LOGO_A })
+      await fs.doc(`users/${OWNER_B}`).set({ role: 'owner', gymId: GYM_LOGO_B })
+      await fs.doc(`users/${OWNER_C}`).set({ role: 'owner', gymId: GYM_LOGO_C })
+      await fs.doc(`users/${ADMIN_A}`).set({ role: 'admin', gymId: GYM_LOGO_A })
+      await fs.doc(`users/${DESK_A}`).set({ role: 'front-desk', gymId: GYM_LOGO_A })
+
+      await fs.doc(brandPath(GYM_LOGO_A)).set({ gymId: GYM_LOGO_A, data: 'data:image/webp;base64,AAAA' })
+      await fs.doc(brandPath(GYM_LOGO_B)).set({ gymId: GYM_LOGO_B, data: 'data:image/webp;base64,BBBB' })
+      // a doc at gym C's branding path whose payload claims gym B
+      await fs.doc(brandPath(GYM_LOGO_C)).set({ gymId: GYM_LOGO_B, data: 'data:image/webp;base64,CCCC' })
+      // the gym's own configuration lives beside the logo and must stay put
+      await fs.doc(`gyms/${GYM_LOGO_A}/settings/app`).set({ gymId: GYM_LOGO_A, gymName: 'Logo A' })
+    })
+  })
+
+  afterAll(async () => {
+    await env.cleanup()
+  })
+
+  const ownerA = () => env.authenticatedContext(OWNER_A).firestore()
+  const ownerB = () => env.authenticatedContext(OWNER_B).firestore()
+  const ownerC = () => env.authenticatedContext(OWNER_C).firestore()
+  const adminA = () => env.authenticatedContext(ADMIN_A).firestore()
+  const deskA = () => env.authenticatedContext(DESK_A).firestore()
+
+  it('the owner can delete their own gym branding document (the logo)', async () => {
+    await assertSucceeds(deleteDoc(ownerA().doc(brandPath(GYM_LOGO_A))))
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      const snap = await getDoc(ctx.firestore().doc(brandPath(GYM_LOGO_A)))
+      expect(snap.exists()).toBe(false)
+    })
+  })
+
+  it('the settings document that configures the gym can never be deleted', async () => {
+    await assertFails(deleteDoc(ownerA().doc(`gyms/${GYM_LOGO_A}/settings/app`)))
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      const snap = await getDoc(ctx.firestore().doc(`gyms/${GYM_LOGO_A}/settings/app`))
+      expect(snap.exists()).toBe(true)
+    })
+  })
+
+  it('admin and front-desk cannot delete the branding document (owner only)', async () => {
+    await assertFails(deleteDoc(adminA().doc(brandPath(GYM_LOGO_B))))
+    await assertFails(deleteDoc(deskA().doc(brandPath(GYM_LOGO_B))))
+  })
+
+  it('a cross-gym owner cannot delete another gym branding document', async () => {
+    await assertFails(deleteDoc(ownerB().doc(brandPath(GYM_LOGO_C))))
+    await assertFails(deleteDoc(ownerB().doc(`gyms/${GYM_LOGO_A}/settings/app`)))
+  })
+
+  it('a branding document whose payload names another gym cannot be deleted', async () => {
+    // gym C's owner, but the document claims gym B
+    await assertFails(deleteDoc(ownerC().doc(brandPath(GYM_LOGO_C))))
+  })
+
+  it('unauthenticated callers cannot delete anything', async () => {
+    await assertFails(deleteDoc(env.unauthenticatedContext().firestore().doc(brandPath(GYM_LOGO_B))))
   })
 })
