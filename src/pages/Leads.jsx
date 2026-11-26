@@ -250,7 +250,7 @@ export default function Leads() {
           placeholder="Search name or phone…"
           className="w-full sm:w-64"
         />
-        <Select value={status} onChange={(e) => setStatus(e.target.value)} className="w-40">
+        <Select value={status} onChange={(e) => setStatus(e.target.value)} className="w-full sm:w-40">
           <option value="all">All statuses</option>
           {LEAD_STATUSES.map((option) => (
             <option key={option.value} value={option.value}>

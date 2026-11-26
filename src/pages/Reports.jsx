@@ -196,7 +196,7 @@ export default function Reports() {
           }`}
         />
         <CardBody className="space-y-4">
-          <div className="flex flex-wrap items-end gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:flex sm:flex-wrap sm:items-end">
             <div>
               <label className="mb-1 block text-xs font-medium text-slate-600 dark:text-slate-300" htmlFor="report-from">
                 From
@@ -207,7 +207,7 @@ export default function Reports() {
                 value={draft.from}
                 max={draft.to || undefined}
                 onChange={(e) => setDraft((d) => ({ ...d, from: e.target.value }))}
-                className="w-44"
+                className="w-full sm:w-44"
               />
             </div>
             <div>
@@ -220,10 +220,10 @@ export default function Reports() {
                 value={draft.to}
                 min={draft.from || undefined}
                 onChange={(e) => setDraft((d) => ({ ...d, to: e.target.value }))}
-                className="w-44"
+                className="w-full sm:w-44"
               />
             </div>
-            <Button type="button" onClick={() => applyRange(draft)}>
+            <Button type="button" className="w-full sm:w-auto" onClick={() => applyRange(draft)}>
               Apply range
             </Button>
           </div>
