@@ -39,7 +39,16 @@ export function IntegrityCard() {
     setState((prev) => ({ ...prev, status: 'loading' }))
     const result = await fetchDuesDriftReport()
     if (!result.ok) {
-      setState({ status: result.reason === 'offline-mode' ? 'unavailable' : 'error', report: null, reason: result.reason })
+      // "The service is not there" is not a failure of this gym's data: demo mode
+      // has no Functions, and the callables are not deployed for this project yet.
+      // Showing a red error for either made Settings look broken at handover, so
+      // only a real refusal (permission, malformed reply) is an error.
+      const reason = String(result.reason || '')
+      const unavailable =
+        reason === 'offline-mode' ||
+        reason === 'not-deployed' ||
+        /functions\/(not-found|unavailable|internal|failed-precondition)/.test(reason)
+      setState({ status: unavailable ? 'unavailable' : 'error', report: null, reason })
       return
     }
     setState({ status: result.report ? 'ready' : 'never-run', report: result.report, reason: null })
@@ -74,9 +83,14 @@ export function IntegrityCard() {
         {status === 'loading' && <p className="text-sm text-slate-500 dark:text-slate-400">Checking…</p>}
 
         {status === 'unavailable' && (
-          <p className="text-sm text-slate-500 dark:text-slate-400">
-            Available in a deployed environment — the nightly reconciliation runs there, not in demo mode.
-          </p>
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-900/40 dark:text-slate-300">
+            <p className="font-semibold">Not running in this environment</p>
+            <p className="mt-1 text-xs leading-relaxed">
+              The nightly dues reconciliation runs on Cloud Functions, which are not deployed for this
+              project yet. Nothing is wrong with this gym&rsquo;s data — there is simply no report to
+              show. Once the functions are deployed this card fills in by itself.
+            </p>
+          </div>
         )}
 
         {status === 'error' && (

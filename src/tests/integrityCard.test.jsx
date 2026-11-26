@@ -122,6 +122,35 @@ describe('IntegrityCard', () => {
     mocks.fetchDuesDriftReport.mockResolvedValue({ ok: false, reason: 'offline-mode' })
     render(<IntegrityCard />)
 
-    await waitFor(() => expect(screen.getByText(/Available in a deployed environment/)).toBeTruthy())
+    await waitFor(() => expect(screen.getByText(/Not running in this environment/)).toBeTruthy())
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  // The callables are not deployed for this project (Functions v2 needs a billing
+  // plan), so the card must say that plainly. A red "could not be read" panel read
+  // as broken data at handover and made Settings look unhealthy.
+  it('says the job is not deployed instead of showing a red error', async () => {
+    mocks.fetchDuesDriftReport.mockResolvedValue({ ok: false, reason: 'not-deployed' })
+    render(<IntegrityCard />)
+
+    await waitFor(() => expect(screen.getByText(/Not running in this environment/)).toBeTruthy())
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByText(/could not be read/)).toBeNull()
+  })
+
+  it('treats a missing callable as "not deployed", not as a data failure', async () => {
+    mocks.fetchDuesDriftReport.mockResolvedValue({ ok: false, reason: 'functions/not-found' })
+    render(<IntegrityCard />)
+
+    await waitFor(() => expect(screen.getByText(/Not running in this environment/)).toBeTruthy())
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('still reports a real refusal as an error', async () => {
+    mocks.fetchDuesDriftReport.mockResolvedValue({ ok: false, reason: 'functions/permission-denied' })
+    render(<IntegrityCard />)
+
+    expect(await screen.findByRole('alert')).toBeTruthy()
+    expect(screen.getByText(/could not be read/)).toBeTruthy()
   })
 })
