@@ -8,11 +8,33 @@ import { useSecureImage } from '@/hooks/useSecureImage'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/context/ToastContext'
 
+// One scale for every avatar in the app: 36px in tables, 48/56px in cards, 80px
+// on the membership card and 128px on the member's own page. The text size is on
+// the wrapper so the initials inherit it without a second size map.
 const SIZES = {
-  sm: 'h-9 w-9 text-xs',
-  md: 'h-14 w-14 text-base',
-  lg: 'h-24 w-24 text-2xl',
+  sm: 'h-9 w-9 text-[11px]',
+  md: 'h-12 w-12 text-sm',
+  lg: 'h-20 w-20 text-lg',
   xl: 'h-32 w-32 text-3xl',
+}
+
+/**
+ * A stable tint per member, derived from the id.
+ *
+ * Initials avatars used to all share one indigo→emerald gradient, so a page of
+ * twelve members without photos was twelve identical circles. A hue from the id
+ * keeps the same member the same colour on every screen, and keeps the palette
+ * muted enough that a table of them does not turn into confetti.
+ */
+function initialsTint(seed) {
+  const text = typeof seed === 'string' && seed ? seed : '?'
+  let hue = 0
+  for (let index = 0; index < text.length; index += 1) {
+    hue = (hue * 31 + text.charCodeAt(index)) % 360
+  }
+  return {
+    backgroundImage: `linear-gradient(140deg, hsl(${hue} 45% 55%), hsl(${(hue + 42) % 360} 42% 42%))`,
+  }
 }
 
 export function MemberPhoto({ member, size = 'md', editable = false, onUpload }) {
@@ -41,10 +63,11 @@ export function MemberPhoto({ member, size = 'md', editable = false, onUpload })
   // avatar — whether or not a photo exists. `hasPhoto` is written in the same
   // commit as the bytes (services/photoStore.js), so a row without it is known to
   // have no avatar and asks for nothing: that alone removes most of the reads on
-  // a list where only some members have a photo. For the ones that do have one,
-  // usePhotoStore answers from this session's cache after the first read.
+  // a list where only some members have a photo.
   const hasStoredPhoto = member?.hasPhoto === true
-  const { dataUrl: storedUrl } = useMemberPhoto(hasStoredPhoto ? member.id : null)
+  const { dataUrl: storedUrl, loading: storedLoading } = useMemberPhoto(
+    hasStoredPhoto ? member.id : null
+  )
 
   const handleFile = async (e) => {
     const file = e.target.files?.[0]
@@ -52,8 +75,9 @@ export function MemberPhoto({ member, size = 'md', editable = false, onUpload })
     setUploading(true)
     try {
       // The bytes are resized to a 320px thumbnail and written to
-      // memberPhotos/{memberId}. No public URL and no download token is minted,
-      // so nothing is persisted that would outlive this user's access.
+      // memberPhotos/{memberId} in one commit with the member's hasPhoto flag.
+      // No public URL and no download token is minted, so nothing is persisted
+      // that would outlive this user's access.
       const { dataUrl } = await saveMemberPhoto(gymId, member.id, file)
       setLocalPhoto({ memberId: member.id, dataUrl })
       onUpload?.({ dataUrl })
@@ -72,41 +96,75 @@ export function MemberPhoto({ member, size = 'md', editable = false, onUpload })
   // Storage path (documents written when Cloud Storage was still intended) →
   // a legacy stored URL. Nothing is fetched when the bytes are already here.
   const localPhotoUrl = localPhoto?.memberId === member?.id ? localPhoto.dataUrl : null
-  const { url: photoSrc, loading: photoLoading } = useSecureImage(
+  const { url: photoSrc, loading: legacyLoading } = useSecureImage(
     member?.photoPath,
     member?.photoUrl,
     localPhotoUrl || storedUrl
   )
 
+  // A photo is on its way (a stored thumbnail being read, or a legacy object
+  // being fetched). Until it lands the circle shows a calm skeleton over the
+  // initials instead of snapping between two states.
+  const loadingPhoto = !photoSrc && (storedLoading || legacyLoading)
+
   return (
-    <div className="relative inline-block">
-      {photoSrc ? (
-        <img
-          src={photoSrc}
-          alt={member.name}
-          className={clsx('rounded-full object-cover ring-2 ring-white dark:ring-slate-800', SIZES[size])}
-        />
-      ) : (
-        <div
-          className={clsx(
-            'flex items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-emerald-500 font-bold text-white',
-            SIZES[size]
-          )}
-          title={photoLoading ? 'Loading photo' : undefined}
-        >
-          {initials(member?.name || '?')}
-        </div>
-      )}
+    <div className="group relative inline-block">
+      <div
+        className={clsx(
+          'overflow-hidden rounded-full shadow-sm ring-1 ring-slate-900/10 dark:ring-white/15',
+          SIZES[size]
+        )}
+      >
+        {photoSrc ? (
+          <img
+            src={photoSrc}
+            alt={member?.name || ''}
+            draggable={false}
+            decoding="async"
+            loading="lazy"
+            className="member-photo-img h-full w-full rounded-full object-cover object-center"
+          />
+        ) : (
+          <div
+            className="flex h-full w-full items-center justify-center rounded-full font-bold tracking-wide text-white"
+            style={initialsTint(member?.id || member?.name)}
+          >
+            {initials(member?.name || '?')}
+          </div>
+        )}
+
+        {loadingPhoto && (
+          <div
+            data-photo-skeleton
+            aria-hidden="true"
+            className="absolute inset-0 animate-pulse rounded-full bg-slate-200/80 dark:bg-slate-700/70 print:hidden"
+          />
+        )}
+
+        {/* Affordance only: the real control is the button below, which is visible
+            on touch screens where there is no hover to reveal anything. */}
+        {editable && (
+          <div
+            data-photo-hover
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 hidden items-center justify-center rounded-full bg-slate-950/45 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100 print:hidden sm:flex"
+          >
+            <Camera size={16} className="text-white" />
+          </div>
+        )}
+      </div>
 
       {editable && (
         <>
           <button
+            type="button"
             onClick={() => inputRef.current?.click()}
             disabled={uploading}
-            className="absolute -bottom-1 -right-1 flex h-8 w-8 items-center justify-center rounded-full bg-slate-800 text-white shadow-md transition-colors hover:bg-slate-700 disabled:opacity-60"
+            className="absolute -bottom-0.5 -right-0.5 flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-sm transition-colors hover:bg-slate-50 hover:text-indigo-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white print:hidden"
             aria-label="Upload photo"
+            title="Upload photo"
           >
-            {uploading ? <Loader2 size={14} className="animate-spin" /> : <Camera size={14} />}
+            {uploading ? <Loader2 size={13} className="animate-spin" /> : <Camera size={13} />}
           </button>
           <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={handleFile} />
         </>

@@ -388,25 +388,33 @@ export default function Settings() {
             actions={<Building2 size={16} className="text-slate-400" />}
           />
           <CardBody>
-            <div className="mb-5 flex items-center gap-4">
-              {logoSrc ? (
-                <img
-                  src={logoSrc}
-                  alt="Gym logo"
-                  className="h-16 w-16 rounded-xl object-cover ring-1 ring-slate-200 dark:ring-slate-700"
-                />
-              ) : (
-                <div className="flex h-16 w-16 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-600 to-emerald-600 text-white">
-                  <Building2 size={26} />
+            {/* Branding card: a dashed drop-zone in miniature. The hint says what
+                the logo is FOR, because "square works best" never told anyone why a
+                receipt and a member card were about to change. */}
+            <div className="mb-5 flex flex-col gap-4 rounded-xl border border-dashed border-slate-300 bg-slate-50/70 p-4 sm:flex-row sm:items-center dark:border-slate-700 dark:bg-slate-900/40">
+              <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-2xl bg-white p-1.5 shadow-sm ring-1 ring-slate-200 dark:bg-slate-800 dark:ring-slate-700">
+                {logoSrc ? (
+                  <img src={logoSrc} alt="Gym logo" className="h-full w-full object-contain" />
+                ) : (
+                  <div className="flex h-full w-full items-center justify-center rounded-xl bg-gradient-to-br from-indigo-600 to-emerald-600 text-white">
+                    <Building2 size={26} />
+                  </div>
+                )}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">Gym logo</p>
+                <p className="mt-0.5 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                  Shown on receipts, member cards and the login screen. A square PNG or JPG works
+                  best — it is stored as a 320px thumbnail.
+                </p>
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <Button variant="outline" size="sm" onClick={() => logoRef.current?.click()} loading={uploading}>
+                    {uploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
+                    Upload logo
+                  </Button>
+                  <span className="text-[11px] text-slate-400">PNG or JPG · up to 10 MB</span>
                 </div>
-              )}
-              <div>
-                <Button variant="outline" size="sm" onClick={() => logoRef.current?.click()} loading={uploading}>
-                  {uploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
-                  Upload logo
-                </Button>
                 <input ref={logoRef} type="file" accept="image/*" className="hidden" onChange={handleLogo} />
-                <p className="mt-1.5 text-xs text-slate-400">PNG or JPG, square works best</p>
               </div>
             </div>
 

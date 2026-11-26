@@ -21,13 +21,24 @@ export function MembershipCard({ member, plan, expiry, settings }) {
 
       <div className="membership-card-body">
         <div className="membership-card-main">
-          <MemberPhoto member={member} size="lg" />
+          {/* White mat so the avatar keeps a clean edge on paper as well as on
+              screen, where the card itself has no background to separate them. */}
+          <div className="shrink-0 rounded-full bg-white p-0.5 shadow-sm ring-1 ring-slate-200">
+            <MemberPhoto member={member} size="lg" />
+          </div>
           <div className="min-w-0 flex-1">
-            <p className="truncate text-lg font-bold text-slate-900">{member.name}</p>
-            <p className="mt-0.5 font-mono text-[11px] tracking-wide text-slate-400">ID · {member.memberNo || '—'}</p>
-            <div className="mt-1.5">
-              <StatusBadge status={member.status} />
-            </div>
+            {/* The QR and the avatar leave this column roughly 90px wide, so a
+                truncate cut "Ayesha Khan" down to "Ayesh…" on the printed card.
+                Wrapping keeps the whole name; the card has no fixed height. */}
+            <p className="break-words text-lg font-bold leading-tight text-slate-900">{member.name}</p>
+            <p className="mt-0.5 whitespace-nowrap font-mono text-[11px] tracking-wide text-slate-400">
+              ID · {member.memberNo || '—'}
+            </p>
+            {member.status && (
+              <div className="mt-1.5">
+                <StatusBadge status={member.status} />
+              </div>
+            )}
           </div>
           <div className="membership-card-qr shrink-0" data-member-id={member.id}>
             <QRCodeSVG value={member.id} size={104} fgColor="#0f172a" />
