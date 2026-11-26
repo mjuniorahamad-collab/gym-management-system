@@ -21,7 +21,7 @@
  * stale until the sweep touches it.
  */
 import { getFunctions, httpsCallable } from 'firebase/functions'
-import { FUNCTIONS_REGION } from './functionsConfig'
+import { CALLABLES_ENABLED, FUNCTIONS_REGION } from './functionsConfig'
 import { isFirebaseConfigured } from '@/firebase'
 
 let warned = {}
@@ -52,6 +52,16 @@ export async function requestReprojection(memberId) {
   // purely for a readiness flag would couple the Functions client to that
   // module's entire export surface — which several suites mock.
   if (!isFirebaseConfigured) return { ok: false, reason: 'offline-mode' }
+
+  // The callables are not deployed for this project (Functions v2 needs a billing
+  // plan), so a renewal would POST to an endpoint that does not exist and log a
+  // console warning about a repair that can never happen. Skipping the call is
+  // not a behaviour change: the projection was never being recomputed anyway,
+  // and the failure path below deliberately leaves the authoritative write alone.
+  //
+  // No `console.warn` here on purpose — this is a known state of the deployment,
+  // not a failure. A warning belongs to a call that was attempted and refused.
+  if (!CALLABLES_ENABLED) return { ok: false, reason: 'not-deployed' }
 
   try {
     // Same region the callable is declared in; the default (us-central1) turned

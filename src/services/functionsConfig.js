@@ -16,6 +16,10 @@
  *    `VITE_ENABLE_CALLABLES` unset the client does not call at all, and the card
  *    says so plainly. Set it to "true" in the build environment once the
  *    functions are deployed.
+ *
+ * Both callable clients read this flag: the integrity report (Settings) and the
+ * post-renewal reprojection request, which otherwise logged a console warning
+ * after every renewal about a sweep that cannot run either.
  */
 
 /** Matches the `region` declared by every callable in functions/index.js. */

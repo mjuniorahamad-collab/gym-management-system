@@ -52,6 +52,10 @@ async function load() {
 
 beforeEach(() => {
   firebaseState.configured = true
+  // The callables are gated on VITE_ENABLE_CALLABLES (off by default, because
+  // they are not deployed). These tests are about what happens once a call is
+  // made, so the flag is switched on here; the gated path has its own suite.
+  vi.stubEnv('VITE_ENABLE_CALLABLES', 'true')
   // Re-establish BOTH mocks every test, so no test can inherit another's.
   mocks.httpsCallable.mockReset()
   mocks.getFunctions.mockReset()
@@ -157,6 +161,34 @@ describe('offline / demo mode', () => {
       reason: 'offline-mode',
     })
     expect(mocks.httpsCallable).not.toHaveBeenCalled()
+  })
+})
+
+describe('callables not deployed', () => {
+  it('does not attempt a call when the callables are switched off', async () => {
+    vi.stubEnv('VITE_ENABLE_CALLABLES', '')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const { requestReprojection, _resetReprojectionWarnings } = await load()
+    _resetReprojectionWarnings()
+
+    await expect(requestReprojection('m1')).resolves.toMatchObject({
+      ok: false,
+      reason: 'not-deployed',
+    })
+    expect(mocks.httpsCallable).not.toHaveBeenCalled()
+    // A known deployment state is not an error worth a console warning.
+    expect(warn).not.toHaveBeenCalled()
+    warn.mockRestore()
+  })
+
+  it('still reports an unconfirmed projection, so callers do not trust the cache', async () => {
+    vi.stubEnv('VITE_ENABLE_CALLABLES', '')
+    const { requestReprojectionAndConfirm } = await load()
+
+    await expect(requestReprojectionAndConfirm('m1')).resolves.toMatchObject({
+      ok: false,
+      trusted: false,
+    })
   })
 })
 
