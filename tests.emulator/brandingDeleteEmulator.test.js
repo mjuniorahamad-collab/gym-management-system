@@ -11,21 +11,30 @@
  *   - the owner role, not merely staff
  *
  * A widened delete here would be a way to gut a tenant, so every edge is driven
- * through the real ruleset. The delete is deliberately NOT a new capability in
- * practice: an owner can already overwrite the branding document with an empty
- * value; this simply removes the document instead of leaving a hollow one.
+ * through the real ruleset.
+ *
+ * WHY REST AND NOT `deleteDoc`
+ *   The JS SDK (11.10) crashes inside `LocalDocumentsView.populateOverlays`
+ *   ("Cannot read properties of undefined (reading 'toString')") whenever this
+ *   test client deletes a document, which times the test out before the emulator
+ *   ever reports a verdict. A DELETE against the emulator's REST endpoint is
+ *   evaluated by the same rules engine with the same `request.auth`, and it
+ *   returns 200 or 403 instead of hanging. Seeding still uses the SDK with rules
+ *   disabled, which is the supported path.
  */
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { assertFails, assertSucceeds, initializeTestEnvironment } from '@firebase/rules-unit-testing'
-import { deleteDoc, getDoc } from 'firebase/firestore'
+import { initializeTestEnvironment } from '@firebase/rules-unit-testing'
+import { getDoc } from 'firebase/firestore'
 
 const PROJECT_ID = 'demo-himalye-gym'
 const emulatorHost = process.env.FIRESTORE_EMULATOR_HOST || '127.0.0.1:8080'
 const [HOST, PORT_RAW = '8080'] = emulatorHost.split(':')
 const PORT = Number(PORT_RAW)
 const rules = readFileSync(join(process.cwd(), 'firestore.rules'), 'utf8')
+
+const REST = `http://${HOST}:${PORT}/v1/projects/${PROJECT_ID}/databases/(default)/documents`
 
 const GYM_A = 'brand-gym-a'
 const GYM_B = 'brand-gym-b'
@@ -38,7 +47,21 @@ const ADMIN_A = 'brand-admin-a'
 const DESK_A = 'brand-desk-a'
 
 const brandPath = (gymId) => `gyms/${gymId}/settings/branding`
+const appPath = (gymId) => `gyms/${gymId}/settings/app`
 const LOGO = 'data:image/webp;base64,' + 'A'.repeat(2048)
+
+/**
+ * Deletes one document through the emulator's REST API as `uid` (or anonymously).
+ * The emulator reads the bearer token as the caller's uid, so the rules see the
+ * same `request.auth` they see from the SDK.
+ */
+async function deleteAs(path, uid) {
+  const res = await fetch(`${REST}/${path}`, {
+    method: 'DELETE',
+    headers: uid ? { Authorization: `Bearer ${uid}` } : {},
+  })
+  return res.status
+}
 
 let env
 
@@ -64,7 +87,7 @@ beforeAll(async () => {
     // a doc at gym C's branding path whose payload claims gym B
     await fs.doc(brandPath(GYM_C)).set({ gymId: GYM_B, data: LOGO })
     // the gym's own configuration sits beside the logo and must stay put
-    await fs.doc(`gyms/${GYM_A}/settings/app`).set({ gymId: GYM_A, gymName: 'Brand A' })
+    await fs.doc(appPath(GYM_A)).set({ gymId: GYM_A, gymName: 'Brand A' })
   })
 })
 
@@ -72,53 +95,46 @@ afterAll(async () => {
   await env.cleanup()
 })
 
-const ownerA = () => env.authenticatedContext(OWNER_A).firestore()
-const ownerB = () => env.authenticatedContext(OWNER_B).firestore()
-const ownerC = () => env.authenticatedContext(OWNER_C).firestore()
-const adminA = () => env.authenticatedContext(ADMIN_A).firestore()
-const deskA = () => env.authenticatedContext(DESK_A).firestore()
+/** Reads a document with rules bypassed, to prove what actually happened. */
+async function exists(path) {
+  let found = null
+  await env.withSecurityRulesDisabled(async (ctx) => {
+    const snap = await getDoc(ctx.firestore().doc(path))
+    found = snap.exists()
+  })
+  return found
+}
 
 describe('firestore rules — gym branding document deletion', () => {
   it('the owner can delete their own gym branding document (the logo)', async () => {
-    await assertSucceeds(deleteDoc(ownerA().doc(brandPath(GYM_A))))
-    await env.withSecurityRulesDisabled(async (ctx) => {
-      const snap = await getDoc(ctx.firestore().doc(brandPath(GYM_A)))
-      expect(snap.exists()).toBe(false)
-    })
+    expect(await deleteAs(brandPath(GYM_A), OWNER_A)).toBe(200)
+    expect(await exists(brandPath(GYM_A))).toBe(false)
   })
 
   it('the settings document that configures the gym can never be deleted', async () => {
-    await assertFails(deleteDoc(ownerA().doc(`gyms/${GYM_A}/settings/app`)))
-    await env.withSecurityRulesDisabled(async (ctx) => {
-      const snap = await getDoc(ctx.firestore().doc(`gyms/${GYM_A}/settings/app`))
-      expect(snap.exists()).toBe(true)
-    })
+    expect(await deleteAs(appPath(GYM_A), OWNER_A)).toBe(403)
+    expect(await exists(appPath(GYM_A))).toBe(true)
   })
 
   it('admin and front-desk cannot delete the branding document (owner only)', async () => {
-    await assertFails(deleteDoc(adminA().doc(brandPath(GYM_B))))
-    await assertFails(deleteDoc(deskA().doc(brandPath(GYM_B))))
-    await env.withSecurityRulesDisabled(async (ctx) => {
-      const snap = await getDoc(ctx.firestore().doc(brandPath(GYM_B)))
-      expect(snap.exists()).toBe(true)
-    })
+    expect(await deleteAs(brandPath(GYM_B), ADMIN_A)).toBe(403)
+    expect(await deleteAs(brandPath(GYM_B), DESK_A)).toBe(403)
+    expect(await exists(brandPath(GYM_B))).toBe(true)
   })
 
   it('a cross-gym owner cannot delete another gym branding document', async () => {
-    await assertFails(deleteDoc(ownerB().doc(brandPath(GYM_C))))
-    await assertFails(deleteDoc(ownerB().doc(`gyms/${GYM_A}/settings/app`)))
+    expect(await deleteAs(brandPath(GYM_C), OWNER_B)).toBe(403)
+    expect(await deleteAs(appPath(GYM_A), OWNER_B)).toBe(403)
   })
 
   it('a branding document whose payload names another gym cannot be deleted', async () => {
     // gym C's owner, but the document claims gym B
-    await assertFails(deleteDoc(ownerC().doc(brandPath(GYM_C))))
-    await env.withSecurityRulesDisabled(async (ctx) => {
-      const snap = await getDoc(ctx.firestore().doc(brandPath(GYM_C)))
-      expect(snap.exists()).toBe(true)
-    })
+    expect(await deleteAs(brandPath(GYM_C), OWNER_C)).toBe(403)
+    expect(await exists(brandPath(GYM_C))).toBe(true)
   })
 
   it('unauthenticated callers cannot delete anything', async () => {
-    await assertFails(deleteDoc(env.unauthenticatedContext().firestore().doc(brandPath(GYM_B))))
+    expect(await deleteAs(brandPath(GYM_B), null)).toBe(403)
+    expect(await exists(brandPath(GYM_B))).toBe(true)
   })
 })
