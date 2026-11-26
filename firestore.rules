@@ -325,8 +325,13 @@ service cloud.firestore {
     // Requiring the path's gymId keeps that allowance from becoming a probe for
     // which documents exist in another gym.
     // Write (create/update): the owner of THAT gym only, and the pending doc
-    // must carry the caller's gymId — cross-gym writes are impossible. Deletes
-    // are never allowed from the client.
+    // must carry the caller's gymId — cross-gym writes are impossible.
+    //
+    // Delete: the owner, and ONLY the `branding` document. A logo that cannot be
+    // removed is a support ticket (a wrong logo on every printed receipt), while
+    // `app` holds the gym's configuration and deleting it would leave the tenant
+    // unconfigured, so the doc id is part of the condition rather than a role
+    // check alone.
     match /gyms/{gymId}/settings/{doc} {
       allow read: if isSignedIn()
         && hasGym()
@@ -338,7 +343,12 @@ service cloud.firestore {
         && 'gymId' in request.resource.data
         && request.resource.data.gymId == gymOf(request.auth.uid)
         && gymOf(request.auth.uid) == gymId;
-      allow delete: if false;
+      allow delete: if doc == 'branding'
+        && isOwner()
+        && gymOf(request.auth.uid) == gymId
+        && resource != null
+        && 'gymId' in resource.data
+        && resource.data.gymId == gymOf(request.auth.uid);
     }
 
     // ---------- Users (auth profiles + roles) -----------------------------
@@ -540,6 +550,9 @@ service cloud.firestore {
                              && request.resource.data.data.size() < 300 * 1024
                              && request.resource.data.contentType in ['image/webp', 'image/jpeg'];
 
+      // Deleting a photo is narrower than uploading one on purpose: a front desk
+      // may correct a face, but erasing a member's photograph is owner/admin
+      // (members.delete), the same split as deleting the member record itself.
       allow delete: if (isOwner() || isRole('admin')) && canDeleteTenant(resource);
     }
 

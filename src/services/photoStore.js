@@ -1,4 +1,4 @@
-import { doc, getDoc, serverTimestamp, setDoc, writeBatch } from 'firebase/firestore'
+import { deleteDoc, doc, getDoc, serverTimestamp, setDoc, writeBatch } from 'firebase/firestore'
 import { db, isFirebaseConfigured } from '@/firebase'
 import { MAX_STORED_BYTES, makeThumbnail } from '@/utils/image'
 
@@ -177,6 +177,46 @@ export async function saveGymLogo(gymId, file, { uploadedBy = '' } = {}) {
     height: thumbnail.height,
     bytes: thumbnail.bytes,
   }
+}
+
+/**
+ * Removes a member's photo: the bytes document and the `hasPhoto` flag in ONE
+ * commit.
+ *
+ * Upload-only was a dead end in practice: a wrong face on a member could never be
+ * taken off the profile again. The flag goes with the bytes for the same reason
+ * it is written with them — a `true` left behind would make every list pay for a
+ * read that can only return nothing, and a photo left behind would be bytes no
+ * screen can reach.
+ */
+export async function removeMemberPhoto(memberId) {
+  const member = requireId(memberId, 'member id')
+  if (!isPhotoStoreReady()) throw new Error('Firestore is not configured')
+
+  const batch = writeBatch(db)
+  batch.delete(doc(db, MEMBER_PHOTOS_COLLECTION, member))
+  batch.update(doc(db, MEMBERS_COLLECTION, member), {
+    hasPhoto: false,
+    photoUpdatedAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  })
+  await batch.commit()
+
+  return { memberId: member }
+}
+
+/**
+ * Deletes the gym's branding document so the default mark renders again.
+ *
+ * firestore.rules allows a client delete here for `branding` only — the same
+ * settings collection also holds `app`, whose removal would unconfigure the gym.
+ */
+export async function removeGymLogo(gymId) {
+  const gym = requireId(gymId, 'gym identity')
+  if (!isPhotoStoreReady()) throw new Error('Firestore is not configured')
+
+  await deleteDoc(doc(db, GYMS_COLLECTION, gym, SETTINGS_SUBCOLLECTION, BRANDING_DOC_ID))
+  return { gymId: gym }
 }
 
 /** Loads the gym's logo bytes, or null when none is stored. */

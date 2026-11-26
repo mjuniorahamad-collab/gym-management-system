@@ -220,6 +220,10 @@ export default function MemberDetail() {
 
 const canWrite = can('members.write')
   const canFinanceWrite = can('finance.write')
+  // Removing a photo is narrower than replacing one: firestore.rules grants the
+  // photo delete to owner/admin (members.delete), so a front desk must not be
+  // shown a button that can only end in PERMISSION_DENIED.
+  const canRemovePhoto = can('members.delete')
   // Financial figures on this page are DERIVED from the payments collection.
   // firestore.rules gates payments reads on isFinance() (owner/admin) and App.jsx
   // routes every finance page behind finance.view, so front-desk and trainer get
@@ -369,6 +373,15 @@ const canWrite = can('members.write')
       toast.error(e?.message || 'Could not update photo')
     }
   }
+  // Removal toasts and clears the bytes itself, so the page only re-reads the
+  // member (so `hasPhoto` stops claiming a photo) and records the audit entry.
+  // The profile must not stay open on a face that no longer exists.
+  const handlePhotoRemoved = () => {
+    logAudit({ action: 'update', entity: 'members', entityId: id, details: { photo: false } })
+      .catch((e) => console.error('Photo removal audit failed', e))
+    reload()
+  }
+
   const handlePayment = async (values) => {
     setSubmitting(true)
     try {
@@ -566,7 +579,14 @@ return (
               <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
                 <div className="flex items-center gap-4">
                   <div className="rounded-full bg-white p-1 shadow-sm ring-1 ring-slate-900/5 dark:bg-slate-900 dark:ring-white/10">
-                    <MemberPhoto member={member} size="hero" editable={canWrite} onUpload={handlePhoto} />
+                    <MemberPhoto
+                      member={member}
+                      size="hero"
+                      editable={canWrite}
+                      removable={canRemovePhoto}
+                      onUpload={handlePhoto}
+                      onRemove={handlePhotoRemoved}
+                    />
                   </div>
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
