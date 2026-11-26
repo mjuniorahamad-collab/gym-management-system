@@ -1088,3 +1088,4 @@ describe('firestore rules — owner gym self-provisioning (onboarding)', () => {
     })
   })
 })
+
