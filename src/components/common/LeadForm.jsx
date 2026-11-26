@@ -74,7 +74,7 @@ export function LeadForm({ open, onClose, initial, plans = [], submitting, onSub
             <Input placeholder="e.g. Rahul Sharma" error={errors.name} {...register('name')} />
           </FormField>
           <FormField label="Phone" error={errors.phone?.message} required>
-            <Input placeholder="98XXXXXXXX" error={errors.phone} {...register('phone')} />
+            <Input inputMode="tel" autoComplete="tel" placeholder="98XXXXXXXX" error={errors.phone} {...register('phone')} />
           </FormField>
         </div>
 

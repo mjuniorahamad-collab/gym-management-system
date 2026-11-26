@@ -49,7 +49,7 @@ export function PlanForm({ open, onClose, initial, submitting, onSubmit }) {
             <Input type="number" min="1" error={errors.durationDays} {...register('durationDays')} />
           </FormField>
           <FormField label="Price" error={errors.price?.message} required>
-            <Input type="number" min="0" step="0.01" placeholder="0.00" error={errors.price} {...register('price')} />
+            <Input type="number" inputMode="decimal" min="0" step="0.01" placeholder="0.00" error={errors.price} {...register('price')} />
           </FormField>
         </div>
 

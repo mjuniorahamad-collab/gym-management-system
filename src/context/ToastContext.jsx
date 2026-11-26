@@ -28,6 +28,7 @@ export function ToastProvider({ children }) {
       {children}
       <Toaster
         position="top-right"
+        containerClassName="app-toaster"
         toastOptions={{
           style: {
             borderRadius: '10px',

@@ -8,6 +8,7 @@ import { ErrorBoundary } from '@/components/ui/ErrorBoundary'
 import { ProtectedRoute } from '@/components/layout/ProtectedRoute'
 import { RoleGuard } from '@/components/layout/RoleGuard'
 import { Layout } from '@/components/layout/Layout'
+import { ScrollToTop } from '@/components/layout/ScrollToTop'
 import { Spinner } from '@/components/ui/Spinner'
 import { PwaUpdatePrompt } from '@/components/common/PwaUpdatePrompt'
 
@@ -45,6 +46,7 @@ export default function App() {
           <AuthProvider>
             <SettingsProvider>
               <BrowserRouter>
+                <ScrollToTop />
                 <Suspense fallback={<PageLoader />}>
                   <Routes>
                     <Route path="/login" element={<Login />} />

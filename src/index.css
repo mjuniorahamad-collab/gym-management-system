@@ -440,3 +440,22 @@ body {
 .pb-safe {
   padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
 }
+
+/* Toasts on a phone: react-hot-toast pins itself to a corner by default, which
+   puts it under the sticky header (and, at the bottom, under the tab bar).
+   Below md they sit centred, just under the header, and never wider than the
+   screen. */
+@media (max-width: 767px) {
+  .app-toaster {
+    top: calc(env(safe-area-inset-top, 0px) + 4rem) !important;
+    left: 0 !important;
+    right: 0 !important;
+    bottom: auto !important;
+    align-items: center;
+    pointer-events: none;
+  }
+  .app-toaster > div {
+    max-width: calc(100vw - 1.5rem);
+    pointer-events: auto;
+  }
+}

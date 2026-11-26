@@ -54,12 +54,12 @@ export function TrainerForm({ open, onClose, initial, submitting, onSubmit }) {
             <Input type="email" placeholder="trainer@example.com" error={errors.email} {...register('email')} />
           </FormField>
           <FormField label="Phone" error={errors.phone?.message} required>
-            <Input placeholder="98XXXXXXXX" error={errors.phone} {...register('phone')} />
+            <Input inputMode="tel" autoComplete="tel" placeholder="98XXXXXXXX" error={errors.phone} {...register('phone')} />
           </FormField>
         </div>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <FormField label="Hourly rate" error={errors.hourlyRate?.message} required>
-            <Input type="number" min="0" step="0.01" placeholder="0.00" error={errors.hourlyRate} {...register('hourlyRate')} />
+            <Input type="number" inputMode="decimal" min="0" step="0.01" placeholder="0.00" error={errors.hourlyRate} {...register('hourlyRate')} />
           </FormField>
           <FormField label="Hire date" error={errors.hireDate?.message}>
             <Input type="date" error={errors.hireDate} {...register('hireDate')} />

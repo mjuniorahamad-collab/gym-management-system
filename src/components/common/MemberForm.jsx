@@ -113,7 +113,7 @@ export function MemberForm({ open, onClose, initial, plans, submitting, onSubmit
 
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <FormField label="Phone" error={errors.phone?.message} required>
-            <Input placeholder="98XXXXXXXX" error={errors.phone} {...register('phone')} />
+            <Input inputMode="tel" autoComplete="tel" placeholder="98XXXXXXXX" error={errors.phone} {...register('phone')} />
           </FormField>
           <FormField label="Gender" error={errors.gender?.message}>
             <Select error={errors.gender} {...register('gender')}>

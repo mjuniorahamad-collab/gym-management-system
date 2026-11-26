@@ -573,10 +573,33 @@ return (
                       <h2 className="truncate text-xl font-bold tracking-tight text-slate-900 dark:text-slate-100">{member.name}</h2>
                       {member.status && <StatusBadge status={member.status} />}
                     </div>
-                    <p className="mt-1 break-words text-sm text-slate-500 dark:text-slate-400">
+                    <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-slate-500 dark:text-slate-400">
                       {/* A member without an email used to read "No email · 0300…",
-                          which looks like a validation error on a profile header. */}
-                      {[member.email, member.phone].filter(Boolean).join(' · ')}
+                          which looks like a validation error on a profile header.
+                          Both are real links now: on a phone, tapping the number
+                          dials the member instead of making staff copy it. */}
+                      {member.email && (
+                        <a
+                          href={`mailto:${member.email}`}
+                          className="break-all underline-offset-2 hover:text-indigo-600 hover:underline dark:hover:text-indigo-400"
+                        >
+                          {member.email}
+                        </a>
+                      )}
+                      {member.email && member.phone && (
+                        <span aria-hidden="true" className="text-slate-300 dark:text-slate-600">
+                          ·
+                        </span>
+                      )}
+                      {member.phone && (
+                        <a
+                          href={telHref(member.phone)}
+                          className="font-medium underline-offset-2 hover:text-indigo-600 hover:underline dark:hover:text-indigo-400"
+                        >
+                          {member.phone}
+                        </a>
+                      )}
+                      {!member.email && !member.phone && '—'}
                     </p>
                     <p className="mt-0.5 font-mono text-[11px] uppercase tracking-widest text-slate-400">
                       ID · {member.memberNo || '—'}
@@ -635,7 +658,11 @@ return (
                       {member.fatherName && <InfoRow label="Father's name" value={member.fatherName} />}
                       <InfoRow label="Date of birth" value={formatDate(member.dob)} />
                       <InfoRow label="Emergency contact" value={member.emergencyName} />
-                      <InfoRow label="Emergency phone" value={member.emergencyPhone} />
+                      <InfoRow
+                        label="Emergency phone"
+                        value={member.emergencyPhone}
+                        href={telHref(member.emergencyPhone)}
+                      />
                     </CardBody>
                   </Card>
                   <Card>
@@ -784,7 +811,7 @@ return (
                                     onClick={() => { setEditPeriod(p); setEditPeriodOpen(true) }}
                                     disabled={!online}
                                     title={online ? undefined : 'Unavailable while offline'}
-                                    className="rounded p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-slate-800 dark:hover:text-slate-300"
+                                    className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-slate-800 dark:hover:text-slate-300"
                                     aria-label="Edit period"
                                   >
                                     <Pencil size={14} />
@@ -794,7 +821,7 @@ return (
                                     onClick={() => { setDeletePeriod(p); setDeletePeriodOpen(true) }}
                                     disabled={!online}
                                     title={online ? undefined : 'Unavailable while offline'}
-                                    className="rounded p-1 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-red-500/10 dark:hover:text-red-400"
+                                    className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-red-500/10 dark:hover:text-red-400"
                                     aria-label="Delete period"
                                   >
                                     <Trash2 size={14} />
@@ -1012,7 +1039,7 @@ return (
                                       <button
                                         type="button"
                                         onClick={() => { setEditingWeight(r); setWeightFormOpen(true) }}
-                                        className="rounded p-1 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-300"
+                                        className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-slate-800 dark:hover:text-slate-300"
                                         aria-label="Edit measurement"
                                       >
                                         <Pencil size={14} />
@@ -1020,7 +1047,7 @@ return (
                                       <button
                                         type="button"
                                         onClick={() => { setDeleteWeight(r); setDeleteWeightOpen(true) }}
-                                        className="rounded p-1 text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-500/10 dark:hover:text-red-400"
+                                        className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-400 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-500/10 dark:hover:text-red-400"
                                         aria-label="Delete measurement"
                                       >
                                         <Trash2 size={14} />
@@ -1318,11 +1345,28 @@ function planFor(member, plans) {
   return plans.find((p) => String(p.id) === String(member?.membershipPlanId)) || null
 }
 
-function InfoRow({ label, value }) {
+/** `+977 (98) 0123-456` becomes `tel:+977980123456`; no digits, no link. */
+function telHref(phone) {
+  const digits = String(phone || '').replace(/[^\d+]/g, '')
+  return digits ? `tel:${digits}` : undefined
+}
+
+function InfoRow({ label, value, href }) {
   return (
     <div className="flex items-start justify-between gap-4">
       <span className="shrink-0 text-slate-400">{label}</span>
-      <span className="text-right font-medium text-slate-700 dark:text-slate-200">{value || '—'}</span>
+      {href ? (
+        <a
+          href={href}
+          className="text-right font-medium text-slate-700 underline-offset-2 hover:text-indigo-600 hover:underline dark:text-slate-200 dark:hover:text-indigo-400"
+        >
+          {value || '—'}
+        </a>
+      ) : (
+        <span className="text-right font-medium text-slate-700 dark:text-slate-200">
+          {value || '—'}
+        </span>
+      )}
     </div>
   )
 }
