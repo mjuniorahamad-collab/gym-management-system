@@ -3,6 +3,14 @@ import ReactDOM from 'react-dom/client'
 import App from './App.jsx'
 import './index.css'
 import { pwaUpdates } from '@/utils/pwaUpdates'
+import { reloadOnStaleChunk } from '@/utils/staleChunk'
+
+// After a deploy, this tab's in-memory shell still points at chunk hashes that no
+// longer exist. Vite fires this event when such a lazy import fails; reload once
+// so the open tab refreshes instead of breaking a route with an error screen.
+window.addEventListener('vite:preloadError', (event) => {
+  if (reloadOnStaleChunk()) event.preventDefault()
+})
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
