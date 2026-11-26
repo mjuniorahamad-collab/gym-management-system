@@ -242,12 +242,30 @@ jobs:
           echo "::error::firestore.rules was deployed but production still enforces a different ruleset."
           exit 1
 
-      # Step 2b: Storage rules for member photos and gym logos. Opt-in: the live
-      # bucket still runs the default deny-all ruleset, and flipping it is only
-      # meaningful once uploads are actually being exercised.
+      # Step 2b: Storage rules for member photos and gym logos. Opt-in.
+      #
+      # This project has no default Cloud Storage bucket: creating one needs a
+      # billing plan it does not have, which is exactly why photos and logos are
+      # base64 thumbnails in Firestore (src/services/photoStore.js) and nothing
+      # in the client talks to Storage. `firebase deploy --only storage` resolves
+      # the default bucket first and dies with a 403 on
+      # firebasestorage.defaultBucket.get, which used to mark the whole run red
+      # even though hosting and firestore.rules had already shipped.
+      #
+      # So: probe for the bucket, and when there is none say so and skip. When a
+      # bucket does exist the deploy still runs and still fails loudly if the
+      # rules are rejected.
       - name: Deploy Storage rules
         if: inputs.deploy_storage_rules
         run: |
+          ACCESS_TOKEN=$(gcloud auth print-access-token)
+          bucket_status=$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            "https://firebasestorage.googleapis.com/v1alpha/projects/$PROJECT_ID/defaultBucket")
+          if [ "$bucket_status" != "200" ]; then
+            echo "::notice::Skipping storage.rules: $PROJECT_ID has no default Cloud Storage bucket (HTTP $bucket_status). Member photos and the gym logo are Firestore thumbnails, so no Storage rule is in effect or needed."
+            exit 0
+          fi
           npx --yes firebase-tools@15 deploy \
             --only storage \
             --project "$PROJECT_ID" \
