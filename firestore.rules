@@ -308,15 +308,22 @@ service cloud.firestore {
     // PT pricing.
     //
     // Read: any staff member of the owning gym (like other operational data).
+    // An ABSENT document is readable too, but only under the caller's own gym
+    // path: "no PT surcharge set" and "no logo uploaded yet" are ordinary
+    // states, and `getDoc` must resolve them to a non-existent snapshot instead
+    // of a PERMISSION_DENIED that every reader then has to treat as a failure.
+    // Requiring the path's gymId keeps that allowance from becoming a probe for
+    // which documents exist in another gym.
     // Write (create/update): the owner of THAT gym only, and the pending doc
     // must carry the caller's gymId — cross-gym writes are impossible. Deletes
     // are never allowed from the client.
     match /gyms/{gymId}/settings/{doc} {
       allow read: if isSignedIn()
         && hasGym()
-        && resource != null
-        && 'gymId' in resource.data
-        && resource.data.gymId == gymOf(request.auth.uid);
+        && gymOf(request.auth.uid) == gymId
+        && (resource == null
+          || ('gymId' in resource.data
+            && resource.data.gymId == gymOf(request.auth.uid)));
       allow create, update: if isOwner()
         && 'gymId' in request.resource.data
         && request.resource.data.gymId == gymOf(request.auth.uid)
