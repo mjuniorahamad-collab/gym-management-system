@@ -22,9 +22,21 @@ export function receiptCounterId() {
   return `receiptNo_${normalized}`
 }
 
-/** The value the counter must take for the next receipt. */
+/**
+ * The value the counter must take for the next receipt.
+ *
+ * An implausible stored value or floor is treated as absent rather than trusted:
+ * a poisoned number must not be able to push the sequence into epoch space (see
+ * MAX_PLAUSIBLE_SEQUENCE). The counter itself is only ever written here, so a
+ * legitimate value is always a real sequence.
+ */
 export function nextReceiptSequence(storedValue, floor) {
-  return (typeof storedValue === 'number' ? storedValue : Number(floor) || 0) + 1
+  const base = isPlausibleSequence(storedValue)
+    ? Number(storedValue)
+    : isPlausibleSequence(floor)
+      ? Number(floor)
+      : 0
+  return base + 1
 }
 
 const counterRef = () => doc(db, 'counters', receiptCounterId())
@@ -45,6 +57,43 @@ export function parseReceiptSeq(value) {
   if (typeof value !== 'string') return null
   const match = value.match(/-(\d+)$/)
   return match ? Number.parseInt(match[1], 10) : null
+}
+
+/**
+ * Largest value that can plausibly be a receipt SEQUENCE number.
+ *
+ * A gym cannot issue its billionth receipt from a browser, while the
+ * last-resort timestamp receipt is a full epoch millisecond value (~1.8e12).
+ * The gap between the two is therefore wide enough to tell them apart without
+ * guessing: anything above this bound can only have come from the clock, never
+ * from the counter.
+ *
+ * This distinction matters because the counter floor is seeded from the highest
+ * number already on file. Before this bound existed, one timestamp receipt
+ * (e.g. `GMS-1791540317434`, issued live on 2026-10-09) made every FUTURE
+ * receipt jump to that magnitude — the mixed numbering this guard prevents.
+ */
+export const MAX_PLAUSIBLE_SEQUENCE = 999_999_999
+
+export function isPlausibleSequence(value) {
+  const n = typeof value === 'number' ? value : Number.parseInt(value, 10)
+  return Number.isInteger(n) && n >= 0 && n <= MAX_PLAUSIBLE_SEQUENCE
+}
+
+/**
+ * Highest sequence this gym has already used, from its payment documents.
+ *
+ * Numbers the counter did not mint (timestamp receipts) are ignored, so a single
+ * fallback receipt can never drag the whole sequence to epoch scale. Existing
+ * receipt numbers are never rewritten — they simply do not seed the counter.
+ */
+export function highestSequenceIn(payments) {
+  let max = 0
+  for (const p of payments || []) {
+    const seq = parseReceiptSeq(p?.receiptNo)
+    if (seq !== null && isPlausibleSequence(seq) && seq > max) max = seq
+  }
+  return max
 }
 
 /**
@@ -75,13 +124,8 @@ async function highestExistingSequence() {
     return 0
   }
   const payments = await listAll('payments')
-  let max = 0
-  for (const p of payments) {
-    const seq = parseReceiptSeq(p?.receiptNo)
-    if (seq !== null && seq > max) max = seq
-  }
-  seedCache = max
-  return max
+  seedCache = highestSequenceIn(payments)
+  return seedCache
 }
 
 /** Test-only: forget the cached seed so the next call re-reads. */

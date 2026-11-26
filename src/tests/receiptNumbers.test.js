@@ -1,5 +1,13 @@
 import { describe, beforeEach, expect, it, vi } from 'vitest'
-import { formatReceiptNo, nextReceiptNo, parseReceiptSeq } from '@/services/receipts'
+import {
+  MAX_PLAUSIBLE_SEQUENCE,
+  formatReceiptNo,
+  highestSequenceIn,
+  isPlausibleSequence,
+  nextReceiptNo,
+  nextReceiptSequence,
+  parseReceiptSeq,
+} from '@/services/receipts'
 import { store } from '@/services/mockStore'
 
 vi.mock('@/firebase', () => ({
@@ -37,6 +45,48 @@ describe('receipt number helpers', () => {
     expect(parseReceiptSeq('HWG-483920')).toBe(483920)
     expect(parseReceiptSeq('HWG-renewal-demo')).toBeNull()
     expect(parseReceiptSeq(undefined)).toBeNull()
+  })
+})
+
+/**
+ * The counter floor comes from the highest number already on file, so a number
+ * the counter did NOT mint must never seed it. A live gym carried one timestamp
+ * receipt (`GMS-1791540317434`, 2026-10-09) and no counter document, so the next
+ * receipt would have been `GMS-1791540317435` — epoch numbers for ever. These
+ * cases pin the bound that keeps timestamp receipts out of the sequence without
+ * touching the numbers already printed.
+ */
+describe('counter floor ignores timestamp receipts', () => {
+  it('treats epoch-scale values as not-a-sequence', () => {
+    expect(isPlausibleSequence(1_791_540_317_434)).toBe(false)
+    expect(isPlausibleSequence(MAX_PLAUSIBLE_SEQUENCE)).toBe(true)
+    expect(isPlausibleSequence(MAX_PLAUSIBLE_SEQUENCE + 1)).toBe(false)
+    expect(isPlausibleSequence(undefined)).toBe(false)
+    expect(isPlausibleSequence(-1)).toBe(false)
+  })
+
+  it('seeds from the highest real sequence, never from a timestamp receipt', () => {
+    const payments = [
+      { receiptNo: '001-874835' },
+      { receiptNo: 'GMS-1791540317434' },
+      { receiptNo: 'GMS-000042' },
+      { receiptNo: 'GMS-renewal-demo' },
+      { receiptNo: null },
+    ]
+    expect(highestSequenceIn(payments)).toBe(874835)
+    expect(nextReceiptSequence(undefined, highestSequenceIn(payments))).toBe(874836)
+  })
+
+  it('ignores an implausible stored counter as well as an implausible floor', () => {
+    expect(nextReceiptSequence(1_791_540_317_434, 0)).toBe(1)
+    expect(nextReceiptSequence(undefined, 1_791_540_317_434)).toBe(1)
+    expect(nextReceiptSequence(7, 1_791_540_317_434)).toBe(8)
+  })
+
+  it('keeps the plain cases unchanged', () => {
+    expect(highestSequenceIn([])).toBe(0)
+    expect(nextReceiptSequence(undefined, 0)).toBe(1)
+    expect(nextReceiptSequence(41, 0)).toBe(42)
   })
 })
 
