@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState } from 'react'
 import { Sidebar } from './Sidebar'
 import { Topbar } from './Topbar'
+import { MobileNav } from './MobileNav'
 import { Outlet } from 'react-router-dom'
 import { backfillMemberNumbers } from '@/services/memberNumbers'
 import { OfflineActionsNotice } from '@/components/ui/OfflineActionsNotice'
@@ -30,11 +31,14 @@ export function Layout() {
           <Topbar />
           {/* Renders nothing while online. When offline it says why the money
               actions on whatever page is open are disabled. */}
-          <OfflineActionsNotice className="mx-4 mt-4 lg:mx-6" />
-          <main className="flex-1 p-4 lg:p-6">
+          <OfflineActionsNotice className="mx-3 mt-3 sm:mx-4 lg:mx-6" />
+          {/* Phone-sized padding, plus room for the bottom tab bar so the last
+              row of a table is never hidden behind it. */}
+          <main className="flex-1 px-3 py-4 pb-28 sm:px-4 lg:p-6 lg:pb-6">
             <Outlet />
           </main>
         </div>
+        <MobileNav />
       </div>
     </LayoutContext.Provider>
   )

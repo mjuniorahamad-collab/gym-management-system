@@ -11,20 +11,32 @@ const TONES = {
 
 export function StatCard({ title, value, icon: Icon, tone = 'indigo', sub, loading }) {
   return (
-    <div className="card p-5">
-      <div className="flex items-center justify-between">
+    // Two of these fit side by side on a phone, so the four headline numbers are
+    // visible without scrolling instead of four full-width cards.
+    <div className="card p-3.5 sm:p-5">
+      <div className="flex items-start justify-between gap-2 sm:items-center">
         <div className="min-w-0">
-          <p className="truncate text-sm font-medium text-slate-500 dark:text-slate-400">{title}</p>
+          <p className="line-clamp-2 text-[11px] font-medium leading-snug text-slate-500 dark:text-slate-400 sm:line-clamp-1 sm:text-sm">
+            {title}
+          </p>
           {loading ? (
-            <div className="mt-2 h-7 w-24 animate-pulse rounded bg-slate-200 dark:bg-slate-800" />
+            <div className="mt-2 h-6 w-16 animate-pulse rounded bg-slate-200 dark:bg-slate-800 sm:h-7 sm:w-24" />
           ) : (
-            <p className="mt-1 truncate text-2xl font-bold text-slate-900 dark:text-slate-100">{value}</p>
+            <p className="mt-1 truncate text-lg font-bold text-slate-900 dark:text-slate-100 sm:text-2xl">
+              {value}
+            </p>
           )}
-          {sub && <p className="mt-1 text-xs text-slate-400">{sub}</p>}
+          {sub && <p className="mt-1 truncate text-[10px] text-slate-400 sm:text-xs">{sub}</p>}
         </div>
         {Icon && (
-          <div className={clsx('flex h-11 w-11 shrink-0 items-center justify-center rounded-xl', TONES[tone])}>
-            <Icon size={20} />
+          <div
+            className={clsx(
+              'flex h-8 w-8 shrink-0 items-center justify-center rounded-lg sm:h-11 sm:w-11 sm:rounded-xl',
+              TONES[tone]
+            )}
+          >
+            <Icon size={16} className="sm:hidden" />
+            <Icon size={20} className="hidden sm:block" />
           </div>
         )}
       </div>

@@ -120,7 +120,7 @@ export function AtRiskMembersCard({
           />
         ) : (
           <>
-            <div className="overflow-x-auto">
+            <div className="table-stack overflow-x-auto">
               <table className="w-full">
                 <thead className="border-b border-slate-200 dark:border-slate-800">
                   <tr>
@@ -141,7 +141,7 @@ export function AtRiskMembersCard({
                         key={row.member.id}
                         className="transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50"
                       >
-                        <td className="td">
+                        <td className="td" data-primary>
                           <Link to={`/members/${row.member.id}`} className="flex items-center gap-3">
                             <MemberPhoto member={row.member} size="sm" />
                             <div className="min-w-0">
@@ -154,18 +154,18 @@ export function AtRiskMembersCard({
                             </div>
                           </Link>
                         </td>
-                        <td className="td whitespace-nowrap">
+                        <td className="td whitespace-nowrap" data-label="Risk">
                           <Badge tone={tier.tone}>{tier.label}</Badge>
                           <p className="mt-1 text-xs text-slate-400">Score {row.score}</p>
                         </td>
-                        <td className="td hidden lg:table-cell">
+                        <td className="td hidden lg:table-cell" data-label="Why">
                           <SignalsCell row={row} />
                         </td>
-                        <td className="td hidden md:table-cell">
+                        <td className="td hidden md:table-cell" data-label="Last visit">
                           <VisitCell daysSinceVisit={row.daysSinceVisit} lastVisit={row.lastVisit} />
                         </td>
                         {canFinance && (
-                          <td className="td hidden whitespace-nowrap sm:table-cell">
+                          <td className="td hidden whitespace-nowrap sm:table-cell" data-label="Dues">
                             {row.dueAmount > 0 ? (
                               <>
                                 <p className="font-semibold text-rose-600">
@@ -180,7 +180,7 @@ export function AtRiskMembersCard({
                             )}
                           </td>
                         )}
-                        <td className="td hidden whitespace-nowrap lg:table-cell">
+                        <td className="td hidden whitespace-nowrap lg:table-cell" data-label="Expires">
                           {row.expiry ? (
                             <div className="flex items-center gap-1.5">
                               <Clock size={13} className="text-slate-400" />
@@ -203,7 +203,7 @@ export function AtRiskMembersCard({
                             <span className="text-slate-400">—</span>
                           )}
                         </td>
-                        <td className="td">
+                        <td className="td" data-actions>
                           <div className="flex items-center justify-end gap-1">
                             {canWrite && (
                               <Button

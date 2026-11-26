@@ -44,7 +44,7 @@ export function PlanForm({ open, onClose, initial, submitting, onSubmit }) {
           <Input placeholder="e.g. Annual" error={errors.name} {...register('name')} />
         </FormField>
 
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <FormField label="Duration (days)" error={errors.durationDays?.message} required>
             <Input type="number" min="1" error={errors.durationDays} {...register('durationDays')} />
           </FormField>

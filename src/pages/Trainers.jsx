@@ -104,7 +104,7 @@ export default function Trainers() {
             }
           />
         ) : (
-          <div className="overflow-x-auto">
+          <div className="table-stack overflow-x-auto">
             <table className="w-full">
               <thead className="border-b border-slate-200 dark:border-slate-800">
                 <tr>
@@ -119,21 +119,25 @@ export default function Trainers() {
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                 {trainers.map((trainer) => (
                   <tr key={trainer.id} className="transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                    <td className="td">
+                    <td className="td" data-primary>
                       <p className="font-medium text-slate-900 dark:text-slate-100">{trainer.name}</p>
                       <p className="text-xs text-slate-400">{trainer.email || trainer.phone}</p>
                     </td>
-                    <td className="td hidden sm:table-cell">{trainer.specialization}</td>
-                    <td className="td hidden whitespace-nowrap md:table-cell">
+                    <td className="td hidden sm:table-cell" data-label="Specialization">
+                      {trainer.specialization || '—'}
+                    </td>
+                    <td className="td hidden whitespace-nowrap md:table-cell" data-label="Hourly rate">
                       {formatCurrency(trainer.hourlyRate)}/hr
                     </td>
-                    <td className="td hidden whitespace-nowrap lg:table-cell">{formatDate(trainer.hireDate)}</td>
-                    <td className="td">
+                    <td className="td hidden whitespace-nowrap lg:table-cell" data-label="Hired">
+                      {formatDate(trainer.hireDate)}
+                    </td>
+                    <td className="td" data-label="Status">
                       <Badge tone={trainer.active ? 'success' : 'neutral'}>
                         {trainer.active ? 'Active' : 'Inactive'}
                       </Badge>
                     </td>
-                    <td className="td">
+                    <td className="td" data-actions>
                       <div className="flex items-center justify-end gap-1">
                         {canWrite && (
                           <Button

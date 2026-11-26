@@ -288,7 +288,7 @@ export default function Leads() {
             }
           />
         ) : (
-          <div className="overflow-x-auto">
+          <div className="table-stack overflow-x-auto">
             <table className="w-full">
               <thead className="border-b border-slate-200 dark:border-slate-800">
                 <tr>
@@ -309,7 +309,7 @@ export default function Leads() {
                       key={lead.id}
                       className="transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50"
                     >
-                      <td className="td">
+                      <td className="td" data-primary>
                         <div className="flex items-center gap-3">
                           <div className="avatar bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300">
                             {initials(lead.name)}
@@ -322,17 +322,17 @@ export default function Leads() {
                           </div>
                         </div>
                       </td>
-                      <td className="td hidden whitespace-nowrap sm:table-cell">
+                      <td className="td hidden whitespace-nowrap sm:table-cell" data-label="Source">
                         {lead.source || '—'}
                       </td>
-                      <td className="td hidden lg:table-cell">
+                      <td className="td hidden lg:table-cell" data-label="Interested in">
                         {lead.interestedPlanId && planMap[lead.interestedPlanId] ? (
                           <Badge tone="indigo">{planMap[lead.interestedPlanId].name}</Badge>
                         ) : (
                           <span className="text-slate-400">—</span>
                         )}
                       </td>
-                      <td className="td whitespace-nowrap">
+                      <td className="td whitespace-nowrap" data-label="Follow-up">
                         {lead.followUpDate ? (
                           <div>
                             <p className="text-sm">{formatDate(lead.followUpDate)}</p>
@@ -342,12 +342,12 @@ export default function Leads() {
                           <Badge tone="neutral">No date</Badge>
                         )}
                       </td>
-                      <td className="td">
+                      <td className="td" data-label="Status">
                         <Badge tone={STATUS_TONES[lead.status] || 'neutral'}>
                           {leadStatusLabel(lead.status)}
                         </Badge>
                       </td>
-                      <td className="td">
+                      <td className="td" data-actions>
                         <div className="flex items-center justify-end gap-1">
                           {canWrite && lead.status !== 'joined' && (
                             <Button

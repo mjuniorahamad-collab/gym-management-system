@@ -47,7 +47,7 @@ export function ExpenseForm({ open, onClose, initial, submitting, onSubmit }) {
           <Input placeholder="e.g. Electricity bill" error={errors.title} {...register('title')} />
         </FormField>
 
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <FormField label="Category" error={errors.category?.message}>
             <Select error={errors.category} {...register('category')}>
               {EXPENSE_CATEGORIES.map((c) => (

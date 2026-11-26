@@ -272,7 +272,7 @@ export default function Reports() {
         </CardBody>
       </Card>
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
         <StatCard
           title="Revenue"
           value={formatCurrency(totals.revenue, settings.currency)}
@@ -303,7 +303,7 @@ export default function Reports() {
         />
       </div>
 
-      <div className="grid gap-5 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
         <Card>
           <CardHeader title="Cash flow" subtitle="Revenue vs expenses, by month in range" />
           <CardBody>
@@ -319,7 +319,7 @@ export default function Reports() {
         </Card>
       </div>
 
-      <div className="grid gap-5 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
         <Card>
           <CardHeader title="Expenses by category" subtitle="Within the selected range" />
           <CardBody>

@@ -151,7 +151,7 @@ export default function Payments() {
         }
       />
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 sm:grid-cols-3 [&>*:last-child]:col-span-2 sm:[&>*:last-child]:col-span-1">
         <StatCard title="Total revenue" value={formatCurrency(summary.total, settings.currency)} icon={DollarSign} tone="emerald" />
         <StatCard title="This month" value={formatCurrency(summary.thisMonth, settings.currency)} icon={TrendingUp} tone="sky" />
         <StatCard title="Payments recorded" value={payments.length} icon={CreditCard} tone="indigo" />
@@ -181,7 +181,7 @@ export default function Payments() {
           <EmptyState icon={ReceiptIcon} title="No payments found" description="Record your first payment to get started." />
         ) : (
           <>
-            <div className="overflow-x-auto">
+            <div className="table-stack overflow-x-auto">
               <table className="w-full">
                 <thead className="border-b border-slate-200 dark:border-slate-800">
                   <tr>
@@ -200,21 +200,28 @@ export default function Payments() {
                     const plan = planMap[p.planId]
                     return (
                       <tr key={p.id} className="transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                        <td className="td whitespace-nowrap">{formatDate(p.date)}</td>
-                        <td className="td font-medium text-slate-900 dark:text-slate-100">
+                        <td className="td whitespace-nowrap" data-label="Date">
+                          {formatDate(p.date)}
+                        </td>
+                        <td className="td font-medium text-slate-900 dark:text-slate-100" data-primary>
                           {p.memberName || member?.name || 'Unknown'}
                         </td>
-                        <td className="td hidden md:table-cell">{plan?.name || '—'}</td>
-                        <td className="td font-semibold text-emerald-600">
+                        <td className="td hidden md:table-cell" data-label="Plan">
+                          {plan?.name || '—'}
+                        </td>
+                        <td className="td font-semibold text-emerald-600" data-label="Amount">
                           {formatCurrency(p.amount, settings.currency)}
                         </td>
-                        <td className="td hidden sm:table-cell">
+                        <td className="td hidden sm:table-cell" data-label="Method">
                           <Badge tone="neutral">{p.method}</Badge>
                         </td>
-                        <td className="td hidden whitespace-nowrap text-xs text-slate-400 lg:table-cell">
+                        <td
+                          className="td hidden whitespace-nowrap text-xs text-slate-400 lg:table-cell"
+                          data-label="Receipt"
+                        >
                           {p.receiptNo || '—'}
                         </td>
-                        <td className="td">
+                        <td className="td" data-actions>
                           <div className="flex items-center justify-end gap-1">
                             <Button variant="ghost" size="icon" title="Receipt" onClick={() => setReceipt(p)}>
                               <ReceiptIcon size={16} />

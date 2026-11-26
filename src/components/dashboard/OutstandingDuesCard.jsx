@@ -70,7 +70,7 @@ export function OutstandingDuesCard({ rows = [], totalDue = 0, count = 0, settin
             description="All memberships are fully paid. Members with a remaining due will appear here."
           />
         ) : !expanded ? null : (
-          <div className="overflow-x-auto">
+          <div className="table-stack overflow-x-auto">
             <table className="w-full">
               <thead className="border-b border-slate-200 dark:border-slate-800">
                 <tr>
@@ -88,7 +88,7 @@ export function OutstandingDuesCard({ rows = [], totalDue = 0, count = 0, settin
                     key={r.member.id}
                     className="transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50"
                   >
-                    <td className="td">
+                    <td className="td" data-primary>
                       <Link to={`/members/${r.member.id}`} className="flex items-center gap-3">
                         <MemberPhoto member={r.member} size="sm" />
                         <div className="min-w-0">
@@ -101,19 +101,22 @@ export function OutstandingDuesCard({ rows = [], totalDue = 0, count = 0, settin
                         </div>
                       </Link>
                     </td>
-                    <td className="td hidden lg:table-cell">
+                    <td className="td hidden lg:table-cell" data-label="Plan">
                       <Badge tone="indigo">{r.plan.name}</Badge>
                     </td>
-                    <td className="td whitespace-nowrap">
+                    <td className="td whitespace-nowrap" data-label="Total amount">
                       {formatCurrency(r.planAmount, currency)}
                     </td>
-                    <td className="td hidden whitespace-nowrap text-emerald-600 sm:table-cell">
+                    <td
+                      className="td hidden whitespace-nowrap text-emerald-600 sm:table-cell"
+                      data-label="Paid"
+                    >
                       {formatCurrency(r.totalPaid, currency)}
                     </td>
-                    <td className="td whitespace-nowrap font-semibold text-rose-600">
+                    <td className="td whitespace-nowrap font-semibold text-rose-600" data-label="Remaining due">
                       {formatCurrency(r.dueAmount, currency)}
                     </td>
-                    <td className="td">
+                    <td className="td" data-actions>
                       <div className="flex justify-end">
                         {canWrite && (
                           <Button

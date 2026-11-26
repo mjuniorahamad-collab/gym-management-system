@@ -69,7 +69,7 @@ export function LeadForm({ open, onClose, initial, plans = [], submitting, onSub
       }
     >
       <form id="lead-form" onSubmit={handleSubmit(onSubmit)} className="space-y-4" noValidate>
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <FormField label="Name" error={errors.name?.message} required>
             <Input placeholder="e.g. Rahul Sharma" error={errors.name} {...register('name')} />
           </FormField>
@@ -78,7 +78,7 @@ export function LeadForm({ open, onClose, initial, plans = [], submitting, onSub
           </FormField>
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <FormField label="Source" error={errors.source?.message}>
             <Select error={errors.source} {...register('source')}>
               {LEAD_SOURCES.map((source) => (
@@ -100,7 +100,7 @@ export function LeadForm({ open, onClose, initial, plans = [], submitting, onSub
           </FormField>
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <FormField
             label="Follow-up date"
             error={errors.followUpDate?.message}

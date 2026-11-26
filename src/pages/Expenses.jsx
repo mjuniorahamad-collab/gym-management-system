@@ -131,7 +131,7 @@ export default function Expenses() {
         }
       />
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 sm:grid-cols-3 [&>*:last-child]:col-span-2 sm:[&>*:last-child]:col-span-1">
         <StatCard title="Total expenses" value={formatCurrency(summary.total, settings.currency)} icon={Wallet} tone="rose" />
         <StatCard title="This month" value={formatCurrency(summary.thisMonth, settings.currency)} icon={TrendingDown} tone="amber" />
         <StatCard title="Expense entries" value={expenses.length} icon={TrendingUp} tone="indigo" />
@@ -161,7 +161,7 @@ export default function Expenses() {
           <EmptyState icon={ReceiptIcon} title="No expenses recorded" description="Add your first expense to start tracking." />
         ) : (
           <>
-            <div className="overflow-x-auto">
+            <div className="table-stack overflow-x-auto">
               <table className="w-full">
                 <thead className="border-b border-slate-200 dark:border-slate-800">
                   <tr>
@@ -175,16 +175,20 @@ export default function Expenses() {
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                   {shown.map((e) => (
                     <tr key={e.id} className="transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                      <td className="td whitespace-nowrap">{formatDate(e.date)}</td>
-                      <td className="td">
+                      <td className="td whitespace-nowrap" data-label="Date">
+                        {formatDate(e.date)}
+                      </td>
+                      <td className="td" data-primary>
                         <p className="font-medium text-slate-900 dark:text-slate-100">{e.title}</p>
                         {e.note && <p className="text-xs text-slate-400">{e.note}</p>}
                       </td>
-                      <td className="td hidden sm:table-cell">
+                      <td className="td hidden sm:table-cell" data-label="Category">
                         <Badge tone="neutral">{e.category}</Badge>
                       </td>
-                      <td className="td font-semibold text-rose-600">{formatCurrency(e.amount, settings.currency)}</td>
-                      <td className="td">
+                      <td className="td font-semibold text-rose-600" data-label="Amount">
+                        {formatCurrency(e.amount, settings.currency)}
+                      </td>
+                      <td className="td" data-actions>
                         <div className="flex items-center justify-end gap-1">
                           {canWrite && (
                             <Button

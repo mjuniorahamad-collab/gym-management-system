@@ -102,7 +102,7 @@ export function MemberForm({ open, onClose, initial, plans, submitting, onSubmit
       }
     >
       <form id="member-form" onSubmit={handleSubmit(onSubmit)} className="space-y-4" noValidate>
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <FormField label="Full name" error={errors.name?.message} required>
             <Input placeholder="e.g. Aarav Shrestha" error={errors.name} {...register('name')} />
           </FormField>
@@ -111,7 +111,7 @@ export function MemberForm({ open, onClose, initial, plans, submitting, onSubmit
           </FormField>
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <FormField label="Phone" error={errors.phone?.message} required>
             <Input placeholder="98XXXXXXXX" error={errors.phone} {...register('phone')} />
           </FormField>
@@ -126,7 +126,7 @@ export function MemberForm({ open, onClose, initial, plans, submitting, onSubmit
           </FormField>
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <FormField label="Date of birth" error={errors.dob?.message}>
             <Input type="date" error={errors.dob} {...register('dob')} />
           </FormField>
@@ -135,7 +135,7 @@ export function MemberForm({ open, onClose, initial, plans, submitting, onSubmit
           </FormField>
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <FormField label="Membership plan" error={errors.membershipPlanId?.message}>
             <Select error={errors.membershipPlanId} {...register('membershipPlanId')}>
               <option value="">No plan</option>
@@ -152,7 +152,7 @@ export function MemberForm({ open, onClose, initial, plans, submitting, onSubmit
           <Input placeholder="Area, City" error={errors.address} {...register('address')} />
         </FormField>
 
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <FormField label="Emergency contact name" error={errors.emergencyName?.message}>
             <Input placeholder="Contact person" error={errors.emergencyName} {...register('emergencyName')} />
           </FormField>
