@@ -150,7 +150,9 @@ export default function Plans() {
                 </ul>
               )}
 
-              <div className="mt-6 flex gap-2 border-t border-slate-100 pt-4 dark:border-slate-800">
+              {/* mt-auto keeps the action row on the same baseline in every card,
+                  even when one plan lists fewer features. */}
+              <div className="mt-auto grid grid-cols-[1fr_1fr_auto] items-center gap-2 border-t border-slate-100 pt-4 dark:border-slate-800">
                 {canWrite && (
                   <Button
                     variant="outline"

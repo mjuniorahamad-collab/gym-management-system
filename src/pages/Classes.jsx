@@ -293,12 +293,12 @@ export default function Classes() {
                       </div>
                       <button
                         onClick={() => setBookingFor(gymClass)}
-                        className="mt-3 flex w-full items-center justify-between rounded-md bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+                        className="mt-3 flex w-full items-center justify-between gap-2 rounded-md bg-slate-50 px-2.5 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
                       >
-                        <span className="flex items-center gap-1.5">
-                          <Users size={13} /> Manage bookings
+                        <span className="flex min-w-0 items-center gap-1.5 truncate">
+                          <Users size={13} className="shrink-0" /> Manage bookings
                         </span>
-                        <Badge tone={full ? 'danger' : 'info'}>
+                        <Badge tone={full ? 'danger' : 'info'} className="shrink-0">
                           {list.length}/{gymClass.capacity || 0}
                         </Badge>
                       </button>
