@@ -21,6 +21,7 @@
  * stale until the sweep touches it.
  */
 import { getFunctions, httpsCallable } from 'firebase/functions'
+import { FUNCTIONS_REGION } from './functionsConfig'
 import { isFirebaseConfigured } from '@/firebase'
 
 let warned = {}
@@ -53,7 +54,9 @@ export async function requestReprojection(memberId) {
   if (!isFirebaseConfigured) return { ok: false, reason: 'offline-mode' }
 
   try {
-    const callable = httpsCallable(getFunctions(), 'reprojectMember')
+    // Same region the callable is declared in; the default (us-central1) turned
+    // every request into a 404 against an endpoint that was never there.
+    const callable = httpsCallable(getFunctions(undefined, FUNCTIONS_REGION), 'reprojectMember')
     const { data } = await callable({ memberId })
     return { ok: true, status: data?.status ?? 'ok' }
   } catch (error) {
