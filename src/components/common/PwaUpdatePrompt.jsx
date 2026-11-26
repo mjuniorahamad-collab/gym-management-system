@@ -20,7 +20,7 @@ export function PwaUpdatePrompt() {
     <div
       role="status"
       aria-live="polite"
-      className="fixed inset-x-3 bottom-3 z-50 mx-auto flex max-w-md flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-lg dark:border-slate-700 dark:bg-slate-800"
+      className="fixed inset-x-3 bottom-20 z-50 lg:bottom-3 mx-auto flex max-w-md flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-4 py-3 shadow-lg dark:border-slate-700 dark:bg-slate-800"
     >
       <div className="flex items-center gap-2">
         <RefreshCw size={16} className="shrink-0 text-slate-500 dark:text-slate-400" />

@@ -41,7 +41,7 @@ export function TrainerForm({ open, onClose, initial, submitting, onSubmit }) {
       }
     >
       <form id="trainer-form" onSubmit={handleSubmit(onSubmit)} className="space-y-4" noValidate>
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <FormField label="Full name" error={errors.name?.message} required>
             <Input placeholder="e.g. Arjun Basnet" error={errors.name} {...register('name')} />
           </FormField>
@@ -49,7 +49,7 @@ export function TrainerForm({ open, onClose, initial, submitting, onSubmit }) {
             <Input placeholder="e.g. Strength & Conditioning" error={errors.specialization} {...register('specialization')} />
           </FormField>
         </div>
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <FormField label="Email" error={errors.email?.message}>
             <Input type="email" placeholder="trainer@example.com" error={errors.email} {...register('email')} />
           </FormField>
@@ -57,7 +57,7 @@ export function TrainerForm({ open, onClose, initial, submitting, onSubmit }) {
             <Input placeholder="98XXXXXXXX" error={errors.phone} {...register('phone')} />
           </FormField>
         </div>
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <FormField label="Hourly rate" error={errors.hourlyRate?.message} required>
             <Input type="number" min="0" step="0.01" placeholder="0.00" error={errors.hourlyRate} {...register('hourlyRate')} />
           </FormField>

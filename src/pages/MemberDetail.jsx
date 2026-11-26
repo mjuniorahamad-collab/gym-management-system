@@ -555,25 +555,25 @@ return (
         <ArrowLeft size={16} /> Back to members
       </Link>
 
-      <div className="grid gap-5 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
         {/* Profile card */}
         <Card className="lg:col-span-2 overflow-hidden">
           <div>
             {/* Identity band. The page opens on a face, a name and a status, so a
                 staff member reads the right person at a glance instead of scanning
                 a row of text. Kept to tints and one hairline, not a hero image. */}
-            <div className="bg-gradient-to-br from-indigo-50 via-white to-emerald-50/70 px-5 pb-5 pt-5 dark:from-indigo-500/10 dark:via-slate-900 dark:to-emerald-500/5">
-              <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="bg-gradient-to-br from-indigo-50 via-white to-emerald-50/70 px-4 pb-4 pt-4 dark:from-indigo-500/10 dark:via-slate-900 dark:to-emerald-500/5 sm:px-5 sm:pb-5 sm:pt-5">
+              <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
                 <div className="flex items-center gap-4">
                   <div className="rounded-full bg-white p-1 shadow-sm ring-1 ring-slate-900/5 dark:bg-slate-900 dark:ring-white/10">
-                    <MemberPhoto member={member} size="xl" editable={canWrite} onUpload={handlePhoto} />
+                    <MemberPhoto member={member} size="hero" editable={canWrite} onUpload={handlePhoto} />
                   </div>
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <h2 className="truncate text-xl font-bold tracking-tight text-slate-900 dark:text-slate-100">{member.name}</h2>
                       {member.status && <StatusBadge status={member.status} />}
                     </div>
-                    <p className="mt-1 truncate text-sm text-slate-500 dark:text-slate-400">
+                    <p className="mt-1 break-words text-sm text-slate-500 dark:text-slate-400">
                       {/* A member without an email used to read "No email · 0300…",
                           which looks like a validation error on a profile header. */}
                       {[member.email, member.phone].filter(Boolean).join(' · ')}
@@ -592,7 +592,7 @@ return (
                 </div>
                 {/* Wraps: on a narrow window the four actions used to run past
                     the card edge, which clips them (the card is overflow-hidden). */}
-                <div className="flex flex-wrap gap-2">
+                <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
                   {canFinanceWrite && (
                     <Button
                       variant="success"
@@ -621,13 +621,13 @@ return (
 
             {/* Body: the same tabs and panels, separated from the band by a
                 hairline instead of another card. */}
-            <div className="border-t border-slate-200/80 px-5 pt-4 dark:border-slate-800">
+            <div className="border-t border-slate-200/80 px-4 pt-4 dark:border-slate-800 sm:px-5">
               <Tabs tabs={tabs} active={tab} onChange={setTab} />
             </div>
 
-            <div className="p-5">
+            <div className="p-4 sm:p-5">
               {tab === 'overview' && (
-                <div className="grid gap-5 sm:grid-cols-2">
+                <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
                   <Card>
                     <CardHeader title="Contact details" />
                     <CardBody className="space-y-2 text-sm">
@@ -832,7 +832,7 @@ return (
                   {memberPayments.length === 0 ? (
                     <EmptyState icon={CreditCard} title="No payments yet" />
                   ) : (
-                    <div className="overflow-x-auto">
+                    <div className="table-stack overflow-x-auto">
                       <table className="w-full">
                         <thead className="border-b border-slate-200 dark:border-slate-800">
                           <tr>
@@ -845,10 +845,18 @@ return (
                         <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                           {memberPayments.map((p) => (
                             <tr key={p.id}>
-                              <td className="td whitespace-nowrap">{formatDate(p.date)}</td>
-                              <td className="td font-semibold">{formatCurrency(p.amount, settings.currency)}</td>
-                              <td className="td">{p.method}</td>
-                              <td className="td text-xs text-slate-400">{p.receiptNo || '—'}</td>
+                              <td className="td whitespace-nowrap" data-label="Date">
+                                {formatDate(p.date)}
+                              </td>
+                              <td className="td font-semibold" data-label="Amount">
+                                {formatCurrency(p.amount, settings.currency)}
+                              </td>
+                              <td className="td" data-label="Method">
+                                {p.method}
+                              </td>
+                              <td className="td text-xs text-slate-400" data-label="Receipt">
+                                {p.receiptNo || '—'}
+                              </td>
                             </tr>
                           ))}
                         </tbody>
@@ -863,7 +871,7 @@ return (
                   {memberAttendance.length === 0 ? (
                     <EmptyState icon={ScrollText} title="No attendance recorded" />
                   ) : (
-                    <div className="overflow-x-auto">
+                    <div className="table-stack overflow-x-auto">
                       <table className="w-full">
                         <thead className="border-b border-slate-200 dark:border-slate-800">
                           <tr>
@@ -876,10 +884,16 @@ return (
                         <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                           {memberAttendance.slice(0, 20).map((a) => (
                             <tr key={a.id}>
-                              <td className="td whitespace-nowrap">{formatDate(a.date)}</td>
-                              <td className="td whitespace-nowrap">{formatDateTime(a.checkIn)}</td>
-                              <td className="td whitespace-nowrap">{a.checkOut ? formatDateTime(a.checkOut) : '—'}</td>
-                              <td className="td">
+                              <td className="td whitespace-nowrap" data-label="Date">
+                                {formatDate(a.date)}
+                              </td>
+                              <td className="td whitespace-nowrap" data-label="Check-in">
+                                {formatDateTime(a.checkIn)}
+                              </td>
+                              <td className="td whitespace-nowrap" data-label="Check-out">
+                                {a.checkOut ? formatDateTime(a.checkOut) : '—'}
+                              </td>
+                              <td className="td" data-label="Source">
                                 <Badge tone="neutral">{a.source === 'qr' ? 'QR' : 'Manual'}</Badge>
                               </td>
                             </tr>
@@ -939,7 +953,7 @@ return (
                       {weightProgress.chronological.length === 0 ? (
                         <EmptyState icon={LineChartIcon} title="No weight measurements yet" />
                       ) : (
-                        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
                           <WeightStat label="Starting weight" value={`${formatNumber(weightProgress.starting.weight)} kg`} />
                           <WeightStat label="Current weight" value={`${formatNumber(weightProgress.current.weight)} kg`} />
                           {member.targetWeight ? (
@@ -974,7 +988,7 @@ return (
                         <h4 className="text-sm font-semibold text-slate-900 dark:text-slate-100">Weight history</h4>
                         <p className="text-xs text-slate-400">Oldest → newest</p>
                       </div>
-                      <div className="overflow-x-auto">
+                      <div className="table-stack overflow-x-auto">
                         <table className="w-full">
                           <thead className="border-b border-slate-200 dark:border-slate-800">
                             <tr>
@@ -986,10 +1000,14 @@ return (
                           <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                             {weightProgress.chronological.map((r) => (
                               <tr key={r.id}>
-                                <td className="td whitespace-nowrap">{formatDate(r.date)}</td>
-                                <td className="td font-semibold">{formatNumber(r.weight)} kg</td>
+                                <td className="td whitespace-nowrap" data-label="Date">
+                                  {formatDate(r.date)}
+                                </td>
+                                <td className="td font-semibold" data-label="Weight">
+                                  {formatNumber(r.weight)} kg
+                                </td>
                                 {canWrite && (
-                                  <td className="td">
+                                  <td className="td" data-actions>
                                     <div className="flex justify-end gap-1">
                                       <button
                                         type="button"

@@ -171,7 +171,7 @@ export function PaymentForm({ open, onClose, members, plans, payments = [], memb
           </div>
         )}
 
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <FormField label="Plan (optional)" error={errors.planId?.message}>
             <Select error={errors.planId} {...register('planId')}>
               <option value="">No plan linked</option>
@@ -187,7 +187,7 @@ export function PaymentForm({ open, onClose, members, plans, payments = [], memb
           </FormField>
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <FormField label="Method" error={errors.method?.message}>
             <Select error={errors.method} {...register('method')}>
               {PAYMENT_METHODS.map((m) => (

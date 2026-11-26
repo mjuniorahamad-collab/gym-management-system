@@ -437,7 +437,7 @@ export function RenewalModal({ open, onClose, member, currentPlan, currentExpiry
                 <p className="mt-1 text-xs text-rose-600 dark:text-rose-400">{errors.customDate.message}</p>
               )}
             </div>
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div>
                 <p className="text-sm text-slate-500 dark:text-slate-400">Effective from</p>
                 <p className="font-semibold text-slate-900 dark:text-slate-100">

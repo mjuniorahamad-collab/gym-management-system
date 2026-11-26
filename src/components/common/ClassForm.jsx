@@ -59,7 +59,7 @@ export function ClassForm({ open, onClose, initial, trainers, submitting, onSubm
           <textarea rows={2} className="input" placeholder="Short description…" {...register('description')} />
         </FormField>
 
-        <div className="grid gap-4 sm:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <FormField label="Day" error={errors.dayOfWeek?.message}>
             <Select error={errors.dayOfWeek} {...register('dayOfWeek')}>
               {DAYS_OF_WEEK.map((d) => (
@@ -81,7 +81,7 @@ export function ClassForm({ open, onClose, initial, trainers, submitting, onSubm
           </FormField>
         </div>
 
-        <div className="grid gap-4 sm:grid-cols-3">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           <FormField label="Start time" error={errors.startTime?.message}>
             <Input type="time" error={errors.startTime} {...register('startTime')} />
           </FormField>

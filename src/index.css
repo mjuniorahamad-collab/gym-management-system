@@ -307,3 +307,136 @@
     break-inside: auto !important;
   }
 }
+
+/* ---------------------------------------------------------------
+   Mobile pass
+   ------------------------------------------------------------- */
+
+/* A stray wide element used to make the whole page pan sideways on a phone.
+   Clip at the body so only deliberate scroll containers (tables, tab strips)
+   can scroll horizontally. */
+body {
+  overflow-x: clip;
+}
+
+@media (max-width: 767px) {
+  /* iOS zooms the viewport when a focused field is under 16px, which then
+     leaves the page scrolled sideways for the rest of the session. */
+  .input,
+  select,
+  textarea,
+  input[type='search'] {
+    font-size: 16px;
+  }
+
+  /* Thumb-sized targets; 36-40px is the smallest that stays comfortable. */
+  .btn {
+    min-height: 2.5rem;
+  }
+  .btn-sm {
+    min-height: 2.25rem;
+  }
+  .btn-icon {
+    height: 2.5rem;
+    width: 2.5rem;
+  }
+
+  .card {
+    border-radius: 0.875rem;
+  }
+}
+
+/* Data tables become stacked cards below md. Every secondary cell carries a
+   `data-label` so its value keeps a caption once the column header is gone;
+   the first cell (the row's identity) and the actions cell stay full width. */
+@media (max-width: 767px) {
+  .table-stack table,
+  .table-stack thead,
+  .table-stack tbody,
+  .table-stack tr,
+  .table-stack td {
+    display: block;
+    width: 100%;
+  }
+
+  .table-stack thead {
+    display: none;
+  }
+
+  .table-stack tr {
+    display: flex;
+    flex-direction: column;
+    padding: 0.875rem 1rem;
+    border-top: 1px solid #eef2f7;
+  }
+
+  /* The row's identity goes first in the card even when the table puts a date
+     column ahead of it. */
+  .table-stack td[data-primary] {
+    order: -1;
+  }
+  .dark .table-stack tr {
+    border-color: #1e293b;
+  }
+  .table-stack tr:first-child {
+    border-top: 0;
+  }
+  .table-stack tr:last-child {
+    border-bottom: 0;
+  }
+
+  .table-stack td {
+    padding: 0;
+    white-space: normal;
+  }
+  .table-stack td + td {
+    margin-top: 0.4rem;
+  }
+
+  /* Label on the left, value on the right, baseline aligned. */
+  .table-stack td[data-label] {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.75rem;
+    text-align: right;
+  }
+  .table-stack td[data-label]::before {
+    content: attr(data-label);
+    flex-shrink: 0;
+    font-size: 0.7rem;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: #94a3b8;
+    text-align: left;
+  }
+  .dark .table-stack td[data-label]::before {
+    color: #64748b;
+  }
+  .table-stack td[data-label] > * {
+    min-width: 0;
+  }
+  .table-stack td[data-label] .badge {
+    margin-left: auto;
+  }
+
+  /* Actions get their own footer strip so two thumb targets never sit on top
+     of a value. */
+  .table-stack td[data-actions] {
+    margin-top: 0.75rem;
+    padding-top: 0.75rem;
+    border-top: 1px dashed #e2e8f0;
+  }
+  .dark .table-stack td[data-actions] {
+    border-color: #1e293b;
+  }
+  .table-stack td[data-actions] > div {
+    justify-content: flex-start;
+  }
+}
+
+/* Bottom navigation is fixed and needs to clear the home indicator. */
+.pb-safe {
+  padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+}

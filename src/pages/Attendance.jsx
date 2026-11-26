@@ -199,7 +199,7 @@ export default function Attendance() {
     <div className="space-y-5">
       <PageHeader title="Attendance" subtitle="Check members in and out" />
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 sm:grid-cols-3 [&>*:last-child]:col-span-2 sm:[&>*:last-child]:col-span-1">
         <StatCard title="Today's check-ins" value={formatNumber(todaysEntries.length)} icon={UserCheck} tone="emerald" />
         <StatCard
           title="Currently in the gym"
@@ -215,7 +215,7 @@ export default function Attendance() {
         />
       </div>
 
-      <div className="grid gap-5 lg:grid-cols-5">
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-5">
         <Card className="lg:col-span-2">
           <CardHeader title="Quick check-in" subtitle="Search a member and tap check in" />
           <CardBody className="space-y-4">

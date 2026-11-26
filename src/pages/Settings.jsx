@@ -289,7 +289,7 @@ export default function Settings() {
         </div>
       )}
 
-      <div className="grid gap-5 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
         <Card>
           <CardHeader
             title="Personal Training pricing"
@@ -419,7 +419,7 @@ export default function Settings() {
             </div>
 
             <form onSubmit={handleSubmit(onSubmit)} className="space-y-4" noValidate>
-              <div className="grid gap-4 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 <FormField label="Gym name" error={errors.gymName?.message} required>
                   <Input error={errors.gymName} {...register('gymName')} />
                 </FormField>
@@ -427,7 +427,7 @@ export default function Settings() {
                   <Input error={errors.tagline} {...register('tagline')} />
                 </FormField>
               </div>
-              <div className="grid gap-4 sm:grid-cols-3">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                 <FormField label="Currency" error={errors.currency?.message}>
                   <Select error={errors.currency} {...register('currency')}>
                     {CURRENCIES.map((c) => (

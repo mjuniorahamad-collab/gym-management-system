@@ -161,7 +161,7 @@ export default function Login() {
   // creates their own gym for the first time.
   if (pendingOnboarding) {
     return (
-      <div className="flex min-h-screen">
+      <div className="flex min-h-[100dvh]">
         <div className="relative hidden flex-1 items-center justify-center overflow-hidden bg-gradient-to-br from-indigo-700 via-indigo-600 to-emerald-600 p-10 lg:flex">
           <div className="absolute -left-20 -top-20 h-72 w-72 rounded-full bg-white/10 blur-3xl" />
           <div className="absolute -bottom-24 -right-16 h-80 w-80 rounded-full bg-white/10 blur-3xl" />
@@ -177,7 +177,7 @@ export default function Login() {
           </div>
         </div>
 
-        <div className="flex flex-1 items-center justify-center p-6">
+        <div className="flex flex-1 items-center justify-center px-4 py-8 sm:p-6">
           <div className="absolute right-4 top-4">
             <ThemeToggle />
           </div>
@@ -260,7 +260,7 @@ export default function Login() {
   }
 
   return (
-    <div className="flex min-h-screen">
+    <div className="flex min-h-[100dvh]">
       {/* Brand panel */}
       <div className="relative hidden flex-1 items-center justify-center overflow-hidden bg-gradient-to-br from-indigo-700 via-indigo-600 to-emerald-600 p-10 lg:flex">
         <div className="absolute -left-20 -top-20 h-72 w-72 rounded-full bg-white/10 blur-3xl" />
@@ -286,7 +286,7 @@ export default function Login() {
       </div>
 
       {/* Form panel */}
-      <div className="flex flex-1 items-center justify-center p-6">
+      <div className="flex flex-1 items-center justify-center px-4 py-8 sm:p-6">
         <div className="absolute right-4 top-4">
           <ThemeToggle />
         </div>

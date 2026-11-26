@@ -16,6 +16,9 @@ const SIZES = {
   md: 'h-12 w-12 text-sm',
   lg: 'h-20 w-20 text-lg',
   xl: 'h-32 w-32 text-3xl',
+  // The member page's face: 80px on a phone leaves room for the name and the
+  // contact line beside it, 128px from the small breakpoint up.
+  hero: 'h-20 w-20 text-lg sm:h-32 sm:w-32 sm:text-3xl',
 }
 
 /**

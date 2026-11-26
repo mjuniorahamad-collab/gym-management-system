@@ -330,7 +330,7 @@ export default function Dashboard() {
 
   if (loading) {
     return (
-      <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:gap-5 xl:grid-cols-4">
         {Array.from({ length: 4 }).map((_, i) => (
           <div key={i} className="card h-28 animate-pulse" />
         ))}
@@ -386,7 +386,7 @@ export default function Dashboard() {
         </Link>
       )}
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 sm:gap-4 xl:grid-cols-4">
         <StatCard
           title="Total Members"
           value={formatNumber(stats.totalMembers)}
@@ -465,7 +465,7 @@ export default function Dashboard() {
             />
           ) : (
             <>
-              <div className="overflow-x-auto">
+              <div className="table-stack overflow-x-auto">
                 <table className="w-full">
                   <thead className="border-b border-slate-200 dark:border-slate-800">
                     <tr>
@@ -484,7 +484,7 @@ export default function Dashboard() {
                         key={member.id}
                         className="transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50"
                       >
-                        <td className="td">
+                        <td className="td" data-primary>
                           <Link to={`/members/${member.id}`} className="flex items-center gap-3">
                             <MemberPhoto member={member} size="sm" />
                             <div className="min-w-0">
@@ -497,22 +497,26 @@ export default function Dashboard() {
                             </div>
                           </Link>
                         </td>
-                        <td className="td hidden whitespace-nowrap md:table-cell">
+                        <td className="td hidden whitespace-nowrap md:table-cell" data-label="Phone">
                           {member.phone || '—'}
                         </td>
-                        <td className="td hidden lg:table-cell">
+                        <td className="td hidden lg:table-cell" data-label="Plan">
                           {plan ? (
                             <Badge tone="indigo">{plan.name}</Badge>
                           ) : (
                             <span className="text-slate-400">—</span>
                           )}
                         </td>
-                        <td className="td whitespace-nowrap">{formatDate(expiry)}</td>
-                        <td className="td whitespace-nowrap">{daysLabel(days)}</td>
-                        <td className="td">
+                        <td className="td whitespace-nowrap" data-label="Expires">
+                          {formatDate(expiry)}
+                        </td>
+                        <td className="td whitespace-nowrap" data-label="Days left">
+                          {daysLabel(days)}
+                        </td>
+                        <td className="td" data-label="Status">
                           <ExpiryBadge days={days} />
                         </td>
-                        <td className="td">
+                        <td className="td" data-actions>
                           <div className="flex justify-end gap-1">
                             {canFinanceWrite && (
                               <Button
@@ -551,7 +555,7 @@ export default function Dashboard() {
         </CardBody>
       </Card>
 
-      <div className="grid gap-5 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
         {canFinance && (
           <Card>
             <CardHeader
@@ -573,7 +577,7 @@ export default function Dashboard() {
         </Card>
       </div>
 
-      <div className="grid gap-5 lg:grid-cols-3">
+      <div className="grid grid-cols-1 gap-5 lg:grid-cols-3">
         <Card className={canFinance ? 'lg:col-span-2' : 'lg:col-span-3'}>
           <CardHeader
             title="Recent Check-ins"

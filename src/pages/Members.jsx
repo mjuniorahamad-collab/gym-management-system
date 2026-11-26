@@ -336,7 +336,7 @@ export default function Members() {
           />
         ) : (
           <>
-            <div className="overflow-x-auto">
+            <div className="table-stack overflow-x-auto">
               <table className="w-full">
                 <thead className="border-b border-slate-200 dark:border-slate-800">
                   <tr>
@@ -351,7 +351,7 @@ export default function Members() {
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                   {members.map((member) => (
                     <tr key={member.id} className="transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50">
-                      <td className="td">
+                      <td className="td" data-primary>
                         <Link to={`/members/${member.id}`} className="flex items-center gap-3">
                           <MemberPhoto member={member} size="sm" />
                           <div className="min-w-0">
@@ -365,15 +365,17 @@ export default function Members() {
                           </div>
                         </Link>
                       </td>
-                      <td className="td hidden whitespace-nowrap md:table-cell">{member.phone}</td>
-                      <td className="td hidden lg:table-cell">
+                      <td className="td hidden whitespace-nowrap md:table-cell" data-label="Phone">
+                        {member.phone || '—'}
+                      </td>
+                      <td className="td hidden lg:table-cell" data-label="Plan">
                         {planMap[member.membershipPlanId] ? (
                           <Badge tone="indigo">{planMap[member.membershipPlanId].name}</Badge>
                         ) : (
                           <span className="text-slate-400">—</span>
                         )}
                       </td>
-                      <td className="td">
+                      <td className="td" data-label="Status">
                         {/* Currency and freezing are orthogonal, so they are two
                             badges rather than one status: a member can be
                             "Expiring Soon" AND frozen, and showing only one of
@@ -383,10 +385,10 @@ export default function Members() {
                           <FrozenBadge isFrozen={member.isFrozen} freezeUntil={member.freezeUntil} />
                         </div>
                       </td>
-                      <td className="td hidden whitespace-nowrap sm:table-cell">
+                      <td className="td hidden whitespace-nowrap sm:table-cell" data-label="Joined">
                         {formatDate(member.joinDate)}
                       </td>
-                      <td className="td">
+                      <td className="td" data-actions>
                         <div className="flex items-center justify-end gap-1">
                           <Link to={`/members/${member.id}`}>
                             <Button variant="ghost" size="icon" title="View">
