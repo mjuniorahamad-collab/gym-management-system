@@ -186,8 +186,14 @@ describe('firestore rules — renewal write path', () => {
     expect(block).toContain('allow create, update: if isOwner()')
     expect(block).toContain('request.resource.data.gymId == gymOf(request.auth.uid)')
     expect(block).toContain('gymOf(request.auth.uid) == gymId')
-    // Deletes are never client-side.
-    expect(block).toContain('allow delete: if false')
+    // Deletes are client-side for the LOGO ONLY: removing a wrong logo is the
+    // undo of uploading one. `app` shares this collection and removing it would
+    // leave the tenant unconfigured, so the doc id is part of the condition.
+    expect(block).toContain("allow delete: if doc == 'branding'")
+    const deleteClause = block.slice(block.indexOf("allow delete: if doc == 'branding'"))
+    expect(deleteClause).toContain('isOwner()')
+    expect(deleteClause).toContain('gymOf(request.auth.uid) == gymId')
+    expect(deleteClause).toContain('resource.data.gymId == gymOf(request.auth.uid)')
   })
 
   it('keeps member PT status tenancy-scoped (member writes still gated by isStaff + tenancy)', () => {
