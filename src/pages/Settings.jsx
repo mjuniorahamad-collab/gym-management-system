@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Building2, Database, Dumbbell, Loader2, MessageCircle, ShieldCheck, Upload } from 'lucide-react'
+import { Building2, Database, Dumbbell, Loader2, MessageCircle, ShieldCheck, Trash2, Upload } from 'lucide-react'
 import { settingsFormSchema, ptSurchargeSchema } from '@/schemas/validationSchemas'
 import { useSettings, DEFAULT_SETTINGS } from '@/context/SettingsContext'
 import { useToast } from '@/context/ToastContext'
-import { saveGymLogo } from '@/services/photoStore'
+import { removeGymLogo, saveGymLogo } from '@/services/photoStore'
 import { getPtSurcharge, setPtSurcharge as persistPtSurcharge } from '@/services/pt'
 import { getWhatsAppLink, setWhatsAppLink } from '@/services/whatsappGroup'
 import { loadSampleData } from '@/services/seedService'
@@ -75,6 +75,8 @@ export default function Settings() {
   const [whatsAppSaving, setWhatsAppSaving] = useState(false)
   const [whatsAppError, setWhatsAppError] = useState('')
   const logoRef = useRef(null)
+  const [logoConfirm, setLogoConfirm] = useState(false)
+  const [removingLogo, setRemovingLogo] = useState(false)
 
   const {
     register,
@@ -215,6 +217,28 @@ export default function Settings() {
       if (logoRef.current) logoRef.current.value = ''
     }
   }
+  // Removing the logo is the undo of uploading one, and the only way back from a
+  // wrong file on every printed receipt. firestore.rules allows a client delete
+  // for the branding document and nothing else in this collection, so this is
+  // owner-only exactly like the upload beside it.
+  const handleRemoveLogo = async () => {
+    if (!gymId) {
+      toast.error('Your gym could not be resolved')
+      return
+    }
+    setRemovingLogo(true)
+    try {
+      await removeGymLogo(gymId)
+      refreshLogo()
+      toast.success('Logo removed')
+    } catch (err) {
+      toast.error(err.message || 'Could not remove the logo')
+    } finally {
+      setRemovingLogo(false)
+      setLogoConfirm(false)
+    }
+  }
+
   const handleSeed = async () => {
     setSeeding(true)
     try {
@@ -412,6 +436,17 @@ export default function Settings() {
                     {uploading ? <Loader2 size={14} className="animate-spin" /> : <Upload size={14} />}
                     Upload logo
                   </Button>
+                  {logoSrc && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setLogoConfirm(true)}
+                      disabled={removingLogo}
+                    >
+                      <Trash2 size={14} />
+                      Remove
+                    </Button>
+                  )}
                   <span className="text-[11px] text-slate-400">PNG or JPG · up to 10 MB</span>
                 </div>
                 <input ref={logoRef} type="file" accept="image/*" className="hidden" onChange={handleLogo} />
@@ -554,6 +589,16 @@ export default function Settings() {
           </CardBody>
         </Card>
       </div>
+
+      <ConfirmDialog
+        open={logoConfirm}
+        onCancel={() => setLogoConfirm(false)}
+        onConfirm={handleRemoveLogo}
+        loading={removingLogo}
+        title="Remove the gym logo?"
+        message="Receipts, member cards and the login screen go back to the default mark until you upload a new one."
+        confirmLabel="Remove logo"
+      />
 
       <ConfirmDialog
         open={migrateConfirm}

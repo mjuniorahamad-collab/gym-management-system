@@ -28,16 +28,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 const { mocks } = vi.hoisted(() => ({
   mocks: {
     doc: vi.fn(() => ({ id: 'ref' })),
+    deleteDoc: vi.fn(),
     getDoc: vi.fn(),
     setDoc: vi.fn(),
     writeBatch: vi.fn(),
-    batch: { set: vi.fn(), update: vi.fn(), commit: vi.fn() },
+    batch: { set: vi.fn(), update: vi.fn(), delete: vi.fn(), commit: vi.fn() },
     serverTimestamp: vi.fn(() => 'SERVER_TS'),
     makeThumbnail: vi.fn(),
   },
 }))
 
 vi.mock('firebase/firestore', () => ({
+  deleteDoc: mocks.deleteDoc,
   doc: mocks.doc,
   getDoc: mocks.getDoc,
   setDoc: mocks.setDoc,
@@ -58,6 +60,8 @@ const {
   MEMBER_PHOTOS_COLLECTION,
   loadGymLogo,
   loadMemberPhoto,
+  removeGymLogo,
+  removeMemberPhoto,
   saveGymLogo,
   saveMemberPhoto,
 } = await import('@/services/photoStore')
@@ -223,6 +227,39 @@ describe('reads', () => {
     mocks.getDoc.mockResolvedValue(snapshot({ data: THUMB.dataUrl }))
     await expect(loadGymLogo(GYM)).resolves.toBe(THUMB.dataUrl)
     expect(docPath()).toEqual(['gyms', GYM, 'settings', BRANDING_DOC_ID])
+  })
+
+  // Removal is the undo of an upload. The flag and the bytes travel together in
+  // one batch for the same reason the save writes them together: a member must
+  // never be marked as having a photo that is gone, and bytes must never be left
+  // behind with no way to reach them.
+  it('removes a member photo and its hasPhoto flag in one commit', async () => {
+    await removeMemberPhoto(MEMBER)
+
+    expect(mocks.batch.delete).toHaveBeenCalledTimes(1)
+    expect(mocks.batch.update).toHaveBeenCalledWith(
+      { id: 'ref' },
+      expect.objectContaining({ hasPhoto: false, photoUpdatedAt: 'SERVER_TS' })
+    )
+    expect(mocks.batch.commit).toHaveBeenCalledTimes(1)
+    expect(mocks.writeBatch).toHaveBeenCalledTimes(1)
+  })
+
+  it('refuses to remove a photo without a member id', async () => {
+    await expect(removeMemberPhoto('  ')).rejects.toThrow(/member id/i)
+    expect(mocks.batch.commit).not.toHaveBeenCalled()
+  })
+
+  it('deletes the branding document for a gym', async () => {
+    await removeGymLogo(GYM)
+
+    expect(mocks.deleteDoc).toHaveBeenCalledTimes(1)
+    expect(docPath()).toEqual(['gyms', GYM, 'settings', BRANDING_DOC_ID])
+  })
+
+  it('refuses to remove a logo without a gym identity', async () => {
+    await expect(removeGymLogo('')).rejects.toThrow(/gym identity/i)
+    expect(mocks.deleteDoc).not.toHaveBeenCalled()
   })
 
   it('propagates a denied read so the caller can show initials', async () => {

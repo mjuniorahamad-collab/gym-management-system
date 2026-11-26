@@ -1,12 +1,13 @@
 import { useRef, useState } from 'react'
-import { Camera, Loader2 } from 'lucide-react'
+import { Camera, Loader2, Trash2 } from 'lucide-react'
 import clsx from 'clsx'
 import { initials } from '@/utils/formatters'
-import { saveMemberPhoto } from '@/services/photoStore'
+import { removeMemberPhoto, saveMemberPhoto } from '@/services/photoStore'
 import { useMemberPhoto } from '@/hooks/usePhotoStore'
 import { useSecureImage } from '@/hooks/useSecureImage'
 import { useAuth } from '@/context/AuthContext'
 import { useToast } from '@/context/ToastContext'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 
 // One scale for every avatar in the app: 36px in tables, 48/56px in cards, 80px
 // on the membership card and 128px on the member's own page. The text size is on
@@ -40,7 +41,7 @@ function initialsTint(seed) {
   }
 }
 
-export function MemberPhoto({ member, size = 'md', editable = false, onUpload }) {
+export function MemberPhoto({ member, size = 'md', editable = false, onUpload, onRemove }) {
   const [uploading, setUploading] = useState(false)
   // The bytes returned by the upload itself, so the new photo is visible before
   // the re-read lands. Tagged with the member they belong to and compared at
@@ -49,6 +50,10 @@ export function MemberPhoto({ member, size = 'md', editable = false, onUpload })
   // previous member's face under the next member's name for at least one frame
   // (and forever if the row never re-mounts).
   const [localPhoto, setLocalPhoto] = useState(null)
+  // Removal is the undo of an upload, so it is confirmed like every other
+  // destructive action in the app rather than fired on a single tap.
+  const [confirmRemove, setConfirmRemove] = useState(false)
+  const [removing, setRemoving] = useState(false)
   const inputRef = useRef(null)
 
   // The gym identity comes from the signed-in users/{uid} profile, which is the
@@ -68,9 +73,11 @@ export function MemberPhoto({ member, size = 'md', editable = false, onUpload })
   // have no avatar and asks for nothing: that alone removes most of the reads on
   // a list where only some members have a photo.
   const hasStoredPhoto = member?.hasPhoto === true
-  const { dataUrl: storedUrl, loading: storedLoading } = useMemberPhoto(
-    hasStoredPhoto ? member.id : null
-  )
+  const {
+    dataUrl: storedUrl,
+    loading: storedLoading,
+    refresh: refreshStoredPhoto,
+  } = useMemberPhoto(hasStoredPhoto ? member.id : null)
 
   const handleFile = async (e) => {
     const file = e.target.files?.[0]
@@ -92,6 +99,26 @@ export function MemberPhoto({ member, size = 'md', editable = false, onUpload })
     } finally {
       setUploading(false)
       if (inputRef.current) inputRef.current.value = ''
+    }
+  }
+
+  const handleRemove = async () => {
+    if (!member?.id) return
+    setRemoving(true)
+    try {
+      await removeMemberPhoto(member.id)
+      // The bytes the last upload returned outrank the stored read, so they have
+      // to be dropped explicitly or the face would stay on screen.
+      setLocalPhoto(null)
+      refreshStoredPhoto()
+      onRemove?.()
+      toast.success('Photo removed')
+    } catch (err) {
+      console.error('Photo removal failed', err)
+      toast.error(err?.message || 'Could not remove photo')
+    } finally {
+      setRemoving(false)
+      setConfirmRemove(false)
     }
   }
 
@@ -169,7 +196,28 @@ export function MemberPhoto({ member, size = 'md', editable = false, onUpload })
           >
             {uploading ? <Loader2 size={13} className="animate-spin" /> : <Camera size={13} />}
           </button>
+          {photoSrc && (
+            <button
+              type="button"
+              onClick={() => setConfirmRemove(true)}
+              disabled={uploading || removing}
+              className="absolute -bottom-0.5 -left-0.5 flex h-7 w-7 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 shadow-sm transition-colors hover:bg-red-50 hover:text-red-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-red-500 focus-visible:ring-offset-2 disabled:opacity-60 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-red-500/15 dark:hover:text-red-400 print:hidden"
+              aria-label="Remove photo"
+              title="Remove photo"
+            >
+              <Trash2 size={13} />
+            </button>
+          )}
           <input ref={inputRef} type="file" accept="image/*" className="hidden" onChange={handleFile} />
+          <ConfirmDialog
+            open={confirmRemove}
+            onCancel={() => setConfirmRemove(false)}
+            onConfirm={handleRemove}
+            loading={removing}
+            title="Remove this photo?"
+            message={`${member?.name || 'This member'}'s photo will be deleted. You can upload another one at any time.`}
+            confirmLabel="Remove photo"
+          />
         </>
       )}
     </div>

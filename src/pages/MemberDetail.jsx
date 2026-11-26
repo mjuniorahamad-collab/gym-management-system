@@ -369,6 +369,15 @@ const canWrite = can('members.write')
       toast.error(e?.message || 'Could not update photo')
     }
   }
+  // Removal toasts and clears the bytes itself, so the page only re-reads the
+  // member (so `hasPhoto` stops claiming a photo) and records the audit entry.
+  // The profile must not stay open on a face that no longer exists.
+  const handlePhotoRemoved = () => {
+    logAudit({ action: 'update', entity: 'members', entityId: id, details: { photo: false } })
+      .catch((e) => console.error('Photo removal audit failed', e))
+    reload()
+  }
+
   const handlePayment = async (values) => {
     setSubmitting(true)
     try {
@@ -566,7 +575,13 @@ return (
               <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between">
                 <div className="flex items-center gap-4">
                   <div className="rounded-full bg-white p-1 shadow-sm ring-1 ring-slate-900/5 dark:bg-slate-900 dark:ring-white/10">
-                    <MemberPhoto member={member} size="hero" editable={canWrite} onUpload={handlePhoto} />
+                    <MemberPhoto
+                      member={member}
+                      size="hero"
+                      editable={canWrite}
+                      onUpload={handlePhoto}
+                      onRemove={handlePhotoRemoved}
+                    />
                   </div>
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
