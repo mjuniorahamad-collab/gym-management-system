@@ -183,7 +183,7 @@ export function PaymentForm({ open, onClose, members, plans, payments = [], memb
             </Select>
           </FormField>
           <FormField label="Amount" error={errors.amount?.message} required>
-            <Input type="number" min="0" step="0.01" placeholder="0.00" error={errors.amount} {...register('amount')} />
+            <Input type="number" inputMode="decimal" min="0" step="0.01" placeholder="0.00" error={errors.amount} {...register('amount')} />
           </FormField>
         </div>
 

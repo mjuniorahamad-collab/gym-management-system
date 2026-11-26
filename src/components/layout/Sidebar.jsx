@@ -98,7 +98,7 @@ export function Sidebar() {
             </div>
           </div>
           <button
-            className="rounded-lg p-1 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 lg:hidden"
+            className="flex h-9 w-9 items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 lg:hidden"
             onClick={() => setSidebarOpen(false)}
             aria-label="Close menu"
           >

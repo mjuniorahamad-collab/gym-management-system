@@ -599,7 +599,7 @@ export function RenewalModal({ open, onClose, member, currentPlan, currentExpiry
 
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
             <FormField label="Amount paid now" error={errors.amount?.message} hint="Leave 0 to record a due membership" required>
-              <Input type="number" min="0" step="0.01" placeholder="0.00" error={errors.amount} {...register('amount')} />
+              <Input type="number" inputMode="decimal" min="0" step="0.01" placeholder="0.00" error={errors.amount} {...register('amount')} />
             </FormField>
             <FormField label="Method" error={errors.method?.message} required>
               <Select error={errors.method} {...register('method')}>
