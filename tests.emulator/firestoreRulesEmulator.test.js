@@ -670,6 +670,9 @@ describe('firestore rules — owner gym self-provisioning (onboarding)', () => {
     await testEnv2.withSecurityRulesDisabled(async (ctx) => {
       // An existing provisioned gym (out-of-band) that must never be claimed.
       await ctx.firestore().doc('gyms/gym-abc').set({ ownerUid: 'existing-owner' })
+      // Staff bound to a gym id whose owner-of-record document is NOT there: the
+      // state SettingsContext reads to tell "no gym" apart from "read failed".
+      await ctx.firestore().doc('users/ghost-staff').set({ role: 'admin', gymId: 'gym-ghost' })
     })
   })
 
@@ -705,6 +708,36 @@ describe('firestore rules — owner gym self-provisioning (onboarding)', () => {
     await assertFails(ctx.firestore().doc('gyms/gym-abc').update({ name: 'Mutate' }))
     await assertFails(ctx.firestore().doc('gyms/gym-abc').delete())
     await ctx.cleanup()
+  })
+
+  it('lets bound staff read their own gym document even when it does not exist', async () => {
+    // SettingsContext: `gymSnap.exists() ? gymSnap.data() : null` plus
+    // `gymEstablished`; receiptPrefixGuard: "missing" vs "unreadable". Both need
+    // the read to resolve to an absent snapshot instead of PERMISSION_DENIED.
+    const ctx = testEnv2.authenticatedContext('ghost-staff')
+    await assertSucceeds(ctx.firestore().doc('gyms/gym-ghost').get())
+    await ctx.cleanup()
+    await testEnv2.withSecurityRulesDisabled(async (tctx) => {
+      const snap = await getDoc(tctx.firestore().doc('gyms/gym-ghost'))
+      expect(snap.exists()).toBe(false)
+    })
+  })
+
+  it('the missing gym-document allowance never reaches another gym id', async () => {
+    const ctx = testEnv2.authenticatedContext('ghost-staff')
+    // another absent id, and a real gym owned by somebody else
+    await assertFails(ctx.firestore().doc('gyms/gym-ghost-other').get())
+    await assertFails(ctx.firestore().doc('gyms/gym-abc').get())
+    await ctx.cleanup()
+  })
+
+  it('an unbound user cannot read an absent gym document', async () => {
+    // no users/{uid} document at all: hasGym() is false
+    const ctx = testEnv2.authenticatedContext('ghost-unbound')
+    await assertFails(ctx.firestore().doc('gyms/gym-ghost').get())
+    await ctx.cleanup()
+    // and an unauthenticated caller is denied too
+    await assertFails(testEnv2.unauthenticatedContext().firestore().doc('gyms/gym-ghost').get())
   })
 
   it('chains self-provision into a one-time owner-gated profile bind', async () => {
