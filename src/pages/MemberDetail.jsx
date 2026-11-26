@@ -557,57 +557,75 @@ return (
 
       <div className="grid gap-5 lg:grid-cols-3">
         {/* Profile card */}
-        <Card className="lg:col-span-2">
-          <CardBody>
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div className="flex items-center gap-4">
-                <MemberPhoto member={member} size="xl" editable={canWrite} onUpload={handlePhoto} />
-                <div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="text-xl font-bold text-slate-900 dark:text-slate-100">{member.name}</h2>
-                    <StatusBadge status={member.status} />
+        <Card className="lg:col-span-2 overflow-hidden">
+          <div>
+            {/* Identity band. The page opens on a face, a name and a status, so a
+                staff member reads the right person at a glance instead of scanning
+                a row of text. Kept to tints and one hairline, not a hero image. */}
+            <div className="bg-gradient-to-br from-indigo-50 via-white to-emerald-50/70 px-5 pb-5 pt-5 dark:from-indigo-500/10 dark:via-slate-900 dark:to-emerald-500/5">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="flex items-center gap-4">
+                  <div className="rounded-full bg-white p-1 shadow-sm ring-1 ring-slate-900/5 dark:bg-slate-900 dark:ring-white/10">
+                    <MemberPhoto member={member} size="xl" editable={canWrite} onUpload={handlePhoto} />
                   </div>
-                  <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-                    {member.email || 'No email'} · {member.phone}
-                  </p>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    {plan && <Badge tone="indigo">{plan.name}</Badge>}
-                    {member.gender && <Badge tone="neutral">{member.gender}</Badge>}
-                    <Badge tone="neutral">Joined {formatDate(member.joinDate)}</Badge>
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h2 className="truncate text-xl font-bold tracking-tight text-slate-900 dark:text-slate-100">{member.name}</h2>
+                      {member.status && <StatusBadge status={member.status} />}
+                    </div>
+                    <p className="mt-1 truncate text-sm text-slate-500 dark:text-slate-400">
+                      {/* A member without an email used to read "No email · 0300…",
+                          which looks like a validation error on a profile header. */}
+                      {[member.email, member.phone].filter(Boolean).join(' · ')}
+                    </p>
+                    <p className="mt-0.5 font-mono text-[11px] uppercase tracking-widest text-slate-400">
+                      ID · {member.memberNo || '—'}
+                    </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {plan && <Badge tone="indigo">{plan.name}</Badge>}
+                      {member.gender && <Badge tone="neutral">{member.gender}</Badge>}
+                      {member.joinDate && (
+                        <Badge tone="neutral">Joined {formatDate(member.joinDate)}</Badge>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
-              <div className="flex gap-2">
-                {canFinanceWrite && (
-                  <Button
-                    variant="success"
-                    size="sm"
-                    disabled={!online}
-                    title={online ? undefined : 'Unavailable while offline'}
-                    onClick={() => setRenewOpen(true)}
-                  >
-                    <RefreshCcw size={14} /> Renew
+                {/* Wraps: on a narrow window the four actions used to run past
+                    the card edge, which clips them (the card is overflow-hidden). */}
+                <div className="flex flex-wrap gap-2">
+                  {canFinanceWrite && (
+                    <Button
+                      variant="success"
+                      size="sm"
+                      disabled={!online}
+                      title={online ? undefined : 'Unavailable while offline'}
+                      onClick={() => setRenewOpen(true)}
+                    >
+                      <RefreshCcw size={14} /> Renew
+                    </Button>
+                  )}
+                  {canWrite && (
+                    <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
+                      <Pencil size={14} /> Edit
+                    </Button>
+                  )}
+                  <Button variant="outline" size="sm" onClick={() => setQrOpen(true)}>
+                    <QrCode size={14} /> Member card
                   </Button>
-                )}
-                {canWrite && (
-                  <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
-                    <Pencil size={14} /> Edit
+                  <Button variant="outline" size="sm" onClick={() => setShareOpen(true)}>
+                    <Share2 size={14} /> Share Summary
                   </Button>
-                )}
-                <Button variant="outline" size="sm" onClick={() => setQrOpen(true)}>
-                  <QrCode size={14} /> Member card
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => setShareOpen(true)}>
-                  <Share2 size={14} /> Share Summary
-                </Button>
+                </div>
               </div>
             </div>
 
-            <div className="mt-6">
+            {/* Body: the same tabs and panels, separated from the band by a
+                hairline instead of another card. */}
+            <div className="border-t border-slate-200/80 px-5 pt-4 dark:border-slate-800">
               <Tabs tabs={tabs} active={tab} onChange={setTab} />
             </div>
 
-            <div className="mt-5">
+            <div className="p-5">
               {tab === 'overview' && (
                 <div className="grid gap-5 sm:grid-cols-2">
                   <Card>
@@ -1002,7 +1020,7 @@ return (
                 </div>
               )}
             </div>
-          </CardBody>
+          </div>
         </Card>
 
         {/* Sidebar */}

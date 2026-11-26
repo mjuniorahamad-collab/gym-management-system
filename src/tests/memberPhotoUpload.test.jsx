@@ -215,6 +215,22 @@ describe('MemberPhoto upload', () => {
     expect(mocks.useMemberPhoto).toHaveBeenCalledWith(MEMBER.id)
   })
 
+  // Visual states: a loading avatar shows a skeleton over the initials instead of
+  // an empty circle, and the hover overlay only exists where a photo can change.
+  it('shows a skeleton while the stored photo is loading', () => {
+    photoState.loading = true
+    const { container } = render(<MemberPhoto member={{ ...MEMBER, hasPhoto: true }} />)
+    expect(container.querySelector('[data-photo-skeleton]')).toBeTruthy()
+  })
+
+  it('shows the hover affordance only for staff who may change the photo', () => {
+    const editable = render(<MemberPhoto member={{ ...MEMBER, hasPhoto: true }} editable />)
+    const readOnly = render(<MemberPhoto member={{ ...MEMBER, hasPhoto: true }} />)
+
+    expect(editable.container.querySelector('[data-photo-hover]')).toBeTruthy()
+    expect(readOnly.container.querySelector('[data-photo-hover]')).toBeNull()
+  })
+
   // The component holds no identity of its own to substitute, so the only
   // correct behaviour when the profile has no gym is to forward that absence
   // and let the service refuse.

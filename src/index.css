@@ -197,6 +197,12 @@
 }
 
 @media print {
+  /* Avatars keep a hairline edge on paper: the screen ring is a box-shadow, and a
+     shadow either vanishes or smears into a dark halo in print. */
+  .member-photo-img {
+    box-shadow: 0 0 0 2px #fff, 0 0 0 3px #e2e8f0;
+  }
+
   html,
   body {
     background: #fff !important;
