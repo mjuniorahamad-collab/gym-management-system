@@ -550,11 +550,10 @@ service cloud.firestore {
                              && request.resource.data.data.size() < 300 * 1024
                              && request.resource.data.contentType in ['image/webp', 'image/jpeg'];
 
-      // Deleting a photo is the undo of uploading one, so it is granted to
-      // exactly the roles that may upload: a front desk that can replace a face
-      // must be able to take one off as well.
-      allow delete: if (isOwner() || isRole('admin') || isRole('front-desk'))
-        && canDeleteTenant(resource);
+      // Deleting a photo is narrower than uploading one on purpose: a front desk
+      // may correct a face, but erasing a member's photograph is owner/admin
+      // (members.delete), the same split as deleting the member record itself.
+      allow delete: if (isOwner() || isRole('admin')) && canDeleteTenant(resource);
     }
 
     // ---------- Weight records (member fitness progress) -------------------

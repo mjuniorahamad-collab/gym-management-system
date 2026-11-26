@@ -41,7 +41,17 @@ function initialsTint(seed) {
   }
 }
 
-export function MemberPhoto({ member, size = 'md', editable = false, onUpload, onRemove }) {
+export function MemberPhoto({
+  member,
+  size = 'md',
+  editable = false,
+  // Replacing a photo and deleting one are different permissions (a front desk
+  // may do the first, only owner/admin the second), so removal is opt-in rather
+  // than implied by `editable`.
+  removable = false,
+  onUpload,
+  onRemove,
+}) {
   const [uploading, setUploading] = useState(false)
   // The bytes returned by the upload itself, so the new photo is visible before
   // the re-read lands. Tagged with the member they belong to and compared at
@@ -196,7 +206,7 @@ export function MemberPhoto({ member, size = 'md', editable = false, onUpload, o
           >
             {uploading ? <Loader2 size={13} className="animate-spin" /> : <Camera size={13} />}
           </button>
-          {photoSrc && (
+          {removable && photoSrc && (
             <button
               type="button"
               onClick={() => setConfirmRemove(true)}

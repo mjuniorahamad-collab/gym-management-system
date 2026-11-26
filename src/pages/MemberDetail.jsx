@@ -220,6 +220,10 @@ export default function MemberDetail() {
 
 const canWrite = can('members.write')
   const canFinanceWrite = can('finance.write')
+  // Removing a photo is narrower than replacing one: firestore.rules grants the
+  // photo delete to owner/admin (members.delete), so a front desk must not be
+  // shown a button that can only end in PERMISSION_DENIED.
+  const canRemovePhoto = can('members.delete')
   // Financial figures on this page are DERIVED from the payments collection.
   // firestore.rules gates payments reads on isFinance() (owner/admin) and App.jsx
   // routes every finance page behind finance.view, so front-desk and trainer get
@@ -579,6 +583,7 @@ return (
                       member={member}
                       size="hero"
                       editable={canWrite}
+                      removable={canRemovePhoto}
                       onUpload={handlePhoto}
                       onRemove={handlePhotoRemoved}
                     />
