@@ -51,14 +51,34 @@ const appPath = (gymId) => `gyms/${gymId}/settings/app`
 const LOGO = 'data:image/webp;base64,' + 'A'.repeat(2048)
 
 /**
+ * An unsigned JWT for `uid`, the shape the emulator accepts as `request.auth`.
+ * A bare uid (never signed) is rejected as "invalid jwt", so the claims carry the
+ * uid in both places the emulator reads it from.
+ */
+function token(uid) {
+  const b64 = (value) => Buffer.from(JSON.stringify(value)).toString('base64url')
+  const now = Math.floor(Date.now() / 1000)
+  const header = b64({ alg: 'none', typ: 'JWT' })
+  const payload = b64({
+    user_id: uid,
+    sub: uid,
+    aud: PROJECT_ID,
+    iss: `https://securetoken.google.com/${PROJECT_ID}`,
+    iat: now,
+    exp: now + 3600,
+  })
+  return `${header}.${payload}.`
+}
+
+/**
  * Deletes one document through the emulator's REST API as `uid` (or anonymously).
- * The emulator reads the bearer token as the caller's uid, so the rules see the
- * same `request.auth` they see from the SDK.
+ * The emulator evaluates the real ruleset against that token, so the rules see
+ * the same `request.auth` they see from the SDK.
  */
 async function deleteAs(path, uid) {
   const res = await fetch(`${REST}/${path}`, {
     method: 'DELETE',
-    headers: uid ? { Authorization: `Bearer ${uid}` } : {},
+    headers: uid ? { Authorization: `Bearer ${token(uid)}` } : {},
   })
   return res.status
 }
