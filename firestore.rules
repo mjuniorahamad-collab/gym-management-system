@@ -284,10 +284,20 @@ service cloud.firestore {
       //
       // Production list semantics were never probed; nothing here should be read
       // as evidence about the live project.
+      //
+      // A point-read of a gym document that DOES NOT EXIST is permitted for
+      // staff bound to that same gym id. SettingsContext deliberately tells "the
+      // read succeeded and this gym has no owner-of-record" apart from "the
+      // read failed", and the receipt-prefix guard reports `missing` rather than
+      // `unreadable` by the same test; a PERMISSION_DENIED erases that
+      // distinction. A missing document has no contents, so the arm discloses
+      // nothing, and it is limited to the caller's own gym id, so a staff member
+      // cannot probe arbitrary gym ids.
       allow get: if isSignedIn()
-        && resource != null
-        && 'ownerUid' in resource.data
-        && (resource.data.ownerUid == request.auth.uid || (hasGym() && gymOf(request.auth.uid) == gymId));
+        && ((resource == null && hasGym() && gymOf(request.auth.uid) == gymId)
+          || (resource != null
+            && 'ownerUid' in resource.data
+            && (resource.data.ownerUid == request.auth.uid || (hasGym() && gymOf(request.auth.uid) == gymId))));
       // List is admitted ONLY for the caller's own owner-of-record documents.
       // Rules are not filters, so the client query MUST constrain ownerUid to
       // its own uid for this to be provable; an unconstrained list is denied.
