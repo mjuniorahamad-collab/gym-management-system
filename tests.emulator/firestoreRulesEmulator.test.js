@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { assertFails, assertSucceeds, initializeTestEnvironment } from '@firebase/rules-unit-testing'
+import { getDoc } from 'firebase/firestore'
 
 const PROJECT_ID = 'demo-himalye-gym'
 const emulatorHost = process.env.FIRESTORE_EMULATOR_HOST || '127.0.0.1:8080'
@@ -416,6 +417,29 @@ describe('firestore rules — per-gym PT settings + member PT tenancy', () => {
     await assertSucceeds(staffA().doc(`gyms/${GYM_A}/settings/pt`).get())
   })
 
+  it('own-gym staff can read a PT settings doc that was never created (reads as "no surcharge")', async () => {
+    // The app treats a missing doc as "surcharge 0" and reads it before seeding
+    // or recording a payment. A PERMISSION_DENIED here used to abort the seed
+    // halfway and surface an error in Settings, so the absence itself must be
+    // readable rather than denied.
+    await assertSucceeds(ownerA().doc(`gyms/${GYM_A}/settings/pt-absent`).get())
+    await assertSucceeds(staffA().doc(`gyms/${GYM_A}/settings/pt-absent`).get())
+    // and the path really holds no document, so the reads above resolved
+    // absence instead of passing because something was provisioned there
+    await env.withSecurityRulesDisabled(async (ctx) => {
+      const snap = await getDoc(ctx.firestore().doc(`gyms/${GYM_A}/settings/pt-absent`))
+      expect(snap.exists()).toBe(false)
+    })
+  })
+
+  it('the missing-doc allowance never reaches another gym path', async () => {
+    // Reading absence is allowed only under the caller's own gym, otherwise it
+    // would let one gym probe which documents exist in another.
+    await assertFails(ownerA().doc(`gyms/${GYM_B}/settings/pt-absent`).get())
+    await assertFails(ownerB().doc(`gyms/${GYM_A}/settings/pt-absent`).get())
+    await assertFails(staffA().doc(`gyms/${GYM_B}/settings/pt-absent`).get())
+  })
+
   it('a cross-gym owner cannot read another gym PT settings', async () => {
     await assertFails(ownerA().doc(`gyms/${GYM_B}/settings/pt`).get())
     await assertFails(ownerB().doc(`gyms/${GYM_A}/settings/pt`).get())
@@ -456,9 +480,12 @@ describe('firestore rules — per-gym PT settings + member PT tenancy', () => {
     // unbound owner (profile exists but no gymId yet) cannot access PT settings
     const unboundCtx = env.authenticatedContext('pt-unbound').firestore()
     await assertFails(unboundCtx.doc(`gyms/${GYM_A}/settings/pt`).get())
+    // the missing-doc allowance is for bound staff only
+    await assertFails(unboundCtx.doc(`gyms/${GYM_A}/settings/pt-absent`).get())
     await assertFails(unboundCtx.doc(`gyms/${GYM_A}/settings/pt`).set({ surcharge: 1, gymId: GYM_A }))
     // unauthenticated access is denied too
     await assertFails(env.unauthenticatedContext().firestore().doc(`gyms/${GYM_A}/settings/pt`).get())
+    await assertFails(env.unauthenticatedContext().firestore().doc(`gyms/${GYM_A}/settings/pt-absent`).get())
     await assertFails(env.unauthenticatedContext().firestore().doc(`gyms/${GYM_A}/settings/pt`).set({ surcharge: 1, gymId: GYM_A }))
   })
 
