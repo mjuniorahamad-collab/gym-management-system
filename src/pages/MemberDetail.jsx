@@ -10,6 +10,7 @@ import { editMembershipPeriod, deleteMembershipPeriod, applyPTInclusivePriceToPe
 import { getPtSurcharge } from '@/services/pt'
 import { getWhatsAppLink } from '@/services/whatsappGroup'
 import { getMembershipCharge } from '@/utils/pt'
+import { memberDisplayStatus } from '@/utils/memberStatus'
 import { addWeightRecord, updateWeightRecord, deleteWeightRecord, setFitnessGoal, parseWeightHistory } from '@/services/weightRecords'
 import { useCollection } from '@/hooks/useFirestore'
 import { useOnline } from '@/hooks/useOnline'
@@ -166,6 +167,21 @@ export default function MemberDetail() {
   )
 
   const daysLeft = expiry ? getDaysRemaining(expiry, timezone) : null
+
+  // Same derived status the members list shows: the stored `status` field is a
+  // server-written cache and the projection functions are not deployed, so it is
+  // missing on every member added since and stale after a renewal. The periods
+  // are the authority here too (utils/memberStatus.js).
+  const status = useMemo(
+    () =>
+      memberDisplayStatus({
+        member,
+        memberships: memberships.items,
+        freezes: freezes.items,
+        timezone,
+      }),
+    [member, memberships.items, timezone, freezes.items]
+  )
 
   const memberMemberships = useMemo(
     () =>
@@ -591,7 +607,7 @@ return (
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <h2 className="truncate text-xl font-bold tracking-tight text-slate-900 dark:text-slate-100">{member.name}</h2>
-                      {member.status && <StatusBadge status={member.status} />}
+                      {status && <StatusBadge status={status} />}
                     </div>
                     <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-slate-500 dark:text-slate-400">
                       {/* A member without an email used to read "No email · 0300…",

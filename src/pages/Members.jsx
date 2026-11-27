@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Eye, Pencil, Plus, Trash2, UserPlus } from 'lucide-react'
 import { usePaginatedCollection, useCollection } from '@/hooks/useFirestore'
@@ -10,6 +10,7 @@ import { getPtSurcharge } from '@/services/pt'
 import { getMembershipCharge } from '@/utils/pt'
 import { exportMembersToCsv } from '@/services/export'
 import { MEMBER_STATUS_FILTERS } from '@/utils/constants'
+import { memberDisplayStatus } from '@/utils/memberStatus'
 import { useAuth } from '@/context/AuthContext'
 import { useSettings } from '@/context/SettingsContext'
 import { useToast } from '@/context/ToastContext'
@@ -101,6 +102,15 @@ export default function Members() {
   const plans = useCollection('membershipPlans')
   const planMap = Object.fromEntries(plans.items.map((p) => [p.id, p]))
 
+  // The status shown to staff is DERIVED from the membership periods, not read
+  // from the stored `status` field. That field is a server-written cache and the
+  // projection functions are not deployed, so a member added today has no status
+  // at all (badge "—", missing from the Active filter) and a renewed member keeps
+  // yesterday's. The periods are what a renewal actually writes, so the same pure
+  // engine the server writer uses runs over them here.
+  const memberships = useCollection('memberships')
+  const freezes = useCollection('membershipFreezes')
+
 // `frozen` is a projection FLAG, not a status, so it filters on `isFrozen`
   // rather than `status`. Every entry in MEMBER_STATUS_FILTERS carries its own
   // field/op/value, so the query is built from the selected option rather than
@@ -111,6 +121,13 @@ export default function Members() {
   // the loaded page in JS would report "no frozen members" whenever the first page
   // of 20 happened to contain none, which is worse than not offering the filter.
   const activeStatusFilter = status === 'all' ? null : MEMBER_STATUS_FILTERS.find((f) => f.value === status) ?? null
+
+// `frozen` is a stored FLAG, so it stays a server-side query. The currency
+  // filters (active/expiring/expired) are derived, so they cannot be: the stored
+  // field may be absent or stale. Those are applied to the loaded rows below.
+  const statusFilterValue = activeStatusFilter && activeStatusFilter.value !== 'frozen'
+    ? activeStatusFilter.value
+    : null
 
   const {
     items: members,
@@ -123,7 +140,7 @@ export default function Members() {
     pageSize: 20,
     orderField: 'searchName',
     direction: 'asc',
-    filters: activeStatusFilter
+    filters: activeStatusFilter && !statusFilterValue
       ? [
           {
             field: activeStatusFilter.field ?? 'status',
@@ -134,6 +151,43 @@ export default function Members() {
       : [],
     search: search.trim() ? { field: 'searchName', value: search.trim().toLowerCase() } : null,
   })
+
+  const statusById = useMemo(() => {
+    const map = {}
+    for (const member of members) {
+      map[member.id] = memberDisplayStatus({
+        member,
+        memberships: memberships.items,
+        freezes: freezes.items,
+        timezone,
+      })
+    }
+    return map
+  }, [members, memberships.items, freezes.items, timezone])
+
+  const visibleMembers = useMemo(
+    () =>
+      statusFilterValue
+        ? members.filter((member) => statusById[member.id] === statusFilterValue)
+        : members,
+    [members, statusById, statusFilterValue]
+  )
+
+  // Because the currency filters run on the loaded rows, a page can legitimately
+  // come back with no matches while matching members sit further down the
+  // collection. Keep pulling pages (bounded) rather than telling staff their gym
+  // has no active members.
+  const autoPagesRef = useRef(0)
+  useEffect(() => {
+    autoPagesRef.current = 0
+  }, [statusFilterValue, search])
+
+  useEffect(() => {
+    if (!statusFilterValue || loading || !hasMore) return
+    if (visibleMembers.length >= 20 || autoPagesRef.current >= 10) return
+    autoPagesRef.current += 1
+    loadMore()
+  }, [statusFilterValue, visibleMembers.length, loading, hasMore, loadMore])
 
   const canWrite = can('members.write')
   const canDelete = can('members.delete')
@@ -299,7 +353,7 @@ export default function Members() {
           <CSVExportButton
             onExport={() =>
               exportMembersToCsv(
-                members.map((m) => ({ ...m, planName: planMap[m.membershipPlanId]?.name })),
+                visibleMembers.map((m) => ({ ...m, planName: planMap[m.membershipPlanId]?.name })),
                 settings
               )
             }
@@ -312,7 +366,7 @@ export default function Members() {
           <TableSkeleton rows={6} cols={5} />
         ) : error ? (
           <LoadErrorState label="members" message={error} onRetry={reload} />
-        ) : members.length === 0 ? (
+        ) : visibleMembers.length === 0 ? (
           <EmptyState
             icon={UserPlus}
             title="No members found"
@@ -349,7 +403,7 @@ export default function Members() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {members.map((member) => (
+                  {visibleMembers.map((member) => (
                     <tr key={member.id} className="transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/50">
                       <td className="td" data-primary>
                         <Link to={`/members/${member.id}`} className="flex items-center gap-3">
@@ -381,7 +435,7 @@ export default function Members() {
                             "Expiring Soon" AND frozen, and showing only one of
                             those would hide the other. */}
                         <div className="flex flex-wrap items-center gap-1">
-                          <StatusBadge status={member.status} />
+                          <StatusBadge status={statusById[member.id]} />
                           <FrozenBadge isFrozen={member.isFrozen} freezeUntil={member.freezeUntil} />
                         </div>
                       </td>
@@ -426,7 +480,7 @@ export default function Members() {
                 </tbody>
               </table>
             </div>
-            <Pagination hasMore={hasMore} loading={loading} onLoadMore={loadMore} showing={members.length} />
+            <Pagination hasMore={hasMore} loading={loading} onLoadMore={loadMore} showing={visibleMembers.length} />
           </>
         )}
       </div>
