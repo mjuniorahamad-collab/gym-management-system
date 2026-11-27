@@ -357,7 +357,7 @@ export default function Dashboard() {
         title="Dashboard"
         subtitle="Overview of your gym at a glance."
         actions={
-          members.items.length === 0 && can('seed.data') ? (
+          import.meta.env.DEV && members.items.length === 0 && can('seed.data') ? (
             <Button onClick={handleLoadSample}>
               <Sparkles size={16} /> Load sample data
             </Button>
