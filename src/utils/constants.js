@@ -111,9 +111,15 @@ export const CURRENT_MEMBER_STATUSES = ['active', 'expiring']
  * never match anything, because `frozen` was removed from `MEMBER_STATUSES` when
  * freeze became a derived flag — so the filter silently returned an empty list.
  *
- * It is a real server-side filter rather than page-local filtering on purpose: the
- * member list is paginated, so filtering after a page is fetched would show staff
- * an empty page while frozen members exist further down the collection.
+ * `frozen` is a real server-side filter rather than page-local filtering on purpose:
+ * the member list is paginated, so filtering after a page is fetched would show
+ * staff an empty page while frozen members exist further down the collection.
+ *
+ * The currency options (`active`, `expiring`, `expired`) are NOT server-side: they
+ * are derived from membership periods (utils/memberStatus.js), so Members.jsx
+ * applies them to the loaded rows and keeps pulling pages until the filter is
+ * satisfied. The stored `status` field they used to query is a cache the server
+ * writer has not been able to fill.
  */
 export const MEMBER_STATUS_FILTERS = [
   ...MEMBER_STATUSES,
