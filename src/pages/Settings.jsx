@@ -532,16 +532,22 @@ export default function Settings() {
             actions={<Database size={16} className="text-slate-400" />}
           />
           <CardBody className="space-y-4">
-            <div className="rounded-lg border border-slate-200 p-4 dark:border-slate-700">
-              <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Load sample data</p>
-              <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-                Fills empty collections with demo members, plans, payments and classes. Only works when
-                collections are empty.
-              </p>
-              <Button variant="outline" size="sm" className="mt-3" onClick={handleSeed} loading={seeding}>
-                Load sample data
-              </Button>
-            </div>
+            {/* Development only. A real gym starts with empty collections — exactly
+                the condition this block used to appear under — so the first thing a
+                new owner saw was a button that would put 20 demo members, demo
+                payments and demo receipts into their real books. */}
+            {import.meta.env.DEV && (
+              <div className="rounded-lg border border-slate-200 p-4 dark:border-slate-700">
+                <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Load sample data</p>
+                <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                  Fills empty collections with demo members, plans, payments and classes. Only works when
+                  collections are empty.
+                </p>
+                <Button variant="outline" size="sm" className="mt-3" onClick={handleSeed} loading={seeding}>
+                  Load sample data
+                </Button>
+              </div>
+            )}
 
             <div className="rounded-lg border border-slate-200 p-4 dark:border-slate-700">
               <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">Rebuild membership periods</p>
