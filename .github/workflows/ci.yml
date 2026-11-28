@@ -84,8 +84,8 @@ jobs:
 
   # Frozen historical baselines. The two archived files are red by design, so the
   # job does not tolerate their failures blindly: scripts/assert-frozen-baseline.mjs
-  # compares the archived file's own counts with the documented ones (26 failed /
-  # 381 passed Firestore, 32 failed / 18 passed Storage). Matching counts keep the
+  # compares the archived file's own counts with the documented ones (27 failed /
+  # 380 passed Firestore, 32 failed / 18 passed Storage). Matching counts keep the
   # job green; any drift — an edited assertion, a test that stopped being
   # collected, rules that moved — turns it red. The gating `app` and `rules` jobs
   # stay independent of it.
@@ -112,7 +112,7 @@ jobs:
         run: npm install --global firebase-tools@15
 
       # Phase 0.5A vulnerable Firestore baseline: runs the suite, then asserts the
-      # archived file still fails 26 and passes 381.
+      # archived file still fails 27 and passes 380.
       - name: Frozen Firestore baseline
         run: npm run test:rules:frozen
 

@@ -37,19 +37,29 @@ describe('frozen baseline counts', () => {
     const report = {
       testResults: [
         fileResult('/repo/tests.emulator/moneyPathEmulator.test.js', statuses(0, 40)),
-        fileResult(`/repo/${FIRESTORE.file}`, statuses(26, 381)),
+        fileResult(
+          `/repo/${FIRESTORE.file}`,
+          statuses(FIRESTORE.expected.failed, FIRESTORE.expected.passed)
+        ),
         fileResult('/repo/tests.emulator/firestoreSecurityRemediation.test.js', statuses(0, 120, 3)),
       ],
     }
 
-    expect(countBaselineFile(report, FIRESTORE.file)).toEqual({ failed: 26, passed: 381 })
+    expect(countBaselineFile(report, FIRESTORE.file)).toEqual(FIRESTORE.expected)
     expect(compareCounts(countBaselineFile(report, FIRESTORE.file), FIRESTORE.expected)).toEqual([])
   })
 
   it('matches the path when the report uses Windows separators', () => {
-    const report = { testResults: [fileResult('C:\\repo\\tests.emulator\\firestoreSecurityEmulator.test.js', statuses(26, 381))] }
+    const report = {
+      testResults: [
+        fileResult(
+          'C:\\repo\\tests.emulator\\firestoreSecurityEmulator.test.js',
+          statuses(FIRESTORE.expected.failed, FIRESTORE.expected.passed)
+        ),
+      ],
+    }
 
-    expect(countBaselineFile(report, FIRESTORE.file)).toEqual({ failed: 26, passed: 381 })
+    expect(countBaselineFile(report, FIRESTORE.file)).toEqual(FIRESTORE.expected)
   })
 
   it('returns null when the baseline file was not collected', () => {
@@ -59,14 +69,16 @@ describe('frozen baseline counts', () => {
   })
 
   it('reports drift in both directions instead of accepting any red count', () => {
-    expect(compareCounts({ failed: 25, passed: 382 }, FIRESTORE.expected)).toEqual([
-      'failed: documented 26, measured 25 (-1)',
-      'passed: documented 381, measured 382 (+1)',
+    const { failed, passed } = FIRESTORE.expected
+
+    expect(compareCounts({ failed: failed - 1, passed: passed + 1 }, FIRESTORE.expected)).toEqual([
+      `failed: documented ${failed}, measured ${failed - 1} (-1)`,
+      `passed: documented ${passed}, measured ${passed + 1} (+1)`,
     ])
 
-    expect(compareCounts({ failed: 27, passed: 380 }, FIRESTORE.expected)).toEqual([
-      'failed: documented 26, measured 27 (+1)',
-      'passed: documented 381, measured 380 (-1)',
+    expect(compareCounts({ failed: failed + 1, passed: passed - 1 }, FIRESTORE.expected)).toEqual([
+      `failed: documented ${failed}, measured ${failed + 1} (+1)`,
+      `passed: documented ${passed}, measured ${passed - 1} (-1)`,
     ])
   })
 
