@@ -8,7 +8,7 @@
  *   baselines. They are red on purpose: the archived rules allowed reads the
  *   current rules deny, and `docs/baselines.md` records exactly how red they are
  *   supposed to be. The counts pinned here are the ARCHIVED FILE's own results
- *   (26 failed / 381 passed for Firestore, 32 failed / 18 passed for Storage),
+ *   (27 failed / 380 passed for Firestore, 32 failed / 18 passed for Storage),
  *   not the whole run's totals: the frozen run also executes the green suites, so
  *   its totals grow whenever a live suite gains a test, which is not baseline
  *   drift and must not turn this job red.
@@ -49,7 +49,10 @@ export const BASELINES = {
     file: 'tests.emulator/firestoreSecurityEmulator.test.js',
     script: 'test:rules:frozen:raw',
     outputFile: '.frozen/firestore.json',
-    expected: { failed: 26, passed: 381 },
+    // 26/381 until invite-only signup: SEC-B2 ("the legitimate onboarding
+    // payload for a real owner-of-record is allowed") is now DENIED unless the
+    // caller's email is on the signupInvites allowlist — see docs/baselines.md.
+    expected: { failed: 27, passed: 380 },
   },
   storage: {
     label: 'Storage',
