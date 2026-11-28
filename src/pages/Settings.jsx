@@ -1,7 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { zodResolver } from '@hookform/resolvers/zod'
-import { Building2, Database, Dumbbell, Loader2, MessageCircle, ShieldCheck, Trash2, Upload } from 'lucide-react'
+import {
+  Building2,
+  Database,
+  Dumbbell,
+  Loader2,
+  MessageCircle,
+  ShieldCheck,
+  Trash2,
+  Upload,
+  UserPlus,
+} from 'lucide-react'
 import { settingsFormSchema, ptSurchargeSchema } from '@/schemas/validationSchemas'
 import { useSettings, DEFAULT_SETTINGS } from '@/context/SettingsContext'
 import { useToast } from '@/context/ToastContext'
@@ -10,6 +20,7 @@ import { getPtSurcharge, setPtSurcharge as persistPtSurcharge } from '@/services
 import { getWhatsAppLink, setWhatsAppLink } from '@/services/whatsappGroup'
 import { loadSampleData } from '@/services/seedService'
 import { ensureOriginPeriods } from '@/services/migration'
+import { inviteEmail, listInvites, revokeInvite } from '@/services/signupInvites'
 import { PageHeader } from '@/components/layout/PageHeader'
 import { Card, CardBody, CardHeader } from '@/components/ui/Card'
 import { FormField } from '@/components/ui/FormField'
@@ -54,7 +65,16 @@ export default function Settings() {
   // Tenancy comes from the signed-in users/{uid} profile, the same source
   // storage.rules trusts. Branding writes are owner-only server-side, so the
   // gym id must be the caller's own gym and can never be supplied by the form.
-  const gymId = useAuth()?.gymId ?? null
+  // Null-safe: this page is also rendered in tests without an AuthProvider, and
+  // a missing context must mean "no invitation card", never a crash.
+  const auth = useAuth()
+  const gymId = auth?.gymId ?? null
+
+  // Creating a gym creates a TENANT, and this app is multi-tenant inside one
+  // database: `gyms/{gymId}` plus everything stamped with that gymId. The
+  // invitation list below is what authorises a new one (firestore.rules enforces
+  // it on both the gyms create and the profile bind), so only the owner sees it.
+  const canInvite = auth?.can?.('settings.write') === true && isFirebaseConfigured
   // Branding bytes live in gyms/{gymId}/settings/branding as a 320px thumbnail,
   // so every render is authorised by firestore.rules and no public URL (or
   // Storage download token) is ever minted. settings.logoPath / settings.logoUrl
@@ -77,6 +97,61 @@ export default function Settings() {
   const logoRef = useRef(null)
   const [logoConfirm, setLogoConfirm] = useState(false)
   const [removingLogo, setRemovingLogo] = useState(false)
+  const [invites, setInvites] = useState([])
+  const [inviteAddress, setInviteAddress] = useState('')
+  const [inviteError, setInviteError] = useState('')
+  const [invitesLoading, setInvitesLoading] = useState(false)
+  const [inviting, setInviting] = useState(false)
+  const [revoking, setRevoking] = useState('')
+
+  const refreshInvites = async () => {
+    setInvitesLoading(true)
+    setInviteError('')
+    try {
+      setInvites(await listInvites())
+    } catch (e) {
+      setInviteError(e?.message || 'Could not load invitations')
+    } finally {
+      setInvitesLoading(false)
+    }
+  }
+
+  // Loads once the owner's role is known. `refreshInvites` is recreated every
+  // render on purpose (it reads the current signed-in owner); `canInvite` only
+  // flips when the role resolves, which is exactly when this must run.
+  useEffect(() => {
+    if (canInvite) refreshInvites()
+  }, [canInvite])
+
+  const handleInvite = async (event) => {
+    event.preventDefault()
+    setInviting(true)
+    setInviteError('')
+    try {
+      await inviteEmail({ email: inviteAddress })
+      setInviteAddress('')
+      toast.success('Invitation saved')
+      await refreshInvites()
+    } catch (e) {
+      setInviteError(e?.message || 'Could not save the invitation')
+    } finally {
+      setInviting(false)
+    }
+  }
+
+  const handleRevokeInvite = async (email) => {
+    setRevoking(email)
+    setInviteError('')
+    try {
+      await revokeInvite(email)
+      toast.success('Invitation revoked')
+      await refreshInvites()
+    } catch (e) {
+      setInviteError(e?.message || 'Could not revoke the invitation')
+    } finally {
+      setRevoking('')
+    }
+  }
 
   const {
     register,
@@ -525,6 +600,84 @@ export default function Settings() {
             as a problem rather than as an absent feature. */}
         {isFirebaseConfigured && <IntegrityCard />}
 
+        {/* The tenant allowlist. Owner-only, because this card is the app's
+            "signup permission": no email listed here can create a gym. */}
+        {canInvite && (
+          <Card>
+            <CardHeader
+              title="Access &amp; invitations"
+              subtitle="Only an invited email can create a new gym"
+              actions={<UserPlus size={16} className="text-slate-400" />}
+            />
+            <CardBody className="space-y-4">
+              <p className="text-sm text-slate-500 dark:text-slate-400">
+                Every gym is a separate tenant: its members, payments, settings and photos are its
+                own and invisible to other gyms. Creating one is not open to the public — invite the
+                email here first, and only then can that address sign up and create its gym.
+              </p>
+
+              <form onSubmit={handleInvite} className="flex flex-col gap-2 sm:flex-row">
+                <Input
+                  type="email"
+                  placeholder="owner@example.com"
+                  aria-label="Email to invite"
+                  value={inviteAddress}
+                  onChange={(e) => setInviteAddress(e.target.value)}
+                  className="sm:flex-1"
+                />
+                <Button type="submit" loading={inviting} className="shrink-0">
+                  Invite
+                </Button>
+              </form>
+
+              {inviteError && (
+                <p className="text-sm text-red-600 dark:text-red-400" role="alert">
+                  {inviteError}
+                </p>
+              )}
+
+              {invitesLoading ? (
+                <p className="flex items-center gap-2 text-sm text-slate-500 dark:text-slate-400">
+                  <Loader2 size={14} className="animate-spin" /> Loading invitations…
+                </p>
+              ) : invites.length === 0 ? (
+                <p className="text-sm text-slate-500 dark:text-slate-400">
+                  No invitations yet — nobody else can create a gym. An existing owner or staff
+                  account signs in normally; this list only controls new gyms.
+                </p>
+              ) : (
+                <ul className="divide-y divide-slate-100 dark:divide-slate-800">
+                  {invites.map((invite) => (
+                    <li
+                      key={invite.id}
+                      className="flex flex-wrap items-center justify-between gap-2 py-2"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium text-slate-800 dark:text-slate-100">
+                          {invite.email}
+                        </p>
+                        <p className="text-xs text-slate-400">
+                          {invite.usedGymId ? 'Gym created' : 'Invited, not used yet'}
+                        </p>
+                      </div>
+                      {!invite.usedGymId && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          loading={revoking === invite.id}
+                          onClick={() => handleRevokeInvite(invite.id)}
+                        >
+                          Revoke
+                        </Button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </CardBody>
+          </Card>
+        )}
+
         <Card>
           <CardHeader
             title="Data tools"
@@ -579,8 +732,8 @@ export default function Settings() {
               </p>
               <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
                 Role-based access is enforced both in the UI and in Firestore security rules, and every
-                record is scoped to a gym. A gym&rsquo;s Owner is provisioned on first account creation
-                (self-onboarding) or out-of-band, setting up that gym&rsquo;s isolation.
+                record is scoped to a gym. A new gym can only be created by an email invited under
+                Access &amp; invitations above — signup is not open to the public.
               </p>
             </div>
 

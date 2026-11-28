@@ -60,6 +60,7 @@ export default function Login() {
     loading,
     isConfigured,
     pendingOnboarding,
+    inviteRequired,
     error: profileError,
     signIn,
     signUp,
@@ -91,6 +92,40 @@ export default function Login() {
   }, [loading, user, pendingOnboarding, profile, navigate, location.state])
 
   if (loading) return null
+
+  // Signed in, but with no profile, no gym and no invitation. Creating a gym
+  // creates a tenant, so this account has no path forward until the app owner
+  // invites its email. Nothing was written; the rules would refuse it anyway.
+  if (inviteRequired) {
+    return (
+      <div className="flex min-h-[100dvh] items-center justify-center px-4 py-8">
+        <div className="absolute right-4 top-4">
+          <ThemeToggle />
+        </div>
+        <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 text-center shadow-sm dark:border-slate-800 dark:bg-slate-900">
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-300">
+            <ShieldCheck size={24} />
+          </div>
+          <h1 className="mt-4 text-xl font-bold text-slate-900 dark:text-slate-100">
+            Access is invite-only
+          </h1>
+          <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+            You are signed in as{' '}
+            <span className="font-medium text-slate-700 dark:text-slate-200">{user?.email}</span>.
+            Creating a gym needs an invitation from whoever runs this app, so this account cannot
+            set one up yet. Nothing has been created or changed.
+          </p>
+          <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
+            Ask them to invite this exact email address, then sign in again.
+          </p>
+          <Button variant="outline" className="mt-5 w-full" onClick={() => signOut()}>
+            Sign out
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
   if (user && !pendingOnboarding && profile?.gymId)
     return <Navigate to={location.state?.from || '/'} replace />
 
@@ -411,7 +446,8 @@ export default function Login() {
             <>
               <h2 className="text-2xl font-bold text-slate-900 dark:text-slate-100">Create an account</h2>
               <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-                Sign up as the Owner of your gym. You&rsquo;ll set up your gym right after.
+                Only an invited email can create a new gym. Use the address the app owner invited,
+                then set up your gym right after.
               </p>
 
               {!isConfigured && (
@@ -515,7 +551,7 @@ export default function Login() {
 
           <p className="mt-6 text-center text-xs text-slate-400">
             {mode === MODE_SIGNIN
-              ? 'New here? Create an account, then set up your own gym.'
+              ? 'New here? Creating a gym needs an invitation from the app owner.'
               : 'Already have an account? Use the Sign in tab above.'}
           </p>
         </div>

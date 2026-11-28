@@ -58,6 +58,32 @@ service cloud.firestore {
       return isSignedIn() && gymOf(request.auth.uid) != null;
     }
 
+    // ---------- Signup permission (invite allowlist) -----------------------
+    // Creating a gym means creating a new TENANT. That is not an operation an
+    // anonymous visitor is entitled to: without this gate, anyone who found the
+    // app's URL could sign up, self-provision a gym and use the app with data,
+    // and the existing owner could not even see that it happened (gyms are not
+    // listable across tenants). See docs in firestore.rules below and
+    // src/services/signupInvites.js.
+    //
+    // The allowlist document id IS the lower-cased email, so the id is derivable
+    // inside a rule. Rules cannot query a collection, which is why this is an
+    // allowlist keyed by email rather than a `where(email == …)` lookup.
+    function callerEmail() {
+      return isSignedIn() && 'email' in request.auth.token
+        ? request.auth.token.email.lower()
+        : '';
+    }
+
+    // True when the caller's own email is on the signup allowlist.
+    // NOT NULL-SAFE BY ACCIDENT: a token without an email answers '' and the
+    // explicit `!= ''` test keeps that from matching any document path.
+    function isInvitedEmail() {
+      return isSignedIn()
+        && callerEmail() != ''
+        && exists(/databases/$(database)/documents/signupInvites/$(callerEmail()));
+    }
+
     // True when a document is untagged (pre-tenancy legacy record). Legacy
     // records stay readable and migratable so existing data is never lost
     // during backfill; they cannot be newly created and cannot be moved to a
@@ -204,6 +230,7 @@ service cloud.firestore {
     function canBindGymId(uid) {
       return isSignedIn()
         && request.auth.uid == uid
+        && isInvitedEmail()
         && (resource == null || !('gymId' in resource.data))
         && 'gymId' in request.resource.data
         && (!('role' in request.resource.data)
@@ -304,8 +331,13 @@ service cloud.firestore {
       // No presence test is referenced here — the query itself proves the
       // result set consists of documents whose ownerUid is the caller.
       allow list: if isSignedIn() && resource.data.ownerUid == request.auth.uid;
+      // CREATE IS INVITE-ONLY. `ownerUid == request.auth.uid` alone let any
+      // signed-up visitor provision a tenant; the allowlist makes the owner's
+      // permission the thing that actually authorises a new gym.
       allow create: if isSignedIn()
+        && isInvitedEmail()
         && request.resource.data.ownerUid == request.auth.uid
+        && request.resource.data.ownerEmail == callerEmail()
         && isAutoId(gymId);
       allow update, delete: if false;
     }
@@ -349,6 +381,33 @@ service cloud.firestore {
         && resource != null
         && 'gymId' in resource.data
         && resource.data.gymId == gymOf(request.auth.uid);
+    }
+
+    // ---------- Signup invitations (the tenant allowlist) ------------------
+    // Written by the app's owner from Settings → Access & invitations. An
+    // invited email may (a) create a gym and (b) bind its own users/{uid}
+    // profile to it; nothing else here confers any access, and deleting the
+    // document revokes the permission before it has been used.
+    //
+    // `usedAt` / `usedGymId` are the one field pair the INVITEE may write, so
+    // the owner can see which invitations actually became gyms. They are only
+    // addable when nobody marked the invitation before (usedAt == null), which
+    // keeps an invitation from being re-pointed at another gym.
+    match /signupInvites/{emailId} {
+      // An invitee can read their own invitation (id == their lower-cased email)
+      // so the app can say "you are invited" instead of guessing.
+      allow get: if isOwner() || (isSignedIn() && emailId == callerEmail());
+      allow list: if isOwner();
+      allow create: if isOwner()
+        && emailId == request.resource.data.email
+        && request.resource.data.invitedBy == request.auth.uid;
+      allow update: if isOwner()
+        || (isSignedIn()
+          && emailId == callerEmail()
+          && resource != null
+          && !('usedAt' in resource.data)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['usedAt', 'usedGymId']));
+      allow delete: if isOwner();
     }
 
     // ---------- Users (auth profiles + roles) -----------------------------

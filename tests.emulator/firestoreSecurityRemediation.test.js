@@ -64,8 +64,8 @@ function makeEnv() {
   })
 }
 
-function client(env, uid) {
-  return env.authenticatedContext(uid).firestore()
+function client(env, uid, email) {
+  return (email ? env.authenticatedContext(uid, { email }) : env.authenticatedContext(uid)).firestore()
 }
 
 function anon(env) {
@@ -185,6 +185,8 @@ describe('REM onboarding cannot self-assign a gym or a role', () => {
       await fs.doc(`gyms/${GYM_A}`).set({ ownerUid: A.owner, name: 'Gym A' })
       await fs.doc(`gyms/${GYM_B}`).set({ ownerUid: B.owner, name: 'Gym B' })
       await fs.doc('gyms/rem-gym-newcomer').set({ ownerUid: 'rem-newcomer', name: 'Newcomer Gym' })
+      // Creating a gym (and binding a profile to one) is invite-only.
+      await fs.doc('signupInvites/rem-newcomer@gym.test').set({ email: 'rem-newcomer@gym.test' })
       await fs.doc(`users/${A.admin}`).set({ role: 'admin', gymId: GYM_A })
       await fs.doc(`users/${UNBOUND}`).set({ role: 'admin' })
     })
@@ -210,9 +212,9 @@ describe('REM onboarding cannot self-assign a gym or a role', () => {
     )
   })
 
-  it('the genuine owner-of-record can still create their own owner profile', async () => {
+  it('the genuine, invited owner-of-record can still create their own owner profile', async () => {
     await assertSucceeds(
-      client(env, 'rem-newcomer')
+      client(env, 'rem-newcomer', 'rem-newcomer@gym.test')
         .doc('users/rem-newcomer')
         .set({ role: 'owner', gymId: 'rem-gym-newcomer', name: 'Newcomer' })
     )

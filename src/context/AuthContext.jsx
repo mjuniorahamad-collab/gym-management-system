@@ -20,6 +20,7 @@ import { auth, db, isFirebaseConfigured } from '@/firebase'
 import { can } from '@/utils/permissions'
 import { setActor } from '@/services/audit'
 import { setGymId, DEMO_GYM_ID } from '@/services/ownerContext'
+import { getMyInvite } from '@/services/signupInvites'
 
 const AuthContext = createContext(null)
 
@@ -32,6 +33,11 @@ export function AuthProvider({ children }) {
   // owner-of-record yet → the Login page shows the self-provisioning
   // "Create your gym" step instead of blocking or redirecting.
   const [pendingOnboarding, setPendingOnboarding] = useState(false)
+  // True when the signed-in user has no profile, no gym AND no signup
+  // invitation. Creating a gym creates a tenant, so this is the state the app
+  // must refuse to act on: the Login page shows the invite-only screen and the
+  // rules refuse the gym/user writes anyway.
+  const [inviteRequired, setInviteRequired] = useState(false)
   const unsubscribeRef = useRef(null)
 
   useEffect(() => {
@@ -113,6 +119,8 @@ export function AuthProvider({ children }) {
       const snap = await getDoc(profileRef)
       // Already bound → normal path.
       if (snap.exists() && snap.data().gymId) {
+        setInviteRequired(false)
+        setPendingOnboarding(false)
         subscribeProfile(user)
         return
       }
@@ -148,8 +156,14 @@ export function AuthProvider({ children }) {
         return
       }
 
-      // Brand-new sign-in with no gym and no profile → offer self-provisioning.
-      setPendingOnboarding(true)
+      // Brand-new sign-in with no gym and no profile. Self-provisioning is
+      // INVITE-ONLY now: the invitation is what authorises a new tenant, so the
+      // "Create your gym" step is offered only to an invited email. A read
+      // failure here throws into the fail-closed branch below rather than being
+      // read as permission.
+      const invite = await getMyInvite(user.email)
+      setPendingOnboarding(Boolean(invite))
+      setInviteRequired(!invite)
       setError(null)
       setLoading(false)
     } catch (e) {
@@ -226,6 +240,7 @@ export function AuthProvider({ children }) {
       setActor(null)
       setGymId(null)
       setPendingOnboarding(false)
+      setInviteRequired(false)
       return
     }
     await fbSignOut(auth)
@@ -241,6 +256,7 @@ export function AuthProvider({ children }) {
     setActor({ uid: 'demo-owner', ...demoProfile })
     setError(null)
     setPendingOnboarding(false)
+    setInviteRequired(false)
   }, [])
 
   const value = useMemo(
@@ -252,6 +268,7 @@ export function AuthProvider({ children }) {
       gymId: profile?.gymId || null,
       isConfigured: isFirebaseConfigured,
       pendingOnboarding,
+      inviteRequired,
       signIn,
       signUp,
       completeOnboarding,
@@ -261,7 +278,19 @@ export function AuthProvider({ children }) {
       can: (permission) => can(profile?.role, permission),
       role: profile?.role || null,
     }),
-    [user, profile, loading, error, pendingOnboarding, signIn, signUp, completeOnboarding, signOut, demoSignIn]
+    [
+      user,
+      profile,
+      loading,
+      error,
+      pendingOnboarding,
+      inviteRequired,
+      signIn,
+      signUp,
+      completeOnboarding,
+      signOut,
+      demoSignIn,
+    ]
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

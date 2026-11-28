@@ -40,6 +40,8 @@ async function seed() {
     await fs.doc(`users/${UID.otherGymAdmin}`).set({ role: 'admin', gymId: GYM_B })
     // untagged user has no gymId yet — eligible for a one-time owner-gated bind
     await fs.doc(`users/${UID.untagged}`).set({ role: 'admin' })
+    // ...but only because its email is on the signup allowlist
+    await fs.doc('signupInvites/untagged@gym.test').set({ email: 'untagged@gym.test' })
 
     // business records within Gym A
     await fs.doc(`members/m-1`).set({ name: 'A Member', gymId: GYM_A })
@@ -223,7 +225,11 @@ describe('firestore rules — emulator verification (renewal write path)', () =>
   })
 
   it('freezes gymId on a users doc after it is bound (owner-gated one-time bind)', async () => {
-    const ownerMatch = testEnv.authenticatedContext(UID.untagged).firestore()
+    // Binding a gym is half of self-provisioning, so it needs the same signup
+    // invitation the gyms create needs (see signupInvites).
+    const ownerMatch = testEnv
+      .authenticatedContext(UID.untagged, { email: 'untagged@gym.test' })
+      .firestore()
     // one-time owner-gated bind succeeds
     await assertSucceeds(ownerMatch.doc(`users/${UID.untagged}`).set({ role: 'admin', gymId: 'gym-untagged' }))
     // frozen afterwards — cannot re-bind or move gym
@@ -673,6 +679,10 @@ describe('firestore rules — owner gym self-provisioning (onboarding)', () => {
       // Staff bound to a gym id whose owner-of-record document is NOT there: the
       // state SettingsContext reads to tell "no gym" apart from "read failed".
       await ctx.firestore().doc('users/ghost-staff').set({ role: 'admin', gymId: 'gym-ghost' })
+      // Only an invited email may create a tenant (or bind a profile to one).
+      await ctx.firestore().doc('signupInvites/new-owner@gym.test').set({ email: 'new-owner@gym.test' })
+      await ctx.firestore().doc('signupInvites/mismatch@gym.test').set({ email: 'mismatch@gym.test' })
+      await ctx.firestore().doc('signupInvites/chain-owner@gym.test').set({ email: 'chain-owner@gym.test' })
     })
   })
 
@@ -680,17 +690,42 @@ describe('firestore rules — owner gym self-provisioning (onboarding)', () => {
     await testEnv2.cleanup()
   })
 
-  it('lets a signed-in user self-provision a new gym they own (random auto-id)', async () => {
+  it('lets an invited user self-provision a new gym they own (random auto-id)', async () => {
     const uid = 'new-owner'
-    const ctx = testEnv2.authenticatedContext(uid)
-    // add() generates a genuine Firestore auto-id; ownerUid must equal the caller.
-    await assertSucceeds(ctx.firestore().collection('gyms').add({ ownerUid: uid, name: 'My Gym' }))
+    const ctx = testEnv2.authenticatedContext(uid, { email: 'new-owner@gym.test' })
+    // add() generates a genuine Firestore auto-id; ownerUid and ownerEmail must
+    // be the caller, and the caller's email must be on the allowlist.
+    await assertSucceeds(
+      ctx.firestore().collection('gyms').add({
+        ownerUid: uid,
+        ownerEmail: 'new-owner@gym.test',
+        name: 'My Gym',
+      })
+    )
     await ctx.cleanup()
   })
 
   it('denies self-provision unless the created gym is owned by the caller', async () => {
-    const ctx = testEnv2.authenticatedContext('mismatch-uid')
-    await assertFails(ctx.firestore().collection('gyms').add({ ownerUid: 'someone-else', name: 'Theft' }))
+    const ctx = testEnv2.authenticatedContext('mismatch-uid', { email: 'mismatch@gym.test' })
+    await assertFails(
+      ctx.firestore().collection('gyms').add({
+        ownerUid: 'someone-else',
+        ownerEmail: 'mismatch@gym.test',
+        name: 'Theft',
+      })
+    )
+    await ctx.cleanup()
+  })
+
+  it('denies self-provision to a signed-in account with no invitation', async () => {
+    const ctx = testEnv2.authenticatedContext('uninvited-uid', { email: 'uninvited@gym.test' })
+    await assertFails(
+      ctx.firestore().collection('gyms').add({
+        ownerUid: 'uninvited-uid',
+        ownerEmail: 'uninvited@gym.test',
+        name: 'Free Gym',
+      })
+    )
     await ctx.cleanup()
   })
 
@@ -748,7 +783,7 @@ describe('firestore rules — owner gym self-provisioning (onboarding)', () => {
     await testEnv2.withSecurityRulesDisabled(async (ctx) => {
       await ctx.firestore().doc(`gyms/${gymId}`).set({ ownerUid: uid })
     })
-    const ctx = testEnv2.authenticatedContext(uid)
+    const ctx = testEnv2.authenticatedContext(uid, { email: 'chain-owner@gym.test' })
     await assertSucceeds(ctx.firestore().doc(`users/${uid}`).set({ role: 'owner', gymId }))
     await ctx.cleanup()
   })
